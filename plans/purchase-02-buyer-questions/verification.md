@@ -155,3 +155,13 @@ git diff --check
 ```
 
 Restarted the live local backend and verified that its existing reviewed case reopened at revision 3 through the frontend proxy. Verification used zero paid requests. Live interpretation quality was not measured.
+
+## Railway first-round validation fix
+
+Tested the local working tree based on `feafad4`. The two production checks recorded the same error without retaining raw model output. Local reproductions traced it to two distinct inputs: an initial stock requirement worded “I need ready-made stock.” and a generated capacity choice whose minimum was incorrectly encoded as an exact amount. “Ready-made only.” passed when tested on its own.
+
+The question provider schema now omits typed supplier targets for context and choices. Server-side checks retain exact quotes and SKU scope. New direct stock requests are recorded at issue time; saved reports retain their existing interpretation. Rejected supplier details identify the context or choice index without echoing buyer text.
+
+- `PURCHASE_TEST_ZIP="$HOME/Downloads/Website Test.zip" OPENAI_LIVE_TRANSLATION=0 OPENAI_LIVE_QUESTIONS=0 OPENAI_LIVE_REVIEW=0 python -m pytest -q -p no:cacheprovider backend/tests --tb=short` — 527 passed. The new regression uses the SDK with a local HTTP transport, the real case endpoints and SQLite. It confirms both selected SKUs, the scoped stock question in the supplier draft, and the identical report after restart. A separate check rejects a forged exact target for “At least 720 ml.”
+- Local Chrome walkthrough with the original ZIP through the hosted app at 1280×850 and 390×850. Both browser sessions completed first round, brief and report and reopened their supplier draft on reload. Checked top, middle and bottom for overlap and horizontal overflow. The test server used scripted translation/report and a local question-provider transport. The first browser run hit the test server's default zero attempt allowance, then passed with an allowance for mock requests.
+- No paid calls, commit, push or Railway changes during this verification. Live model behavior for the new schema remains to be checked.

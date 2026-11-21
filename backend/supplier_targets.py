@@ -222,8 +222,19 @@ def supplier_target_from_answer(
     return None
 
 
+def stated_stock_request(text: str, topic: str | None, facet: str | None) -> OrderTarget | None:
+    if topic == "customization" and facet in (None, "order_type") and re.fullmatch(
+        rf"(?:i|we) (?:need|require) {_STOCK}", _normalized_statement(text).rstrip("!"),
+    ):
+        return OrderTarget(value="ready_made_only")
+    return None
+
+
 def validate_supplier_target(
     target: SupplierTarget | None, exact_quote: str, topic: str | None, buyer_facet: str | None
 ) -> None:
-    if target is not None and target != supplier_target_from_answer(exact_quote, topic, buyer_facet):
+    if target is None:
+        return
+    supported = supplier_target_from_answer(exact_quote, topic, buyer_facet) or stated_stock_request(exact_quote, topic, buyer_facet)
+    if target != supported:
         raise ValueError("Supplier detail must be supported by the complete quoted buyer statement for this decision.")

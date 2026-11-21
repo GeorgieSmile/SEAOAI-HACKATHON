@@ -35,7 +35,7 @@ TRANSLATION_MODEL = "gpt-6.1-terra"
 TRANSLATION_PROMPT_VERSION = "translate-listing-v1"
 TRANSLATION_DEADLINE_SECONDS = 60
 TRANSLATION_LIMITATION = "English translation is unavailable. The original listing text is shown."
-QUESTION_PROMPT_VERSION = "buyer-questions-v6"
+QUESTION_PROMPT_VERSION = "buyer-questions-v7"
 QUESTION_DEADLINE_SECONDS = 60
 QUOTA_ERRORS = {"insufficient_quota", "billing_hard_limit_reached", "billing_not_active", "quota_exceeded"}
 PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
@@ -214,6 +214,16 @@ class _StrictOutputSchema(GenerateJsonSchema):
         return self.generate_inner(schema["schema"])
 
 
+class _QuestionOutputSchema(_StrictOutputSchema):
+    def model_fields_schema(self, schema: core_schema.ModelFieldsSchema) -> JsonSchemaValue:
+        # Supplier details are derived from the actual buyer decision by the server.
+        # The stored contract still accepts and validates previously grounded targets.
+        fields = schema["fields"]
+        if "supplier_target" in fields:
+            schema = {**schema, "fields": {name: field for name, field in fields.items() if name != "supplier_target"}}
+        return super().model_fields_schema(schema)
+
+
 async def _request_structured(
     *,
     client: AsyncOpenAI,
@@ -225,12 +235,13 @@ async def _request_structured(
     deadline_seconds: float,
     max_output_tokens: int = 4_096,
     max_attempts: int = 2,
+    schema_generator: type[_StrictOutputSchema] = _StrictOutputSchema,
 ) -> ValidatedOutput:
     output_format = {
         "type": "json_schema",
         "name": schema_name,
         "strict": True,
-        "schema": schema.model_json_schema(schema_generator=_StrictOutputSchema),
+        "schema": schema.model_json_schema(schema_generator=schema_generator),
     }
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_seconds
@@ -687,6 +698,7 @@ async def generate_questions(
             prompt=QUESTION_PROMPT,
             schema_name="buyer_questions",
             schema=QuestionResult,
+            schema_generator=_QuestionOutputSchema,
             validate=validate,
             deadline_seconds=QUESTION_DEADLINE_SECONDS,
         )

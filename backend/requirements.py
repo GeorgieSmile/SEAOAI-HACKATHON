@@ -12,7 +12,7 @@ from .contracts import (
 )
 from .supplier_targets import (
     DeliveryTarget, OrderTarget, SupplierTarget, order_statement_matches_scope, scoped_order_target, supplier_target_from_answer,
-    validate_supplier_target,
+    stated_stock_request, validate_supplier_target,
 )
 
 
@@ -71,7 +71,7 @@ def _with_supplier_target(
 
 def _validate_source_target(
     target: SupplierTarget | None, quote: str, topic: ReviewTopic | None, facet: BuyerFacet | None, *,
-    option_ids: list[str], selected_option_ids: list[str],
+    option_ids: list[str], selected_option_ids: list[str], source: str,
 ) -> None:
     if not order_statement_matches_scope(quote, topic, option_ids=option_ids, selected_option_ids=selected_option_ids):
         raise ValueError("The named options must match the scope of the buyer's exact statement.")
@@ -79,7 +79,10 @@ def _validate_source_target(
         quote, topic, facet, option_ids=option_ids, selected_option_ids=selected_option_ids,
     )
     if target != supported:
-        validate_supplier_target(target, quote, topic, facet)
+        try:
+            validate_supplier_target(target, quote, topic, facet)
+        except ValueError as error:
+            raise ValueError(f"{source}: {error}") from error
 
 
 def _validate_topic_facet(topic: ReviewTopic | None, facet: BuyerFacet | None) -> None:
@@ -108,15 +111,20 @@ def _context_rows(inputs: QuestionInput, result: QuestionResult) -> list[Resolve
         if seed.status == "active":
             _validate_source_target(
                 seed.supplier_target, seed.quote, seed.topic, seed.buyer_facet,
-                option_ids=seed.option_ids, selected_option_ids=inputs.selected_option_ids,
+                option_ids=seed.option_ids, selected_option_ids=inputs.selected_option_ids, source=f"Context requirement {index}",
             )
         if seed.topic == "customization" and seed.status == "active":
             named = written_order_scope(seed.quote, inputs.snapshot, inputs.selected_option_ids)
             if named is not None and set(named) != scope:
                 raise ValueError("Context order decisions must stay within the named option scope.")
+        # Stamp newly recognized wording when issuing the decision. Reopening an older
+        # confirmed case must not reinterpret its previously untyped requirement.
+        supplier_target = seed.supplier_target
+        if seed.status == "active" and supplier_target is None:
+            supplier_target = stated_stock_request(seed.quote, seed.topic, seed.buyer_facet)
         row = _with_supplier_target(ResolvedRequirement(
             requirement_id=f"context:{index}", statement=seed.statement, option_ids=seed.option_ids,
-            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=seed.supplier_target,
+            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=supplier_target,
             provenance=[RequirementProvenance(
                 input_ref="context", quote=seed.quote, question_text=None,
                 action="add" if seed.status == "active" else "unresolved", option_ids=seed.option_ids,
@@ -136,7 +144,7 @@ def validate_requirement_plan(inputs: QuestionInput, result: QuestionResult) -> 
     modern = has_initial or inputs.requirements is not None
     targets = {row.requirement_id: row for row in (*_context_rows(inputs, result), *(inputs.requirements or []))}
     previous_targets: set[tuple[str, str]] = set()
-    for question in result.questions:
+    for question_index, question in enumerate(result.questions, start=1):
         _validate_topic_facet(question.topic, question.buyer_facet)
         requirement_ids = question.requirement_ids
         effects = question.choice_effects
@@ -168,13 +176,14 @@ def validate_requirement_plan(inputs: QuestionInput, result: QuestionResult) -> 
         effect_choices = {effect.choice for effect in effects}
         if len(effect_choices) != len(effects) or not effect_choices.issubset(question.choices):
             raise ValueError("Each effect must belong to a distinct issued answer choice.")
-        for effect in effects:
+        for effect_index, effect in enumerate(effects, start=1):
             _validate_effect_target(effect, requirement_ids)
             if effect.supplier_target is not None and effect.statement is None:
                 raise ValueError("Only an add or replacement choice can declare a new supplier target.")
             _validate_source_target(
                 effect.supplier_target, effect.choice, question.topic, question.buyer_facet,
                 option_ids=question.option_ids, selected_option_ids=inputs.selected_option_ids,
+                source=f"Question {question_index}, choice effect {effect_index}",
             )
 
 
@@ -202,6 +211,10 @@ def issue_requirement_plan(
                 for target in requirement_ids
             ]
             for effect in draft["choice_effects"]:
+                if effect["statement"] is not None and effect["supplier_target"] is None:
+                    stock = stated_stock_request(effect["statement"], question.topic, question.buyer_facet)
+                    if stock is not None:
+                        effect["supplier_target"] = stock.model_dump()
                 target = effect["requirement_id"]
                 effect["requirement_id"] = context_ids.get(target, target)
         questions.append(IssuedQuestion(question_id=str(uuid4()), **draft))

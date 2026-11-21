@@ -1,11 +1,14 @@
 import asyncio
 import json
 import logging
+import os
+from functools import partial
 from pathlib import Path
 from unittest.mock import Mock
 
 import httpx2
 import pytest
+from fastapi.testclient import TestClient
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
@@ -241,7 +244,6 @@ def test_first_provider_response_can_save_context_without_issuing_a_question(req
             {"statement": stock, "quote": stock, "topic": "customization", "option_ids": request_input.selected_option_ids},
             {
                 "statement": decoration, "quote": decoration, "topic": "finish", "option_ids": request_input.selected_option_ids,
-                "supplier_target": {"kind": "decoration_method", "method": "laser_engraving", "intent": "require"},
             },
         ],
     }
@@ -250,7 +252,7 @@ def test_first_provider_response_can_save_context_without_issuing_a_question(req
         wire = json.loads(request.content)
         schema = wire["text"]["format"]["schema"]
         assert "context_requirements" in schema["required"]
-        assert {"topic", "status", "buyer_facet", "supplier_target", "quote"} <= set(
+        assert {"topic", "status", "buyer_facet", "quote"} <= set(
             schema["$defs"]["ContextRequirement"]["required"],
         )
         return api_response(request, payload)
@@ -258,6 +260,64 @@ def test_first_provider_response_can_save_context_without_issuing_a_question(req
     result = run_questions(request_input, serve)
     assert result.questions == []
     assert [row.quote for row in result.context_requirements] == [stock, decoration]
+
+
+@pytest.mark.parametrize("context", ["Ready-made only.", "These cups are for cold drinks at an event. I need ready-made stock."])
+def test_first_round_derives_supplier_terms_through_saved_report(tmp_path, context):
+    from backend.main import create_app
+    from backend.tests.offline_server import offline_review, offline_translation
+    from backend.tests.test_cases import confirm_command, initial_request, ready, round_request
+    from backend.tests.test_imports import RAW, _upload
+
+    stock_quote = context.split(". ")[-1]
+
+    def provide(request):
+        wire = json.loads(request.content)
+        definitions = wire["text"]["format"]["schema"]["$defs"]
+        for model in ("ContextRequirement", "ChoiceEffect"):
+            assert "supplier_target" not in definitions[model]["properties"]
+            assert definitions[model]["additionalProperties"] is False
+        inputs = json.loads(wire["input"])
+        ids = [option["option_id"] for option in inputs["selected_options"]]
+        choice = "At least 720 ml."
+        return api_response(request, {
+            "reason": "Clarify the required capacity.", "context_requirements": [{
+                "statement": stock_quote, "quote": stock_quote, "topic": "customization", "buyer_facet": "order_type",
+                "status": "active", "option_ids": ids,
+            }],
+            "questions": [{
+                "prompt": "What minimum capacity do you need?", "why_ask": "Your minimum affects the capacity to verify.",
+                "topic": "capacity", "buyer_facet": "capacity", "option_ids": ids, "requirement_ids": [],
+                "source_ids": [], "choices": [choice], "choice_effects": [{
+                    "choice": choice, "statement": choice, "action": "add", "requirement_id": None,
+                }],
+            }],
+        })
+
+    async def generate(inputs):
+        async with AsyncOpenAI(api_key="offline", max_retries=0,
+                               http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(provide))) as sdk:
+            return await ai.generate_questions(inputs, client=sdk)
+
+    app = partial(create_app, tmp_path / "case.db", translator=offline_translation,
+                  question_generator=generate, review_generator=offline_review)
+    with TestClient(app()) as client:
+        snapshot = _upload(client, Path(os.environ.get("PURCHASE_TEST_ZIP", RAW))).json()["snapshot"]
+        command = initial_request(snapshot, buyer_context=context)
+        command["selected_option_ids"] = [snapshot["options"][i]["option_id"] for i in (1, 0)]
+        case = ready(client.post("/api/questions", json=command))
+        assert case["phase"] == "awaiting_answers"
+        brief = ready(client.post("/api/brief", json=round_request(case, texts=["At least 720 ml."])))
+        stock, = [row for row in brief["requirements"] if row["statement"] == stock_quote]
+        assert stock["option_ids"] == command["selected_option_ids"]
+        assert stock["supplier_target"] == {"kind": "order_type", "value": "ready_made_only"}
+        minimum, = [row for row in brief["requirements"] if row["statement"] == "At least 720 ml."]
+        assert minimum["supplier_target"] is None  # A minimum is not an exact capacity.
+        report = ready(client.post("/api/reviews", json=confirm_command(brief)))["report"]
+        assert any("[Options A, B]" in line and "ready-made stock" in line for line in report["supplier_draft"].splitlines())
+        assert report["selected_option_ids"] == command["selected_option_ids"]
+    with TestClient(app()) as client:
+        assert client.get("/api/case").json()["case"]["report"] == report
 
 
 @pytest.mark.parametrize("context", [
@@ -278,7 +338,19 @@ def test_provider_cannot_turn_negated_or_conditional_engraving_into_a_supplier_r
     with pytest.raises(ai.QuestionGenerationError) as invalid:
         run_questions(request_input, lambda request: api_response(request, payload))
     assert invalid.value.code == "invalid_questions"
+    assert "Context requirement 1" in str(invalid.value)
     assert "Cedar-914" not in str(invalid.value)
+
+
+def test_generated_choice_cannot_turn_a_minimum_into_an_exact_capacity(request_input):
+    choice = "At least 720 ml."
+    output = plan(choices=[choice], choice_effects=[{
+        "choice": choice, "statement": choice, "action": "add", "requirement_id": None,
+        "supplier_target": {"kind": "capacity", "amount": 720, "unit": "ml"},
+    }])
+    with pytest.raises(ai.QuestionGenerationError, match="Question 1, choice effect 1") as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
 
 
 @pytest.mark.parametrize(("context", "excerpt"), [

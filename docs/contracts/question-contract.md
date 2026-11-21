@@ -67,3 +67,5 @@ v0.7 ใช้กับสเปกรุ่นแข่ง v0.16 ที่ย�
 - ตัวอย่างคำถามรอบแรกครอบคลุมลายและการใช้งานโดยอิสระ เมื่อเลือกว่าต้องสกรีน ให้รอบถัดไปพิจารณาว่ายอมรับงานสั่งทำเมื่อมีหลักฐานรองรับ เมื่อยอมรับภาพแปะแล้วให้ถามเรื่องอื่นที่จำเป็นหรือจบ
 - ตอบบางข้อและส่งรายงานทันที → ใช้ข้อความที่ตอบและเก็บข้อที่ข้ามเป็น null ไม่มีคำถามรอบใหม่
 - เปลี่ยนคำตอบรอบแรก → ไม่ใช้รอบที่สร้างจากคำตอบเดิม ผลที่ค้างหรือคำขอซ้ำไม่สร้างรอบซ้อน ตัวอย่าง JSON ใช้ใน test harness เท่านั้น และไม่ส่งคำตอบคาดหวังให้โมเดล
+
+The question provider returns the buyer's exact wording, action and option scope. The backend derives typed supplier details from that wording when it records an active requirement or applies an issued choice. The provider's output schema omits `supplier_target` for context proposals and choice effects. Saved cases retain the existing field and its source and scope checks.
