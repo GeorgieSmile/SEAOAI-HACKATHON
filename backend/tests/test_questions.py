@@ -242,7 +242,7 @@ def test_correctly_attributed_partial_evidence_can_motivate_group_question(reque
     assert result == QuestionResult.model_validate(output)
 
 
-def test_rejects_reviewers_wrong_sku_name_attribution(request_input):
+def test_rejects_question_naming_a_different_sku_than_its_citation(request_input):
     request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v6"]})
     assert [option.name_original for option in request_input.snapshot.options if option.option_id in {"v0", "v6"}] == [
         "暮色316-贴画粉蓝", "暮色316-字母粉蓝",
@@ -254,6 +254,22 @@ def test_rejects_reviewers_wrong_sku_name_attribution(request_input):
         why_ask="Option B's name describes applied-picture artwork.",
     )
 
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+@pytest.mark.parametrize("field, text", [
+    ("prompt", "Since Option B's name describes applied-picture artwork, would you accept it?"),
+    ("choices", "I would accept it because Option B's name describes applied-picture artwork."),
+])
+def test_buyer_preferences_do_not_establish_their_seller_premise(request_input, field, text):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v6"]})
+    output = plan(
+        option_ids=["v0", "v6"], source_ids=["name-v0"],
+        why_ask="Option A's name uses applied-picture wording. Your preference affects what to verify.",
+    )
+    output["questions"][0][field] = [text] if field == "choices" else text
     with pytest.raises(ai.QuestionGenerationError) as invalid:
         run_questions(request_input, lambda request: api_response(request, output))
     assert invalid.value.code == "invalid_questions"
@@ -360,6 +376,94 @@ def test_valid_unscoped_seller_claim_can_accompany_a_neutral_option_comparison(r
     )
     result = run_questions(request_input, lambda request: api_response(request, output))
     assert result == QuestionResult.model_validate(output)
+
+
+def test_prefatory_option_reference_can_attribute_a_sku_name(request_input):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v1"]})
+    output = plan(
+        why_ask="For Option A, the SKU name includes 贴画 (applied-picture artwork). "
+                "Your preference determines which design to verify.",
+        source_ids=["name-v0"],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+    output["questions"][0]["why_ask"] = (
+        "For Option B, the SKU name includes 贴画 (applied-picture artwork). "
+        "For Option A, your preference determines what to verify."
+    )
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+def test_partial_evidence_allows_neutral_reference_on_the_supported_option(request_input):
+    output = plan(
+        why_ask="For Option B, this might affect the details you need confirmed.",
+        source_ids=["name-v0"],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+
+@pytest.mark.parametrize("choice", [
+    "For Option A, I need the artwork confirmed.",
+    "I would buy Option A, and I need the artwork confirmed.",
+    "For Option A, I’d need the artwork confirmed.",
+])
+def test_first_person_clause_is_not_part_of_an_option_list(request_input, choice):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v1"]})
+    output = plan(
+        option_ids=["v0"], source_ids=["name-v0"],
+        why_ask="Option A's name describes applied-picture artwork.",
+        choices=[choice],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+    output["questions"][0]["choices"] = [choice.replace("Option A", "Option B")]
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+def test_first_person_clause_does_not_hide_real_lists(request_input):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v1", "v6"]})
+    output = plan(
+        option_ids=["v0", "v1", "v6"],
+        choices=["For Options A, B, and C, I need exact dimensions."],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+    for choice in (
+        "I would accept Options A, B, and I.",
+        "Options A, B, and I would meet my requirements.",
+        "For Options A, I, and C, I need exact dimensions.",
+    ):
+        output["questions"][0]["choices"] = [choice]
+        with pytest.raises(ai.QuestionGenerationError) as invalid:
+            run_questions(request_input, lambda request: api_response(request, output))
+        assert invalid.value.code == "invalid_questions"
+
+
+def test_question_about_required_proof_does_not_assert_a_product_fact(request_input):
+    request_input = request_input.model_copy(update={
+        "buyer_context": "We supply schools and may need paperwork for the drinks containers.",
+    })
+    output = plan(
+        option_ids=["v0"], source_ids=[],
+        prompt="Do you need proof that Option B has passed independent testing before you buy it?",
+        why_ask="Your procurement requirements determine which paperwork to ask the seller for.",
+        choices=["I need proof that Option B has passed independent testing."],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+    output["questions"][0]["prompt"] = output["questions"][0]["prompt"].replace("Option B", "Option A")
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
 
 
 @pytest.mark.parametrize(
