@@ -104,6 +104,8 @@ def minimal_content(review_input):
     ("Image observations", "Includes 贴画.", True),
     ("Image observations", "The SKU name is unreadable in the thumbnail.", True),
     ("Image observations", "The SKU name is 贴画.", False),
+    ("Name and thumbnail", "The SKU name includes 316, but 750 ml appears on the thumbnail.", True),
+    ("Name and thumbnail", "The SKU name includes 316 and 750 ml.", False),
 ])
 def test_comparison_uses_its_own_option_for_an_unqualified_sku_name(example, label, summary, valid):
     request, _, sources = example
@@ -111,7 +113,8 @@ def test_comparison_uses_its_own_option_for_an_unqualified_sku_name(example, lab
     comparison = content["comparisons"][0]
     comparison["label"] = label
     value = next(row for row in comparison["values"] if row["option_id"] == "v6")
-    value.update(summary=summary, source_ids=["image-v6"] if label == "Image observations" else ["name-v6"])
+    source_ids = {"Image observations": ["image-v6"], "Name and thumbnail": ["name-v6", "image-v6"]}
+    value.update(summary=summary, source_ids=source_ids.get(label, ["name-v6"]))
     if valid:
         result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
         assert next(row.summary for row in result.comparisons[0].values if row.option_id == "v6") == summary

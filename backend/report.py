@@ -58,6 +58,10 @@ NAME_TERM_AFTER = re.compile(
     re.IGNORECASE,
 )
 NAME_ANNOTATION = re.compile(r"\([^()]*\)")
+MEASUREMENT_UNIT = re.compile(
+    r"^\s+(?:[µμmcdk]?[lgm]|fl\.?\s*oz|oz|inches|lbs?|watts?|volts?|"
+    r"(?:milli|centi|kilo)?(?:lit(?:er|re)|met(?:er|re)|gram)s?)\b", re.IGNORECASE,
+)
 NAME_SUBJECT_PREDICATE = re.compile(
     r"^\s*(?:(?:only|exclusively)\s+)?(?:appears?|occurs?|does|do|did|can|could|may|might|must|will|would|should)\b",
     re.IGNORECASE,
@@ -400,6 +404,9 @@ def _name_predicates(tail: str, predicate: re.Match[str]) -> Iterable[_NamePredi
         if operand is None:
             break
         remainder = phrase[operand.end():]
+        if operand["term"].isdecimal():
+            # In “750 ml appears on the thumbnail”, the unit belongs to the new subject.
+            remainder = MEASUREMENT_UNIT.sub("", remainder, count=1)
         if separator and continuation is None and (
             NAME_COORDINATED_PREDICATE.match(remainder) or NAME_SUBJECT_PREDICATE.match(remainder)
         ):
