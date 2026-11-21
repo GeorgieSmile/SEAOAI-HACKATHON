@@ -1,19 +1,20 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from io import BytesIO
-import json
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
 from zlib import error as ZlibError
 
 from PIL import Image
+from pydantic import Field
 
 from .archive import IntakeError, ListingArchive, MAX_HTML_BYTES, MAX_IMAGE_BYTES, MAX_ZIP_BYTES, preflight_directory, safe_path
-from .contracts import ListingSnapshot, Option, Source
-from .listing_html import read_product
+from .contracts import ContractModel, ListingSnapshot, NonEmptyText, Option, Source
+from .listing_html import Product, read_product
 
 
 MAX_IMAGE_PIXELS = 25_000_000
@@ -58,8 +59,10 @@ def _local_image_path(url: str, main_html: PurePosixPath) -> PurePosixPath | Non
 def _read_image(archive: ListingArchive, path: PurePosixPath) -> ImageResult:
     if archive.files[path].file_size > MAX_IMAGE_BYTES:
         return ImageResult("unreadable", limitation="The saved image exceeds the 10 MiB limit.")
-    payload = archive.read(path, MAX_IMAGE_BYTES)
+    return decode_image(archive.read(path, MAX_IMAGE_BYTES))
 
+
+def decode_image(payload: bytes) -> ImageResult:
     try:
         with Image.open(BytesIO(payload), formats=list(IMAGE_MIME)) as image:
             if (
@@ -87,30 +90,49 @@ def _text_source(source_id: str, label: str, text: str, option_ids: list[str]) -
     )
 
 
-def _parse_archive(archive: ListingArchive) -> ParsedListing:
-    main_html = archive.main_html()
-    product = read_product(archive.read(main_html, MAX_HTML_BYTES))
+class OfficialGuidance(Source):
+    # The v1 pack is the single DMSC excerpt specified in docs/reference-pack.md.
+    source_id: Literal["dmsc-food-contact"]
+    kind: Literal["official_guidance"]
+    availability: Literal["available"]
+    option_ids: Annotated[list[NonEmptyText], Field(max_length=0)]
+    original_text: NonEmptyText
+    text_en: NonEmptyText
+    url: Literal["https://www.dmsc.moph.go.th/th/detailAll/3898/nw/25"]
+
+
+class ReferencePack(ContractModel):
+    kind: NonEmptyText
+    sources: Annotated[list[OfficialGuidance], Field(min_length=1, max_length=1)]
+    limitations: Annotated[list[NonEmptyText], Field(min_length=1)]
+
+
+def add_official_sources(parsed: ParsedListing) -> ParsedListing:
+    pack = ReferencePack.model_validate_json(OFFICIAL_SOURCES_PATH.read_bytes())
+    snapshot = parsed.snapshot.model_dump()
+    snapshot["sources"].extend(pack.sources)
+    snapshot["limitations"].extend(pack.limitations)
+    return ParsedListing(ListingSnapshot.model_validate(snapshot), parsed.images)
+
+
+def build_listing(product: Product, resolve_image: Callable[[str], ImageResult]) -> ParsedListing:
     options = []
+    linked_option_id = None
     sources = [_text_source("product-title", "Product title", product.title, [])]
     images: dict[str, ImageData] = {}
-    image_cache: dict[PurePosixPath, ImageResult] = {}
     limitations = []
 
     for selector in product.selectors:
         option_id = f"opt-{sha256(selector.key.encode()).hexdigest()[:24]}"
+        if selector.key == product.linked_key:
+            linked_option_id = option_id
         sources.append(_text_source(f"{option_id}-name", "SKU name", selector.name, [option_id]))
         image_id = None
         if selector.image_url is None:
             limitations.append(f"{selector.name} has no SKU-specific image reference in the saved page.")
         else:
             image_id = f"{option_id}-image"
-            path = _local_image_path(selector.image_url, main_html)
-            if path is None or path not in archive.files:
-                result = ImageResult("missing", limitation="The SKU image is not included in the ZIP.")
-            else:
-                if path not in image_cache:
-                    image_cache[path] = _read_image(archive, path)
-                result = image_cache[path]
+            result = resolve_image(selector.image_url)
             if result.limitation:
                 if result.availability != "available":
                     limitations.append(f"{selector.name} — {result.limitation}")
@@ -133,14 +155,31 @@ def _parse_archive(archive: ListingArchive) -> ParsedListing:
     for index, (label, value) in enumerate(product.attributes, start=1):
         sources.append(_text_source(f"attribute-{index}", "Product attribute", f"{label}: {value}", []))
 
-    archive.validate_remaining()
     return ParsedListing(
         ListingSnapshot(
-            snapshot_id=str(uuid4()), title=product.title, options=options,
+            snapshot_id=str(uuid4()), title=product.title, options=options, linked_option_id=linked_option_id,
             sources=sources, limitations=limitations,
         ),
         images,
     )
+
+
+def _parse_archive(archive: ListingArchive) -> ParsedListing:
+    main_html = archive.main_html()
+    product = read_product(archive.read(main_html, MAX_HTML_BYTES))
+    image_cache: dict[PurePosixPath, ImageResult] = {}
+
+    def resolve_image(url: str) -> ImageResult:
+        path = _local_image_path(url, main_html)
+        if path is None or path not in archive.files:
+            return ImageResult("missing", limitation="The SKU image is not included in the ZIP.")
+        if path not in image_cache:
+            image_cache[path] = _read_image(archive, path)
+        return image_cache[path]
+
+    parsed = build_listing(product, resolve_image)
+    archive.validate_remaining()
+    return parsed
 
 
 def parse_listing(payload: bytes) -> ParsedListing:
@@ -157,10 +196,4 @@ def parse_listing(payload: bytes) -> ParsedListing:
     except (BadZipFile, EOFError, OSError, RuntimeError, ValueError, ZlibError) as error:
         raise IntakeError("invalid_archive", "The ZIP is damaged or uses unsupported archive settings.") from error
 
-    # The reference pack is project-owned input. It cannot be supplied by the upload.
-    pack = json.loads(OFFICIAL_SOURCES_PATH.read_text(encoding="utf-8"))
-    data = parsed.snapshot.model_dump()
-    data["sources"].extend(pack["sources"])
-    data["limitations"].extend(pack["limitations"])
-    snapshot = ListingSnapshot.model_validate(data)
-    return ParsedListing(snapshot, parsed.images)
+    return add_official_sources(parsed)

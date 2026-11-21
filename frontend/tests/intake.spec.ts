@@ -31,7 +31,7 @@ async function dropArchive(page: Page, filename: string) {
     return transfer;
   }, filename);
   try {
-    await page.getByRole("region", { name: "Listing ZIP" }).dispatchEvent("drop", { dataTransfer });
+    await page.getByRole("region", { name: "Import a listing" }).dispatchEvent("drop", { dataTransfer });
   } finally {
     await dataTransfer.dispose();
   }
@@ -143,7 +143,7 @@ test("shows Chinese fallback and separate image availability states without load
   await expect(page.locator("#listing-title")).toContainText(snapshot.title);
   await expect(page.locator("#listing-title")).toContainText("English translation unavailable");
   await expect(page.getByRole("checkbox").nth(3)).toHaveAccessibleName(/第四色.*English translation unavailable/);
-  await expect(page.getByText("Seller image missing from ZIP")).toHaveCount(2);
+  await expect(page.getByText("Seller image unavailable")).toHaveCount(2);
   await expect(page.getByText("Seller image unreadable")).toHaveCount(1);
   await expect(page.getByText("No SKU-specific image")).toHaveCount(1);
   expect(imageRequests).toEqual([]);
@@ -235,7 +235,7 @@ test("a saved listing lookup failure offers a read-only retry and blocks ordinar
   await expect(page.getByText("Current listing restored")).toBeVisible();
   await expect(page.getByRole("checkbox")).toHaveCount(3);
   await expect(page.getByRole("button", { name: "Choose another ZIP" })).toBeEnabled();
-  await expect(page.getByText(/can replace the saved listing/i)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Import link" })).toHaveAccessibleDescription(/clears any saved listing, photos, and answers/i);
   expect(writes).toEqual([]);
 
   const newImport = page.waitForRequest("**/api/imports");
@@ -271,7 +271,7 @@ test("a deliberate replacement cannot be overwritten by a slow saved listing res
   await dropArchive(page, "too-early.zip");
   await expect(page.getByText("too-early.zip")).toHaveCount(0);
   await page.getByRole("button", { name: "Start a new listing" }).click();
-  await expect(page.getByText(/can replace the saved listing and its evidence/i)).toBeVisible();
+  await expect(page.getByText(/clears any saved listing, photos, and answers/i)).toBeVisible();
   await expect(page.getByRole("button", { name: "Choose replacement ZIP" })).toBeEnabled();
 
   const intentionalImport = page.waitForRequest("**/api/imports");
@@ -284,4 +284,40 @@ test("a deliberate replacement cannot be overwritten by a slow saved listing res
   await page.waitForLoadState("networkidle");
   await expect(page.getByText("Old saved listing")).toHaveCount(0);
   await expect(page.getByText("Newly imported listing")).toBeVisible();
+});
+
+test("imports a TTP product link and offers ZIP recovery after a live failure", async ({ page }) => {
+  const link = "https://taobao.ttpcargo.com/product?provider=1688&itemId=123";
+  await page.route("**/api/imports", (route) => {
+    if (route.request().headers()["content-type"] === "application/json") {
+      expect(route.request().postDataJSON()).toEqual({ url: link });
+      return route.fulfill({ json: { status: "failed", code: "intake_failed", message: "TTP Cargo could not load this listing." } });
+    }
+    return route.fulfill({ json: { status: "ready", snapshot } });
+  });
+  await startWithoutListing(page);
+  await page.getByLabel("TTP Cargo product link").fill(link);
+  await page.getByRole("button", { name: "Import link" }).click();
+  await expect(page.getByRole("alert")).toContainText("could not load");
+  await page.locator("input[type=file]").setInputFiles(archive("saved.zip"));
+  await expect(page.getByRole("checkbox")).toHaveCount(snapshot.options.length);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("shows the Tmall option from the link and lets the buyer confirm it", async ({ page }) => {
+  const url = "https://taobao.ttpcargo.com/product?provider=tmall&itemId=988441343788&skuId=5985509084995";
+  const target = snapshot.options[1]!;
+  await page.route("**/api/imports", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ url });
+    return route.fulfill({ json: { status: "ready", snapshot: { ...snapshot, linked_option_id: target.option_id } } });
+  });
+  await startWithoutListing(page);
+  await page.getByLabel("TTP Cargo product link").fill(url);
+  await page.getByRole("button", { name: "Import link" }).click();
+  const linked = page.getByRole("checkbox", { name: /From your link/i });
+  await expect(linked).toHaveValue(target.option_id);
+  await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirm options" })).toBeDisabled();
+  await linked.check();
+  await expect(page.getByRole("button", { name: "Confirm options" })).toBeEnabled();
 });

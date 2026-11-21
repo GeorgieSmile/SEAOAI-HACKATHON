@@ -7,6 +7,16 @@ Version: 0.5
 
 ยอมรับเป็นส่วนหนึ่งของ [spec v0.15](../spec.md) วันที่ 19 พ.ย. ตาม [บันทึกการยอมรับ](../acceptance.md) การยอมรับ Design ไม่ใช่หลักฐานว่าแอปทำงานแล้วหรือคำสั่ง Build
 
+## Link import on the Phase 2 branch
+
+The default input is an HTTPS product link at `taobao.ttpcargo.com/product` with a `provider` of `1688`, `taobao`, or `tmall`, a required `itemId`, and an optional `skuId`. IDs are positive decimal numbers of up to 18 digits. Parameters may appear in any order and must occur once. ZIP remains available for offline use and upstream failures. Both inputs return the same snapshot and require explicit SKU selection.
+
+For link imports the backend sends only the provider and item ID with the public product-detail action to the fixed endpoint used by TTP Cargo for that provider. It checks the returned product ID, parses the product fragment as static HTML, and retrieves only mapped SKU thumbnails from the supported CDN path. Redirects are disabled. The HTML, image and total download limits are 5, 10 and 50 MiB respectively. Missing or unsupported images remain scoped to their SKU. The ZIP path continues to resolve only local archive assets.
+
+For Taobao and Tmall, match each SKU row’s property IDs and seller labels to the product controls. For 1688, use the existing selector-key mapping. The same supported SKU-layout limits apply to all providers. If a URL supplies `skuId`, resolve it to exactly one option or return `unsupported_layout`. The snapshot records the verified option as `linked_option_id`. The UI labels it “From your link” and lets the buyer choose and confirm. A plain product link or ZIP has no linked option.
+
+A live response must use the mapping format for the requested provider family. Retail property order may vary, including across repeated copies of the mapping. Paths must agree exactly and occur once each. A supplied retail `skuName` must agree with the seller’s option values. Where the thumbnail, radio control, or retail SKU row identifies a supported CDN image, conflicting asset identities fail the import with `unsupported_layout`. A resized thumbnail and its original image can identify the same asset. If the row is the only source of the SKU image, retain its URL for the usual link or ZIP image resolution.
+
 ## ผลที่ต้องส่งมอบ
 
 รับไฟล์ ZIP ที่ผู้ซื้อบันทึกจากหน้า TTP Cargo แล้วคืน ListingSnapshot ให้เลือกสินค้าเป็นอังกฤษ พร้อมต้นฉบับและรูปที่ผูกกับตัวเลือกจริง จากนั้นผู้ซื้อยืนยัน 1–3 ตัวเลือกและบริบทก่อนเตรียมคำถาม ไม่เริ่มวิเคราะห์จากค่า checked ที่ติดมากับหน้า
@@ -42,7 +52,7 @@ Version: 0.5
 
 3. อ่านเฉพาะข้อมูลที่อนุญาตจาก structured JSON ที่ระบุบริเวณได้และ parse เป็นข้อมูลได้โดยตรง หากจำเป็น หากใช้ JSON ให้รหัส/ความสัมพันธ์สอดคล้องกับ DOM มิฉะนั้น unsupported_layout ไม่ eval script/JavaScript assignment และไม่ส่ง admin/debug block ทั้งก้อน ข้อมูลผู้ใช้ โค้ดติดตาม และคำสั่งที่แทรกในหน้าไม่ใช่คำสั่งระบบ
 
-   สำหรับ raw save ที่ไม่มีบล็อก `#source-sku-map` ให้อ่านเฉพาะ JSON object ของ `skuMap` ในข้อความ script ภายใน `#ttp-product` แบบ static ถ้ามีหลายสำเนาให้ใช้ได้เมื่อข้อมูลตรงกันและเทียบกับ DOM ได้ ถ้าอ่านไม่ได้ ขัดกัน หรือจับคู่ไม่ชัด ให้คืน `unsupported_layout` โดยเก็บ debug และ script นอก payload แปล
+   สำหรับ raw save ที่ไม่มีบล็อก `#source-sku-map` ให้อ่านเฉพาะ JSON object หรือ array ของ `skuMap` ในข้อความ script ภายใน `#ttp-product` แบบ static ถ้ามีหลายสำเนาให้ใช้ได้เมื่อข้อมูลตรงกันและเทียบกับ DOM ได้ ถ้าอ่านไม่ได้ ขัดกัน หรือจับคู่ไม่ชัด ให้คืน `unsupported_layout` โดยเก็บ debug และ script นอก payload แปล
 4. จับคู่รูปจากความสัมพันธ์ SKU กับ img ใน DOM แล้ว resolve path เทียบกับ main HTML ใช้ URL decoding อย่างระวังและตรวจ containment หลัง normalize อีกรอบ ไม่เดารูปจากสี ตำแหน่งในรายชื่อ หรือชื่อรูปที่คล้ายกัน
 5. ใช้เฉพาะไฟล์ local ที่มีใน archive URL ภายนอกและ data placeholder ไม่แทนรูปที่หาย ไม่ fetch เว็บเพิ่ม หากต้นทางระบุรูปเฉพาะแต่ไฟล์ไม่อยู่ใน archive ให้คง image_source_id ที่ชี้ source สถานะ missing และ image_file: null ส่วนรูปที่มีแต่ไม่ผ่านตรวจให้ unreadable โดยไม่เสิร์ฟ bytes ใช้ image_source_id: null เฉพาะเมื่อไม่พบความสัมพันธ์กับรูปเฉพาะเลย พร้อมบอกข้อจำกัด รูปสินค้ารวมใช้ได้เมื่อมีป้ายชัดว่าเป็นภาพรวม
 ภาพตัวเลือกของเคสปัจจุบันเป็น 150×150 thumbnail ต้องใส่ limitation เรื่องความละเอียด แม้จับคู่ไฟล์ได้ถูกต้อง รูปไม่ยืนยันกระบวนการตกแต่งหรือความทนทานไม่ว่าความละเอียดเท่าใด ข้อความหรือค่าจากภาพใช้ได้เฉพาะเมื่ออ่านได้ชัดในภาพนั้นจริงและระบุว่าเป็นข้อความในภาพ ไม่เท่ากับผลวัดสินค้าจริง หากอ่านไม่ชัดให้คง unknown ไม่ขยายข้อสรุปไปทุกตัวเลือก

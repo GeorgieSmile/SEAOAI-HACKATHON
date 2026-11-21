@@ -98,12 +98,14 @@ main.container { padding-bottom: 60px; }
 }
 
 .upload-actions {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
 .replacement-warning {
+  margin-bottom: 12px;
   max-width: 62ch;
   color: #754817;
 }
@@ -720,3 +722,22 @@ fieldset {
 @media (max-width: 620px) {
   .interview-selection, .interview-history, .interview-round { padding: 15px; }
 }
+
+.link-import { flex: 1 0 100%; min-width: 0; }
+.link-import label { display: block; margin-bottom: 6px; font-weight: 650; }
+.link-controls { display: flex; flex-wrap: wrap; gap: 8px; }
+.link-controls input {
+  flex: 1 1 260px;
+  min-width: 0;
+  min-height: 44px;
+  border: 1px solid #87998d;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+}
+.zip-hint { font-size: .9rem; }
+@media (max-width: 520px) {
+  .link-controls > * { width: 100%; }
+}
+
+.linked-option { display: block; color: var(--green); font-size: .85rem; }

@@ -55,6 +55,7 @@ class Option(ContractModel):
 
 
 class ListingSnapshot(ContractModel):
+    linked_option_id: NonEmptyText | None = None
     snapshot_id: NonEmptyText
     title: NonEmptyText
     options: Annotated[list[Option], Field(min_length=1)]
@@ -80,6 +81,8 @@ class ListingSnapshot(ContractModel):
     @model_validator(mode="after")
     def validate_evidence_links(self) -> Self:
         option_ids = {option.option_id for option in self.options}
+        if self.linked_option_id is not None and self.linked_option_id not in option_ids:
+            raise ValueError("The linked SKU must belong to this listing.")
         sources_by_id = {source.source_id: source for source in self.sources}
         if len(option_ids) != len(self.options) or len(sources_by_id) != len(self.sources):
             raise ValueError("Snapshot option and source IDs must be unique")
