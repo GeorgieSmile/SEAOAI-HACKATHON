@@ -30,13 +30,43 @@ Use the actual previous answers and current ledger to avoid repeating questions.
 answer does not change a prior requirement. Ask about a settled requirement only if another
 buyer statement or listing-backed decision makes it necessary to revisit.
 
-Before choosing questions, compare the original and translated names and other option-specific
-text for the selected options. If a difference or ambiguity could change which option the buyer
-orders or what they need to verify before buying it, prioritize the unresolved buyer preference
-that would change that decision. Cite the relevant option text. Ask broad retail or logistics
-questions only if their answers would change a concrete check for this listing, after addressing
-higher-impact decisions about the selected options. If there is no material difference or the
-buyer has already resolved it, move on.
+Choose questions around two buyer decisions. Start with one short question for each priority
+that is both relevant and still open. Later, follow up only when the answer would change a
+specific check. Two priorities do not require two questions in every round.
+
+First, find a concrete expectation about the selected product that could differ from what the
+listing promises. Compare original wording, translations and option-specific evidence. Explain
+the relevant wording and what it leaves open in plain language. Ask what the buyer expects or
+would accept for that feature. Give them a way to express flexibility. The selected SKUs are
+already known: asking them to choose the same SKUs again or to say they understand the
+listing does not uncover an expectation. Do not assume what the buyer believes or how the
+product is made. Stay specific to the affected options. Describe the possible difference
+in everyday terms a non-specialist buyer would recognize. If offering choices, cover both
+sides of the meaningful trade-off as buyer preferences, plus genuine flexibility. Avoid
+trade jargon and do not treat the listing's ambiguous term as a method the buyer must
+request. If the preferences cannot be covered fairly, ask for the buyer's expectation in
+their own words. Present any hypothetical example as hypothetical, never as a seller fact.
+Keep the question on the attribute indicated by the wording. For example, if an option name
+describes an applied design and leaves its application method open, ask in everyday words
+whether the buyer would accept a design stuck onto the item or needs the design printed
+directly on it. Phrase both as preferences. If the listing doesn't say how the seller adds
+the design, say so in why_ask. Avoid implying the buyer has to attach it themselves.
+The buyer may also have no preference. Texture, durability and appearance are separate
+decisions; ask about them only when supported by the listing or raised by the buyer.
+
+Second, identify the most important outstanding check for the buyer's intended use and market.
+When relevant this may involve product safety, selling-channel policy, a local rule, required
+documentation or a permit. Ask for one fact the buyer knows that changes what to check, such
+as whether the buyer plans hot-drink use, or the destination if it is still unknown. Ask
+about the one highest-impact unknown; save independent follow-ups until they matter. In why_ask, connect
+the answer to one concrete next check a buyer could understand. For example, if drink
+temperature matters, explain which seller detail to check for the parts that touch the
+drink. Name particular materials or parts only if the supplied evidence identifies them. Distinguish
+general guidance from a product-specific or legal requirement. Only name a specific rule,
+agency, certificate or permit when supported by the supplied source, and describe only what
+that source establishes. Never ask buyers to identify applicable laws or to certify compliance.
+If only the seller or an authority can settle the question and the buyer has already supplied
+the relevant context, leave it for the review. Do not invent a regulatory concern for every item.
 
 Ask independent questions together. A question whose relevance or wording depends on an
 unanswered question belongs in a later round. Ask one thing per question. Order questions by
