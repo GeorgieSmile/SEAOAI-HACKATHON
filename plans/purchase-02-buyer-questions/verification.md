@@ -1,17 +1,15 @@
 # PR-02 verification
 
-Status: not run; no app implementation
+Status: Phase 2 handoff for issue #2. The internal `ReviewInput` is available to the next phase after the buyer ends the interview. The integrated report and T1–T5 review belong to later phases.
 
-- Branch/base และ tested SHA: pending
-- ส่งต่อได้แล้ว: ยังไม่มีผลจากโค้ดจริง เริ่มงานจาก interface/fixture ได้
-- Blocker และเจ้าของ: pending ให้ผู้ประสาน ticket อัปเดตเมื่อพบ
-- รอตรวจเพื่อส่งต่อ: PR-03 รับ ReviewInput จากรอบที่ออกจริงใน revision ปัจจุบัน ตรวจ zero/partial/skip, แขนง และการกู้เคส
-- Gate รวม: pending ตามเกณฑ์ด้านล่าง
+- Branch `phase-2/buyer-questions` from `dcabdf1`, the merge of PR #5 at `547341a`.
+- [Local run instructions](../../README.md) include an offline mode and a persistent test database for restarting the app.
+- Tested implementation `b0bc146`, including the frontend recovery follow-up to `b80b07a`. With live question and translation calls disabled, `.venv/bin/python -m pytest -q backend/tests` passed all 99 tests. The frontend typecheck, production build and all 15 Playwright tests passed using the installed Chrome. `git diff --check` passed.
 Authority: [plan](plan.md), [question contract](../../docs/contracts/question-contract.md)
 
 ## ตรวจส่วนของตนก่อนเปิด PR
 
-ทุกรายการยัง not run บันทึกผลแยก A/B/C ตาม [รูปแบบส่งงาน](../../docs/team-plan.md#วิธีส่ง-pr-ของแต่ละคน) deterministic harness ตรวจโครงสร้าง/flow; ผล API จริงต้องบันทึกแยก
+เกณฑ์ V02-A/B/C ใช้ตรวจ flow, binding และ question generation ผลจากการรันจริงอยู่ใต้ตาราง
 
 | ID / เจ้าของ | วิธีตรวจและผลที่ต้องได้ | หลักฐานก่อนส่ง |
 | --- | --- | --- |
@@ -37,16 +35,33 @@ Fixture ใช้ตรวจการเชื่อมข้อมูล ไ�
 
 ## ผลจริงของ A
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+Chrome uploaded the unmodified, user-supplied ZIP through Vite and the production HTTP routes. The test server parsed all 12 SKUs and injected offline translation and scripted questions. Three SKUs selected in a different order retained that order and matched the independent SHA-256 image inventory after a backend restart.
+
+The browser chose a custom order and left the deadline empty. Continue committed both answers at revision 1. A new backend process opened the same SQLite file. Reloading the browser used only GETs and recovered the dependent sample-approval question. An early review committed the sample answer at revision 2. Editing the first answer to ready-made only and requesting review removed the dependent round at revision 3 and preserved the skipped deadline. Desktop (1280 px) and mobile (390 px) screenshots covered top, middle, and bottom. The checks found no horizontal overflow or overlapping controls.
+
+The browser regression suite also checked zero questions, no preselected answers, the round limit, unchanged edits with a later draft, retry after an ambiguous network result, delayed responses after selection changes, and cancellation or reconfirmation of a stale reset.
+
+A second browser run opened the same case in two tabs. One tab began a reset at revision 1. The other tab saved review inputs at revision 2. The stale confirmation sent no reset request. After a read-only reload and a new confirmation, the reset cleared the case and snapshot, and the old image URL returned 404.
 
 ## ผลจริงของ B
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+In a separate test with the redacted raw ZIP, a backend process was killed while generating round two, after committing the two answers. A new process opened the same SQLite database. GET returned the original SKU image hash, committed answers, case ID and revision, and marked the interrupted operation failed. Retrying its original operation ID issued one second round and preserved revision 1.
+
+The 15 case workflow tests cover all 15 submitted answers at the 3×5 limit, zero/partial/skipped answers, server-issued wording and order, exact nonblank text, client fields, stale revisions and operation IDs, duplicate operations, superseded results, cancellation, and manual retry after configuration repair. C independently checked B's persistence and publication logic.
 
 ## ผลจริงของ C
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+Two authorized checks sent the redacted raw ZIP's selected text through the production question adapter and the normal start/continue routes. Translation was offline. Each request contained the same 3 selected SKUs and 46 available text sources (including public guidance). There was no application cache or retry. Both responses passed validation.
+
+| Prompt | Step | Input tokens | Output tokens (reasoning) | Provider time |
+| --- | --- | ---: | ---: | ---: |
+| buyer-questions-v1 | Start, sparse resale context | 3,609 | 1,062 (385) | 16.12 s |
+| buyer-questions-v1 | Continue, four synthetic answers and a skip | 3,870 | 1,159 (433) | 14.62 s |
+
+Both used `gpt-6.1-terra` at medium reasoning. The first round asked five questions. After the buyer specified cold use and required test reports, the second round asked about independent testing, report coverage, drink type, cold retention, and leak resistance. It did not re-ask the skipped rights question. The cited report, material, and performance attributes were checked against the parsed originals. Neither round raised the differences in the option names. This matters for T1, where the buyer has supplied little context. Prompt v1 SHA-256 was `ccef1a90147a4decd75b697af525bc502aecee16c2aa7a8ac808cbdd1545dabc`.
+
+The active `buyer-questions-v2` prompt asks the model to compare the selected names and their scoped text, and prioritize material buying decisions before general logistics. It passed offline validation. A live assessment of this revision is pending. The final integrated checks still need to assess the quality of the questions on T1–T5.
 
 ## Review รวมก่อนปิด ticket
 
-Required review: pending implementation/integrated state คู่ Standards/Spec ต้องตรวจ acceptance ของใบนั้นอย่างชัดเจนก่อน complete บันทึก base/target/state, reviewers, findings/dispositions/final checks และ full-round ledger ต่อ ticket การส่งต่อเพื่อรวมยังไม่นับว่าปิดงาน
+Integrated Standards/Spec reviews and the full T1–T5 runs remain pending. The Phase 2 review handoff contains the input for future report generation. This issue stays open for integrated acceptance.
