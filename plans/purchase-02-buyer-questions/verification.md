@@ -20,6 +20,10 @@ Verification on implementation commit `003fe1e` included 117 backend tests, 19 P
 - In the same two-tab Chrome run, the stale confirmation and subsequent reload sent zero POSTs. The other tab’s deadline reappeared at revision 1. A deliberate selection change after the reload sent one POST bound to the newly displayed case and revision.
 - The original `Website Test.zip` also passed the edit/restart walkthrough at 1280 and 390 px. Three selected SKUs kept their order across two backend process restarts. Changing round one to “Ready-made only” preserved the exact purchase deadline, including surrounding spaces, and removed the dependent sample-approval answer from both the browser and `ReviewInput`. All 12 recovered SKU names and image hashes matched the independent inventory. A request using the old revision received HTTP 409.
 
+A fresh Astra 6.2 high review of `348eb5f` confirmed both original P1 fixes. It found three valid questions that the new guard rejected: a rationale beginning “For Option A, the SKU name …”, a buyer choice beginning “For Option A, I need …”, and a question asking whether the buyer requires proof of testing for Option B. Each false rejection reproduced through the normal question route with the original ZIP and an offline provider.
+
+On `ef0096f`, all three valid cases issued a round and reopened correctly from SQLite. The original A-only citation falsely naming B still failed with zero issued rounds. The stored response from the previously approved live four-question plan also passed offline. The full backend suite passed all 126 tests. The edit/restart browser walkthrough passed again on this commit. All 19 Playwright regressions, typechecking, and the production build had passed on the same frontend code. No additional paid requests were made.
+
 ## ตรวจส่วนของตนก่อนเปิด PR
 
 เกณฑ์ V02-A/B/C ใช้ตรวจ flow, binding และ question generation ผลจากการรันจริงอยู่ใต้ตาราง
