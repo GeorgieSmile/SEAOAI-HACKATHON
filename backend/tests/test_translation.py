@@ -1,14 +1,17 @@
 import asyncio
 import json
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock
+from zipfile import ZipFile
 
 import httpx2
 import pytest
+from fastapi.testclient import TestClient
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 
-from backend import ai
+from backend import ai, main
 from backend.contracts import ListingSnapshot
 
 
@@ -63,14 +66,18 @@ def response(request, translations, *, status="completed"):
     )
 
 
+def mock_openai(handler):
+    return AsyncOpenAI(
+        api_key="offline-test-placeholder",
+        base_url="https://api.openai.com/v1",
+        max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+
+
 def run_translation(snapshot, handler):
     async def run():
-        async with AsyncOpenAI(
-            api_key="offline-test-placeholder",
-            base_url="https://api.openai.com/v1",
-            max_retries=0,
-            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
-        ) as client:
+        async with mock_openai(handler) as client:
             return await ai.translate_listing(snapshot, client=client)
 
     return asyncio.run(run())
@@ -135,6 +142,60 @@ def test_translates_only_listing_text_and_reuses_the_name_source(snapshot):
     assert result.sources[-1] == snapshot.sources[-1]
     assert result.limitations == snapshot.limitations
     assert ListingSnapshot.model_validate_json(result.model_dump_json()) == result
+
+
+def test_import_uses_sku_name_source_when_shared_label_has_same_text(monkeypatch, tmp_path):
+    page = """<!doctype html><html><body><div id="ttp-product">
+        <h1>测试商品</h1>
+        <div data-sku-group-type="parent">
+            <input type="radio" data-sku-type="parent" data-sku="model" data-label="标准">
+        </div>
+        <div data-sku-group-type="child">
+            <input type="radio" data-sku-type="child" data-sku="size" data-label="标准">
+        </div>
+        <script id="source-sku-map" type="application/json">
+            {"skuMap":{"model&gt;size":{"specAttrs":"model&gt;size"}}}
+        </script>
+        </div></body></html>"""
+    listing = BytesIO()
+    with ZipFile(listing, "w") as archive:
+        archive.writestr("listing.html", page)
+
+    english_by_label = {
+        "Product title": "Test product",
+        "SKU name": "Standard model",
+        "Shared selector value": "Standard size",
+    }
+
+    def serve(request):
+        sources = json.loads(json.loads(request.content)["input"])["sources"]
+        translations = [
+            {"source_id": source["source_id"], "text_en": english_by_label[source["label"]]}
+            for source in sources
+        ]
+        return response(request, translations)
+
+    monkeypatch.setattr(main, "build_translation_client", lambda: mock_openai(serve))
+    with TestClient(main.create_app(tmp_path / "case.sqlite3")) as client:
+        imported = client.post(
+            "/api/imports",
+            files={"file": ("listing.zip", listing.getvalue(), "application/zip")},
+        )
+        assert imported.status_code == 200
+        result = imported.json()
+        assert result["status"] == "ready", result
+        snapshot = result["snapshot"]
+        assert client.get("/api/case").json()["snapshot"] == snapshot
+
+    option, = snapshot["options"]
+    by_label = {source["label"]: source for source in snapshot["sources"]}
+    name = by_label["SKU name"]
+    shared = by_label["Shared selector value"]
+    assert name["source_id"] != shared["source_id"]
+    assert name["option_ids"] == shared["option_ids"] == [option["option_id"]]
+    assert option["name_original"] == name["original_text"] == shared["original_text"] == "标准"
+    assert option["name_en"] == name["text_en"] == "Standard model"
+    assert shared["text_en"] == "Standard size"
 
 
 @pytest.mark.parametrize("defect", ["duplicate", "unknown", "missing", "blank"])
@@ -268,7 +329,9 @@ def test_incomplete_or_refused_output_is_never_used(snapshot, status):
     assert result.limitations[-1] == ai.TRANSLATION_LIMITATION
 
 
-@pytest.mark.parametrize("defect", ["duplicate_id", "wrong_image_scope", "different_name_en"])
+@pytest.mark.parametrize(
+    "defect", ["duplicate_id", "wrong_image_scope", "different_name_en", "non_name_source"]
+)
 def test_snapshot_rejects_inconsistent_evidence(snapshot_data, defect):
     match defect:
         case "duplicate_id":
@@ -277,5 +340,8 @@ def test_snapshot_rejects_inconsistent_evidence(snapshot_data, defect):
             snapshot_data["options"][0]["image_source_id"] = snapshot_data["options"][1]["image_source_id"]
         case "different_name_en":
             snapshot_data["options"][0]["name_en"] = "A separate translation"
+        case "non_name_source":
+            name = next(s for s in snapshot_data["sources"] if s["source_id"] == "name-v0")
+            name["label"] = "Shared selector value"
     with pytest.raises(ValidationError):
         ListingSnapshot.model_validate(snapshot_data)

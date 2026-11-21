@@ -97,6 +97,17 @@ main.container { padding-bottom: 60px; }
   overflow-wrap: anywhere;
 }
 
+.upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.replacement-warning {
+  max-width: 62ch;
+  color: #754817;
+}
+
 .upload h2 {
   margin-bottom: 2px;
   font-size: 1.025rem;

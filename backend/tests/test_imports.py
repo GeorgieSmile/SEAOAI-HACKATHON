@@ -35,8 +35,8 @@ def _image_url(snapshot, option):
     return f"/api/snapshots/{snapshot['snapshot_id']}/images/{option['image_source_id']}"
 
 
-def _copy_zip(change):
-    with ZipFile(CURATED) as source:
+def _copy_zip(change, sample=CURATED):
+    with ZipFile(sample, metadata_encoding="utf-8") as source:
         entries = {key: source.read(key) for key in source.namelist()}
     change(entries)
     return _zip(entries.items())
@@ -104,6 +104,62 @@ def test_images_distinguish_missing_unreadable_unmapped_and_remote(tmp_path):
             assert image_source["image_file"] is None
             assert client.get(_image_url(snapshot, option)).status_code == 404
         assert client.get(_image_url(snapshot, snapshot["options"][4])).status_code == 200
+
+
+@pytest.mark.parametrize("archive", [CURATED, RAW], ids=["curated", "raw-browser-save"])
+def test_import_rejects_images_whose_sku_keys_conflict_with_their_cards(archive, tmp_path):
+    def change(entries):
+        main = next(path for path in entries if "/" not in path and path.endswith(".html"))
+        document = BeautifulSoup(entries[main].decode(), "html.parser")
+        first, second = INVENTORY["options"][:2]
+        first_image = document.find("img", attrs={"data-sku": first["data_sku"]})
+        second_image = document.find("img", attrs={"data-sku": second["data_sku"]})
+        first_image["data-sku"], second_image["data-sku"] = second["data_sku"], first["data_sku"]
+        entries[main] = document.encode()
+
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        previously_saved = _upload(client, archive).json()["snapshot"]
+        result = _upload(client, _copy_zip(change, archive)).json()
+        assert (result["status"], result.get("code")) == ("failed", "unsupported_layout")
+        assert client.get("/api/case").json() == {"case": None, "snapshot": None}
+        assert client.get(_image_url(previously_saved, previously_saved["options"][0])).status_code == 404
+
+
+def test_import_accepts_explicit_sku_images_without_sku_card_wrappers(tmp_path):
+    def change(entries):
+        document = BeautifulSoup(entries["listing.html"].decode(), "html.parser")
+        first_card, second_card = document.find_all("div", class_="item-parent", limit=2)
+        first_id = first_card.find("input")["id"]
+        first_card.find("label")["for"] = first_id
+        first_card.unwrap()
+        second_card.find("label").unwrap()
+        second_card.unwrap()
+        entries["listing.html"] = document.encode()
+
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        snapshot = _upload(client, _copy_zip(change)).json()["snapshot"]
+        for option, expected in zip(snapshot["options"][:2], INVENTORY["options"][:2], strict=True):
+            photo = client.get(_image_url(snapshot, option))
+            assert photo.status_code == 200
+            assert sha256(photo.content).hexdigest() == expected["image_sha256"]
+
+
+@pytest.mark.parametrize("axis", ["parent", "child"])
+def test_import_rejects_image_labels_linked_to_a_different_control(axis, tmp_path):
+    def change(entries, *, valid_label):
+        document = BeautifulSoup(entries["listing.html"].decode(), "html.parser")
+        group = document.find(attrs={"data-sku-group-type": axis})
+        label = group.find("label")
+        if axis == "child":
+            image = document.new_tag("img", attrs={"data-sku": "720ml", "src": INVENTORY["options"][0]["image"]})
+            label.append(image)
+        label["for"] = group.find("input")["id"] if valid_label else f"sku-{INVENTORY['options'][1]['data_sku']}"
+        entries["listing.html"] = document.encode()
+
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        assert _upload(client, _copy_zip(lambda entries: change(entries, valid_label=True))).json()["status"] == "ready"
+        result = _upload(client, _copy_zip(lambda entries: change(entries, valid_label=False))).json()
+        assert (result["status"], result.get("code")) == ("failed", "unsupported_layout")
 
 
 def test_renamed_html_inside_wrapper_resolves_local_images(tmp_path):

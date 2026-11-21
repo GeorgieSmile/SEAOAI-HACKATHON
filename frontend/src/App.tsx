@@ -5,7 +5,7 @@ import type { ConfirmSelection, ListingSnapshot, Selection } from "./api";
 import { Listing, OptionImage } from "./Listing";
 
 type ImportState =
-  | { status: "empty" }
+  | { status: "recovering" | "recovery-failed" | "replacement" | "empty" }
   | { status: "loading"; filename: string }
   | { status: "failed"; filename?: string; message: string }
   | { status: "ready"; filename?: string; snapshot: ListingSnapshot };
@@ -19,7 +19,7 @@ type ConfirmationState =
 const MAX_CONTEXT_LENGTH = 2_000;
 
 export function App() {
-  const [intake, setIntake] = useState<ImportState>({ status: "empty" });
+  const [intake, setIntake] = useState<ImportState>({ status: "recovering" });
   const [selected, setSelected] = useState<string[]>([]);
   const [buyerContext, setBuyerContext] = useState("");
   const [selectionError, setSelectionError] = useState("");
@@ -30,25 +30,32 @@ export function App() {
   const saving = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const statusElement = useRef<HTMLParagraphElement>(null);
+  const recovering = intake.status === "recovering";
+  const recoveryFailed = intake.status === "recovery-failed";
+  const replacing = intake.status === "replacement";
+  const canUpload = !recovering && !recoveryFailed;
 
   useEffect(() => {
+    if (!recovering) return;
     const controller = new AbortController();
     const activeGeneration = generation.current;
+    const isCurrent = () => !controller.signal.aborted && generation.current === activeGeneration;
     void getCurrentSnapshot(controller.signal).then((snapshot) => {
-      if (!controller.signal.aborted && generation.current === activeGeneration && snapshot) {
-        setIntake({ status: "ready", snapshot });
+      if (isCurrent()) {
+        setIntake(snapshot ? { status: "ready", snapshot } : { status: "empty" });
       }
     }).catch(() => {
-      // Recovery is optional for importing a new ZIP.
+      if (isCurrent()) setIntake({ status: "recovery-failed" });
     });
     return () => controller.abort();
-  }, []);
+  }, [recovering]);
 
   useEffect(() => {
     if (confirmation.status === "confirmed") statusElement.current?.focus();
   }, [confirmation.status]);
 
   async function importFile(file: File) {
+    if (!canUpload) return;
     const activeGeneration = ++generation.current;
     setSelected([]);
     setBuyerContext("");
@@ -118,7 +125,7 @@ export function App() {
     }
   }
 
-  const filename = intake.status === "empty" ? undefined : intake.filename;
+  const filename = "filename" in intake ? intake.filename : undefined;
   const summaryIds = confirmation.status === "confirmed" ? confirmation.selection.selected_option_ids : selected;
 
   return (
@@ -133,16 +140,19 @@ export function App() {
         </div>
 
         <section
-          className={`upload${dragging ? " is-dragging" : ""}`}
+          className={`upload${canUpload && dragging ? " is-dragging" : ""}`}
           aria-labelledby="upload-heading"
           onDragOver={(event) => {
             if (event.dataTransfer.types.includes("Files")) {
               event.preventDefault();
-              setDragging(true);
+              event.dataTransfer.dropEffect = canUpload ? "copy" : "none";
+              setDragging(canUpload);
             }
           }}
           onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false);
+            if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+              setDragging(false);
+            }
           }}
           onDrop={(event) => {
             event.preventDefault();
@@ -153,9 +163,17 @@ export function App() {
         >
           <div className="upload-copy">
             <h2 id="upload-heading">Listing ZIP</h2>
-            {filename ? (
+            {recovering && <p className="muted" role="status">Checking for a saved listing…</p>}
+            {recoveryFailed && <p className="error" role="alert">Could not check for a saved listing.</p>}
+            {replacing && (
+              <p className="replacement-warning" id="replacement-warning" role="status">
+                Uploading a new ZIP can replace the saved listing and its evidence, even if the import fails.
+              </p>
+            )}
+            {filename && (
               <p className="file-name">{filename}</p>
-            ) : (
+            )}
+            {canUpload && !replacing && !filename && (
               <p className="muted">{snapshot ? "Current listing restored" : "Drop a .zip file here or choose one from your device. Up to 20 MiB."}</p>
             )}
             {intake.status === "loading" && <p className="muted" role="status">Reading listing and preparing translations…</p>}
@@ -167,15 +185,41 @@ export function App() {
             accept=".zip,application/zip,application/x-zip-compressed"
             aria-label="Listing ZIP file"
             hidden
+            disabled={!canUpload}
             onChange={(event) => {
               const file = event.currentTarget.files?.item(0);
               event.currentTarget.value = "";
               if (file) void importFile(file);
             }}
           />
-          <button className="button button-secondary" type="button" onClick={() => fileInput.current?.click()}>
-            {filename || snapshot ? "Choose another ZIP" : "Choose ZIP"}
-          </button>
+          <div className="upload-actions">
+            {(recoveryFailed || replacing) && (
+              <button className="button button-secondary" type="button" onClick={() => setIntake({ status: "recovering" })}>
+                Retry saved listing
+              </button>
+            )}
+            {canUpload ? (
+              <button
+                className="button button-secondary"
+                type="button"
+                aria-describedby={replacing ? "replacement-warning" : undefined}
+                onClick={() => fileInput.current?.click()}
+              >
+                {replacing ? "Choose replacement ZIP" : filename || snapshot ? "Choose another ZIP" : "Choose ZIP"}
+              </button>
+            ) : (
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => {
+                  ++generation.current;
+                  setIntake({ status: "replacement" });
+                }}
+              >
+                Start a new listing
+              </button>
+            )}
+          </div>
         </section>
 
         {snapshot && (

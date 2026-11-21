@@ -197,27 +197,53 @@ def _selectors(group: Tag, kind: str) -> list[Selector]:
     inputs = group.find_all("input", attrs={"data-sku-type": kind}, limit=MAX_OPTIONS + 1)
     if len(inputs) > MAX_OPTIONS:
         raise _work_limit()
-    images: dict[str, set[str]] = {}
-    for image in group.find_all("img", attrs={"data-sku": True}):
-        key = image["data-sku"]
-        images.setdefault(key, set()).add(image.get("src", "").strip())
 
-    result = []
-    keys = set()
+    options: dict[str, tuple[str, str | None]] = {}
+    control_keys: dict[str, str | None] = {}
+    container_keys: dict[int, str | None] = {}
     for item in inputs:
         key = _source_text(item.get("data-sku", ""))
         name = _source_text(item.get("data-label", ""))
-        if not key or not name or ">" in key or key in keys or item.get("type") != "radio":
+        if not key or not name or ">" in key or key in options or item.get("type") != "radio":
             raise _unsupported("The saved product contains ambiguous SKU options.")
-        keys.add(key)
-        matches = images.get(key, set())
-        if len(matches) > 1:
+        options[key] = (name, item.get("data-image", "").strip() or None)
+
+        control_id = item.get("id")
+        if control_id:
+            control_keys[control_id] = None if control_id in control_keys else key
+        for container in item.parents:
+            if container is group:
+                break
+            # A container with several controls owns no individual option.
+            identity = id(container)
+            container_keys[identity] = None if identity in container_keys else key
+
+    images = {}
+    for image in group.find_all("img", attrs={"data-sku": True}):
+        key = _source_text(image["data-sku"])
+        if key not in options:
+            raise _unsupported("The saved product contains an image without a matching SKU selector.")
+
+        for container in image.parents:
+            if container is group:
+                break
+            owner = container_keys.get(id(container))
+            label_target = container.get("for") if container.name == "label" else None
+            classes = container.get("class", [])
+            if owner is not None and owner != key:
+                raise _unsupported("A saved SKU image disagrees with the selector that contains it.")
+            if ("item-parent" in classes or "item-child" in classes) and (
+                owner != key or f"item-{kind}" not in classes
+            ):
+                raise _unsupported("A saved SKU image is in an ambiguous option card.")
+            if label_target and control_keys.get(label_target) != key:
+                raise _unsupported("A saved SKU image disagrees with its label’s selector.")
+
+        url = image.get("src", "").strip()
+        if images.setdefault(key, url) != url:
             raise _unsupported("The saved product contains conflicting images for one SKU.")
-        image_url = next(iter(matches)) if matches else item.get("data-image", "").strip() or None
-        result.append(Selector(key, name, image_url))
-    if images.keys() - keys:
-        raise _unsupported("The saved product contains an image without a matching SKU selector.")
-    return result
+
+    return [Selector(key, name, images.get(key, fallback)) for key, (name, fallback) in options.items()]
 
 
 def _attributes(root: Tag) -> list[tuple[str, str]]:

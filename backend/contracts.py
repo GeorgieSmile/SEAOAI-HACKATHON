@@ -8,6 +8,7 @@ NonEmptyText = Annotated[str, StringConstraints(pattern=r"\S")]
 IntakeErrorCode = Literal[
     "invalid_archive", "archive_limit", "unsupported_layout", "product_unreadable", "intake_failed"
 ]
+SKU_NAME_SOURCE_LABELS = {"SKU name", "Original option name"}
 
 
 class ContractModel(BaseModel):
@@ -61,15 +62,17 @@ class ListingSnapshot(ContractModel):
     limitations: list[NonEmptyText]
 
     def option_name_sources(self) -> dict[str, Source]:
-        by_original = defaultdict(list)
+        by_option = defaultdict(list)
         for source in self.sources:
-            if source.kind == "listing_text" and len(source.option_ids) == 1:
-                by_original[(source.option_ids[0], source.original_text)].append(source)
+            if source.kind == "listing_text" and source.label in SKU_NAME_SOURCE_LABELS:
+                if len(source.option_ids) != 1:
+                    raise ValueError("A full-name listing source must refer to one option")
+                by_option[source.option_ids[0]].append(source)
 
         name_sources = {}
         for option in self.options:
-            matches = by_original[(option.option_id, option.name_original)]
-            if len(matches) != 1:
+            matches = by_option[option.option_id]
+            if len(matches) != 1 or matches[0].original_text != option.name_original:
                 raise ValueError("Each option needs a single full-name listing source")
             name_sources[option.option_id] = matches[0]
         return name_sources

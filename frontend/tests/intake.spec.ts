@@ -24,6 +24,19 @@ async function startWithoutListing(page: Page) {
   await page.goto("/");
 }
 
+async function dropArchive(page: Page, filename: string) {
+  const dataTransfer = await page.evaluateHandle((name) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["Deterministic archive response"], name, { type: "application/zip" }));
+    return transfer;
+  }, filename);
+  try {
+    await page.getByRole("region", { name: "Listing ZIP" }).dispatchEvent("drop", { dataTransfer });
+  } finally {
+    await dataTransfer.dispose();
+  }
+}
+
 test("confirms one or three ordered options, preserves context and caps the selection", async ({ page }) => {
   await page.route("**/api/imports", (route) => route.fulfill({
     json: { status: "ready", snapshot: { ...snapshot, options: [...snapshot.options, fourthOption] } },
@@ -185,4 +198,83 @@ test("shows the active import failure and allows replacing the ZIP", async ({ pa
   await fileInput.setInputFiles(archive("replacement.zip"));
   await expect(page.getByRole("checkbox")).toHaveCount(3);
   await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("a saved listing lookup failure offers a read-only retry and blocks ordinary upload", async ({ page }) => {
+  let restoreSucceeds = false;
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/")) writes.push(request.url());
+  });
+  await page.route("**/api/case", (route) => restoreSucceeds
+    ? route.fulfill({ json: { snapshot, case: null } })
+    : route.fulfill({ status: 503, json: { status: "failed", message: "Database temporarily unavailable." } }));
+  await page.route("**/api/imports", (route) => route.fulfill({ json: { status: "ready", snapshot } }));
+  await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({
+    contentType: "image/png", body: tinyPng,
+  }));
+  await page.goto("/");
+
+  await expect(page.getByRole("alert")).toHaveText(/could not check for a saved listing/i);
+  await expect(page.getByRole("button", { name: "Choose ZIP", exact: true })).toHaveCount(0);
+  await dropArchive(page, "accidental.zip");
+  await expect(page.getByText("accidental.zip")).toHaveCount(0);
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+
+  restoreSucceeds = true;
+  const retry = page.waitForRequest("**/api/case");
+  await page.getByRole("button", { name: "Retry saved listing" }).click();
+  expect((await retry).method()).toEqual("GET");
+  await expect(page.getByText("Current listing restored")).toBeVisible();
+  await expect(page.getByRole("checkbox")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: "Choose another ZIP" })).toBeEnabled();
+  await expect(page.getByText(/can replace the saved listing/i)).toHaveCount(0);
+  expect(writes).toEqual([]);
+
+  const newImport = page.waitForRequest("**/api/imports");
+  await dropArchive(page, "later.zip");
+  expect((await newImport).method()).toEqual("POST");
+  await expect(page.getByText("later.zip")).toBeVisible();
+});
+
+test("a deliberate replacement cannot be overwritten by a slow saved listing response", async ({ page }) => {
+  // A transport that delivers a response even after the original caller has requested cancellation.
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => originalFetch(input, input === "/api/case" ? { ...init, signal: undefined } : init);
+  });
+  let releaseRecovery!: () => void;
+  const delay = new Promise<void>((resolve) => { releaseRecovery = resolve; });
+  await page.route("**/api/case", async (route) => {
+    await delay;
+    await route.fulfill({ json: { snapshot: { ...snapshot, title: "Old saved listing" }, case: null } });
+  });
+  await page.route("**/api/imports", (route) => route.fulfill({ json: {
+    status: "ready",
+    snapshot: { ...snapshot, snapshot_id: "fresh-import", title: "Newly imported listing" },
+  } }));
+  await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({
+    contentType: "image/png", body: tinyPng,
+  }));
+  const firstLookup = page.waitForRequest("**/api/case");
+  await page.goto("/");
+  await firstLookup;
+
+  await expect(page.getByRole("status")).toHaveText(/checking for a saved listing/i);
+  await dropArchive(page, "too-early.zip");
+  await expect(page.getByText("too-early.zip")).toHaveCount(0);
+  await page.getByRole("button", { name: "Start a new listing" }).click();
+  await expect(page.getByText(/can replace the saved listing and its evidence/i)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Choose replacement ZIP" })).toBeEnabled();
+
+  const intentionalImport = page.waitForRequest("**/api/imports");
+  await dropArchive(page, "intentional.zip");
+  expect((await intentionalImport).postData()).toContain("intentional.zip");
+  await expect(page.getByText("Newly imported listing")).toBeVisible();
+  const oldResponse = page.waitForResponse("**/api/case");
+  releaseRecovery();
+  await (await oldResponse).finished();
+  await page.waitForLoadState("networkidle");
+  await expect(page.getByText("Old saved listing")).toHaveCount(0);
+  await expect(page.getByText("Newly imported listing")).toBeVisible();
 });
