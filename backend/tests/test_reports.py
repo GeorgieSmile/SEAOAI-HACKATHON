@@ -90,6 +90,34 @@ def minimal_content(review_input):
     }
 
 
+@pytest.mark.parametrize(("label", "summary", "valid"), [
+    ("Listing details", "The SKU name includes 贴画.", False),
+    ("Listing details", "The name of this SKU includes 贴画.", False),
+    ("Listing details", "Its name includes 字母.", True),
+    ("Listing details", "贴画 appears only in the SKU name.", False),
+    ("Listing details", "The name does not include 字母.", False),
+    ("Listing details", "SKU name includes 字母 and 粉蓝.", True),
+    ("Listing details", "Could you confirm whether the SKU name includes 贴画?", True),
+    ("Listing option name", "Includes 贴画.", False),
+    ("Listing option name", "贴画", False),
+    ("Listing option name", "字母", True),
+    ("Image observations", "Includes 贴画.", True),
+])
+def test_comparison_uses_its_own_option_for_an_unqualified_sku_name(example, label, summary, valid):
+    request, _, sources = example
+    content = minimal_content(request)
+    comparison = content["comparisons"][0]
+    comparison["label"] = label
+    value = next(row for row in comparison["values"] if row["option_id"] == "v6")
+    value.update(summary=summary, source_ids=["image-v6"] if label == "Image observations" else ["name-v6"])
+    if valid:
+        result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
+        assert next(row.summary for row in result.comparisons[0].values if row.option_id == "v6") == summary
+    else:
+        with pytest.raises(ValueError, match="original term|absent"):
+            report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
+
+
 def test_live_client_requires_report_opt_in(example, monkeypatch):
     request, _, _ = example
     client = Mock()

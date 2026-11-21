@@ -104,6 +104,8 @@ The Chrome walkthrough uploaded the original ZIP, selected three distinct SKUs, 
 
 `python -m pytest -q backend/tests` passed 288 tests. `npm --prefix frontend test -- --workers=2` passed 27 Chrome tests. `npm --prefix frontend run typecheck`, `npm --prefix frontend run build` and `git diff --check` passed.
 
+Astra’s follow-up on `05cc61d` confirmed those results and found two additional cases. In the original ZIP, A’s comparison cell could say “The SKU name includes 贴画” despite citing its own lettering variant. The same build rejected the true statement that only B’s name included **both** `贴画` and `粉蓝`. The candidate binds an implicit SKU name to its comparison cell and validates the complete condition for an exclusive claim. On fresh reports and on four databases saved by `12b9d4f`, the wrong cell and a false combination returned `invalid_review`; the correct cell and true combination remained ready. The seven prior fresh-generation cases kept their expected outcomes. All 309 offline backend tests passed.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

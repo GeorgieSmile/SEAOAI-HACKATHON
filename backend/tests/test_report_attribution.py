@@ -204,3 +204,31 @@ def test_exclusivity_uses_the_full_names_in_the_asserted_comparison(joint_findin
     else:
         result = validate(request, content)
         assert result.findings[0].interpretation == statement
+
+
+@pytest.mark.parametrize(("statement", "contradicted"), [
+    ("Only Option B’s name includes both 贴画 and 粉蓝.", False),
+    ("Only Option B’s name includes 贴画 and 粉蓝.", False),
+    ("Only Option B’s name includes both 暮色 and 粉蓝.", True),
+    ("Only Option B’s name includes either 贴画 or 黑白.", False),
+    ("Only Option B’s name includes either 贴画 or 字母.", True),
+    ("Only Option A’s name does not include both 贴画 and 粉蓝.", False),
+    ("Only Option A’s name does not include both 贴画 and 黑白.", True),
+    ("Only Option A’s name does not include either 贴画 or 黑白.", False),
+    ("Only Option B’s name includes 粉蓝 but not 字母.", False),
+    ("Only Option B’s name includes 粉蓝 and does not include 字母.", False),
+])
+def test_exclusive_comparison_uses_the_whole_coordinated_condition(joint_finding, statement, contradicted):
+    request, content, finding = joint_finding
+    names = request.snapshot.option_name_sources()
+    finding["citations"] = [
+        {"source_id": names[option_id].source_id, "quote": names[option_id].original_text, "image_observation": None}
+        for option_id in request.selected_option_ids
+    ]
+    finding["interpretation"] = statement
+    if contradicted:
+        with pytest.raises(ValueError, match="exclusive"):
+            validate(request, content)
+    else:
+        result = validate(request, content)
+        assert result.findings[0].interpretation == statement
