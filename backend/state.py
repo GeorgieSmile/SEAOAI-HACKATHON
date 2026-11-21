@@ -131,20 +131,39 @@ class Store:
         except ValidationError:
             raise sqlite3.DatabaseError("The saved workspace could not be read.") from None
 
-    def workspace_for_recovery(self) -> tuple[int, ListingSnapshot | None, CaseRecord | None, object, object]:
+    def workspace_for_recovery(self) -> tuple[int, ListingSnapshot | None, CaseRecord | None, object, object, bool]:
         """Decode the saved case separately from its potentially legacy or invalid report."""
         generation, snapshot, serialized = self._workspace_rows()
         try:
             listing = ListingSnapshot.model_validate_json(snapshot) if snapshot is not None else None
             if serialized is None:
-                return generation, listing, None, None, None
+                return generation, listing, None, None, None, False
             data = json.loads(serialized)
             if not isinstance(data, dict) or not isinstance(data.get("view"), dict):
                 raise sqlite3.DatabaseError("The saved workspace could not be read.")
             report = data["view"].pop("report", None)
             saved_review = data.pop("saved_review", None)
-            record = CaseRecord.model_validate(data)
-            return generation, listing, record, report, saved_review
+            invalid_confirmation = False
+            try:
+                record = CaseRecord.model_validate(data)
+            except ValidationError as error:
+                confirmation_fields = {"confirmed_review_digest", "review_input"}
+                locations = (
+                    item["loc"] for item in error.errors(include_url=False, include_context=False, include_input=False)
+                )
+                if any(
+                    location[:2] != ("view", "confirmed_revision")
+                    and (not location or location[0] not in confirmation_fields)
+                    for location in locations
+                ):
+                    raise
+                # Confirmation data can be replaced once the buyer reviews the intact case again.
+                for field in confirmation_fields:
+                    data.pop(field, None)
+                data["view"].pop("confirmed_revision", None)
+                record = CaseRecord.model_validate(data)
+                invalid_confirmation = True
+            return generation, listing, record, report, saved_review, invalid_confirmation
         except (TypeError, ValueError):
             raise sqlite3.DatabaseError("The saved workspace could not be read.") from None
 
