@@ -1,17 +1,36 @@
 # PR-02 verification
 
-Status: not run; no app implementation
+Status: Phase 2 handoff for issue #2. The internal `ReviewInput` is available to the next phase after the buyer ends the interview. The integrated report and T1–T5 review belong to later phases.
 
-- Branch/base และ tested SHA: pending
-- ส่งต่อได้แล้ว: ยังไม่มีผลจากโค้ดจริง เริ่มงานจาก interface/fixture ได้
-- Blocker และเจ้าของ: pending ให้ผู้ประสาน ticket อัปเดตเมื่อพบ
-- รอตรวจเพื่อส่งต่อ: PR-03 รับ ReviewInput จากรอบที่ออกจริงใน revision ปัจจุบัน ตรวจ zero/partial/skip, แขนง และการกู้เคส
-- Gate รวม: pending ตามเกณฑ์ด้านล่าง
+- Branch `phase-2/buyer-questions` from `dcabdf1`, the merge of PR #5 at `547341a`.
+- [Local run instructions](../../README.md) include an offline mode and a persistent test database for restarting the app.
+- Tested implementation `16cced4`, including the frontend recovery follow-up and mobile history fix. With live question and translation calls disabled, `.venv/bin/python -m pytest -q backend/tests` passed all 99 tests. The frontend typecheck, production build and all 15 Playwright tests passed using the installed Chrome. `git diff --check` passed.
 Authority: [plan](plan.md), [question contract](../../docs/contracts/question-contract.md)
+
+## PR #6 review regressions
+
+On `50bc102`, two offline checks reproduced the review findings with the original user-supplied ZIP:
+
+- The question route accepted a mock response that cited A’s name (暮色316-贴画粉蓝) while telling the buyer that B’s name (暮色316-字母粉蓝) described applied-picture artwork. The false attribution survived reopening SQLite.
+- In two Chrome tabs, A’s Continue response was delayed after the server committed it. B started a different case on the same listing and saved a deadline. A then confirmed different SKUs. Its request used B’s case ID and revision and replaced the saved case.
+
+Verification on implementation commit `003fe1e` included 117 backend tests, 19 Playwright tests in installed Chrome, the frontend typecheck and production build, and `git diff --check`. All passed. The fix checks used offline model responses, including for the original ZIP walkthrough.
+
+- The same mock provider response returned `invalid_questions`. Reopening SQLite showed a failed operation and zero issued rounds. Offline replay of the previously authorized four-question comparison still passed with its three correctly attributed option names.
+- In the same two-tab Chrome run, the stale confirmation and subsequent reload sent zero POSTs. The other tab’s deadline reappeared at revision 1. A deliberate selection change after the reload sent one POST bound to the newly displayed case and revision.
+- The original `Website Test.zip` also passed the edit/restart walkthrough at 1280 and 390 px. Three selected SKUs kept their order across two backend process restarts. Changing round one to “Ready-made only” preserved the exact purchase deadline, including surrounding spaces, and removed the dependent sample-approval answer from both the browser and `ReviewInput`. All 12 recovered SKU names and image hashes matched the independent inventory. A request using the old revision received HTTP 409.
+
+A fresh Astra 6.2 high review of `348eb5f` confirmed both original P1 fixes. It found three valid questions that the new guard rejected: a rationale beginning “For Option A, the SKU name …”, a buyer choice beginning “For Option A, I need …”, and a question asking whether the buyer requires proof of testing for Option B. Each false rejection reproduced through the normal question route with the original ZIP and an offline provider.
+
+On `ef0096f`, all three valid cases issued a round and reopened correctly from SQLite. The original A-only citation falsely naming B still failed with zero issued rounds. The stored response from the previously approved live four-question plan also passed offline. The full backend suite passed all 126 tests. The edit/restart browser walkthrough passed again on this commit. All 19 Playwright regressions, typechecking, and the production build had passed on the same frontend code. No additional paid requests were made.
+
+On `0891ba6` the reviewer reproduced another stale-tab overwrite through **Resume questions** after a delayed Continue, and a B-only choice beginning “For Option B, a printed proof …” was rejected. On `a1cf550` the same two-tab walkthrough with the original ZIP preserved the second tab’s case and deadline. Resume and the subsequent reload sent zero writes. The B-only choice issued a round and survived reopening SQLite. Regressions cover Confirm and Resume for both a replaced case and a newer revision, same-tab recovery, and the distinction between buyer prose and actual option lists.
+
+On that implementation all 135 backend tests, all 22 Chrome Playwright tests, typechecking and the production build passed. The original ZIP edit/restart walkthrough passed again at desktop and mobile widths, including the exact saved deadline, discarded dependent answer and all 12 SKU photo hashes. The original wrong-SKU case still failed before publication, and the recorded four-question comparison still passed. All provider responses used for these checks were offline.
 
 ## ตรวจส่วนของตนก่อนเปิด PR
 
-ทุกรายการยัง not run บันทึกผลแยก A/B/C ตาม [รูปแบบส่งงาน](../../docs/team-plan.md#วิธีส่ง-pr-ของแต่ละคน) deterministic harness ตรวจโครงสร้าง/flow; ผล API จริงต้องบันทึกแยก
+เกณฑ์ V02-A/B/C ใช้ตรวจ flow, binding และ question generation ผลจากการรันจริงอยู่ใต้ตาราง
 
 | ID / เจ้าของ | วิธีตรวจและผลที่ต้องได้ | หลักฐานก่อนส่ง |
 | --- | --- | --- |
@@ -37,16 +56,34 @@ Fixture ใช้ตรวจการเชื่อมข้อมูล ไ�
 
 ## ผลจริงของ A
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+Chrome uploaded the unmodified, user-supplied ZIP through Vite and the production HTTP routes. The test server parsed all 12 SKUs and injected offline translation and scripted questions. Three SKUs selected in a different order retained that order and matched the independent SHA-256 image inventory after a backend restart.
+
+The browser chose a custom order and left the deadline empty. Continue committed both answers at revision 1. A new backend process opened the same SQLite file. Reloading the browser used only GETs and recovered the dependent sample-approval question. An early review committed the sample answer at revision 2. Editing the first answer to ready-made only and requesting review removed the dependent round at revision 3 and preserved the skipped deadline. Desktop (1280 px) and mobile (390 px) screenshots covered top, middle, and bottom. The checks found no horizontal overflow or overlapping controls.
+
+The browser regression suite also checked zero questions, no preselected answers, the round limit, unchanged edits with a later draft, retry after an ambiguous network result, delayed responses after selection changes, and cancellation or reconfirmation of a stale reset.
+
+A second browser run opened the same case in two tabs. One tab began a reset at revision 1. The other tab saved review inputs at revision 2. The stale confirmation sent no reset request. After a read-only reload and a new confirmation, the reset cleared the case and snapshot, and the old image URL returned 404.
 
 ## ผลจริงของ B
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+In a separate test with the redacted raw ZIP, a backend process was killed while generating round two, after committing the two answers. A new process opened the same SQLite database. GET returned the original SKU image hash, committed answers, case ID and revision, and marked the interrupted operation failed. Retrying its original operation ID issued one second round and preserved revision 1.
+
+The 15 case workflow tests cover all 15 submitted answers at the 3×5 limit, zero/partial/skipped answers, server-issued wording and order, exact nonblank text, client fields, stale revisions and operation IDs, duplicate operations, superseded results, cancellation, and manual retry after configuration repair. C independently checked B's persistence and publication logic.
 
 ## ผลจริงของ C
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+Three authorized requests sent the redacted raw ZIP's selected text through the production question adapter and the normal start/continue routes. Translation was offline. Each request contained the same 3 selected SKUs and 46 available text sources (including public guidance). There was no application cache or retry. All three responses passed validation.
+
+| Prompt | Step | Input tokens | Output tokens (reasoning) | Provider time |
+| --- | --- | ---: | ---: | ---: |
+| buyer-questions-v1 | Start, sparse resale context | 3,609 | 1,062 (385) | 16.12 s |
+| buyer-questions-v1 | Continue, four synthetic answers and a skip | 3,870 | 1,159 (433) | 14.62 s |
+| buyer-questions-v2 | Fresh first round, same sparse context | 3,720 | 1,233 (516) | 16.19 s |
+
+All used `gpt-6.1-terra` at medium reasoning. With v1, the first round asked five questions. After the buyer specified cold use and required test reports, the second round asked about independent testing, report coverage, drink type, cold retention, and leak resistance. It did not re-ask the skipped rights question. The cited report, material, and performance attributes were checked against the parsed originals. Neither round raised the differences in the option names. This matters for T1, where the buyer has supplied little context. Prompt v1 SHA-256 was `ccef1a90147a4decd75b697af525bc502aecee16c2aa7a8ac808cbdd1545dabc`.
+
+The active `buyer-questions-v2` prompt asks the model to compare the selected names and their scoped text, and prioritize material buying decisions before general logistics. With the same options and buyer context, the live first-round recheck returned four questions. It led with the buyer's preference for picture-style designs, lettering, or a mix. The explanation attributed 贴画 to A/B and 字母 to C using the three correct option-name sources. Its separate logo question attributed customization to a general seller claim and asked whether to verify availability for the selected options. This was one first-round recheck. Follow-up quality under v2 and the integrated T1–T5 cases remain to be assessed.
 
 ## Review รวมก่อนปิด ticket
 
-Required review: pending implementation/integrated state คู่ Standards/Spec ต้องตรวจ acceptance ของใบนั้นอย่างชัดเจนก่อน complete บันทึก base/target/state, reviewers, findings/dispositions/final checks และ full-round ledger ต่อ ticket การส่งต่อเพื่อรวมยังไม่นับว่าปิดงาน
+Integrated Standards/Spec reviews and the full T1–T5 runs remain pending. The Phase 2 review handoff contains the input for future report generation. This issue stays open for integrated acceptance.

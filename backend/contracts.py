@@ -1,7 +1,7 @@
 from collections import defaultdict
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 
 NonEmptyText = Annotated[str, StringConstraints(pattern=r"\S")]
@@ -122,3 +122,99 @@ class IntakeFailed(ContractModel):
 
 
 IntakeResult = Annotated[IntakeReady | IntakeFailed, Field(discriminator="status")]
+
+
+BuyerContext = Annotated[str, Field(max_length=2_000)]
+Revision = Annotated[int, Field(ge=0)]
+RoundNumber = Annotated[int, Field(ge=1, le=3)]
+SelectedOptionIds = Annotated[list[NonEmptyText], Field(min_length=1, max_length=3)]
+
+
+class Answer(ContractModel):
+    question_id: NonEmptyText
+    answer_text: Annotated[str, Field(max_length=1_000)] | None
+
+    @field_validator("answer_text")
+    @classmethod
+    def normalize_blank(cls, answer: str | None) -> str | None:
+        return answer if answer is not None and answer.strip() else None
+
+
+class AnsweredQuestion(Answer):
+    question_text: NonEmptyText
+
+
+class AnswerSubmission(ContractModel):
+    round_id: NonEmptyText
+    answers: Annotated[list[Answer], Field(min_length=1, max_length=5)]
+
+    @model_validator(mode="after")
+    def unique_answers(self) -> Self:
+        if len({answer.question_id for answer in self.answers}) != len(self.answers):
+            raise ValueError("Submit each question ID once")
+        return self
+
+
+class ReviewInput(ContractModel):
+    case_id: NonEmptyText
+    revision: Revision
+    snapshot: ListingSnapshot
+    selected_option_ids: SelectedOptionIds
+    buyer_context: BuyerContext
+    answers: Annotated[list[AnsweredQuestion], Field(max_length=15)]
+
+    @model_validator(mode="after")
+    def validate_case_evidence(self) -> Self:
+        selected = set(self.selected_option_ids)
+        if len(selected) != len(self.selected_option_ids):
+            raise ValueError("The selected option IDs must be unique")
+        if not selected.issubset(option.option_id for option in self.snapshot.options):
+            raise ValueError("The selected options must be in the active snapshot")
+        if len({answer.question_id for answer in self.answers}) != len(self.answers):
+            raise ValueError("The answered question IDs must be unique")
+        return self
+
+
+class QuestionInput(ReviewInput):
+    round_number: RoundNumber
+
+    @model_validator(mode="after")
+    def validate_round_history(self) -> Self:
+        prior_rounds = self.round_number - 1
+        if not prior_rounds <= len(self.answers) <= prior_rounds * 5:
+            raise ValueError("The answer history must cover the earlier issued rounds")
+        return self
+
+
+class QuestionDraft(ContractModel):
+    prompt: NonEmptyText
+    why_ask: NonEmptyText
+    option_ids: SelectedOptionIds
+    source_ids: list[NonEmptyText]
+    choices: list[NonEmptyText]
+
+
+class IssuedQuestion(QuestionDraft):
+    question_id: NonEmptyText
+
+
+class IssuedRound(ContractModel):
+    round_id: NonEmptyText
+    round_number: RoundNumber
+    reason: NonEmptyText
+    questions: Annotated[list[IssuedQuestion], Field(min_length=1, max_length=5)]
+    answers: Annotated[list[Answer], Field(min_length=1, max_length=5)] | None = None
+
+    @model_validator(mode="after")
+    def validate_issued_answers(self) -> Self:
+        question_ids = [question.question_id for question in self.questions]
+        if len(set(question_ids)) != len(question_ids):
+            raise ValueError("Issued question IDs must be unique")
+        if self.answers is not None and question_ids != [answer.question_id for answer in self.answers]:
+            raise ValueError("Saved answers must match the issued questions in order")
+        return self
+
+
+class QuestionResult(ContractModel):
+    reason: NonEmptyText
+    questions: Annotated[list[QuestionDraft], Field(max_length=5)]

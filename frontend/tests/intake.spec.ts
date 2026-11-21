@@ -44,10 +44,16 @@ test("confirms one or three ordered options, preserves context and caps the sele
   await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({
     contentType: "image/png", body: tinyPng,
   }));
-  await page.route("**/api/selections", (route) => {
+  let confirmations = 0;
+  await page.route("**/api/questions", (route) => {
     const { snapshot_id, selected_option_ids, buyer_context } = route.request().postDataJSON();
     return route.fulfill({ json: {
-      status: "confirmed", selection: { snapshot_id, selected_option_ids, buyer_context },
+      status: "ready",
+      case: {
+        case_id: `case-${++confirmations}`, revision: 0, snapshot_id,
+        selected_option_ids, buyer_context, reason: null, phase: "awaiting_answers",
+        report: null, last_operation: null, rounds: [{ ...flow.cases[0].first_round, answers: null }],
+      },
     } });
   });
   await startWithoutListing(page);
@@ -66,7 +72,7 @@ test("confirms one or three ordered options, preserves context and caps the sele
   await expect(page.locator(".seller-details .translation").getByText("暮色316 · applied-picture design · pink/blue")).toBeVisible();
 
   await options.nth(2).check();
-  const firstRequest = page.waitForRequest("**/api/selections");
+  const firstRequest = page.waitForRequest("**/api/questions");
   await confirm.click();
   const firstPayload = (await firstRequest).postDataJSON();
   expect(firstPayload).toEqual({
@@ -76,7 +82,8 @@ test("confirms one or three ordered options, preserves context and caps the sele
     selected_option_ids: ["v6"],
     buyer_context: "",
   });
-  await expect(page.getByText("1 option confirmed.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Round 1 of 3" })).toBeVisible();
+  await page.getByRole("button", { name: "Change options or context" }).click();
 
   await options.nth(0).check();
   await options.nth(1).check();
@@ -98,18 +105,18 @@ test("confirms one or three ordered options, preserves context and caps the sele
   await context.fill("🍵".repeat(2000));
   await expect(confirm).toBeEnabled();
   await context.fill("Resale in Thailand.");
-  const secondRequest = page.waitForRequest("**/api/selections");
+  const secondRequest = page.waitForRequest("**/api/questions");
   await confirm.click();
   const secondPayload = (await secondRequest).postDataJSON();
   expect(secondPayload).toEqual({
     operation_id: expect.any(String),
-    previous_case: null,
+    previous_case: { case_id: "case-1", revision: 0 },
     snapshot_id: "example-snapshot-1",
     selected_option_ids: ["v6", "v0", "v1"],
     buyer_context: "Resale in Thailand.",
   });
   expect(secondPayload.operation_id).not.toBe(firstPayload.operation_id);
-  await expect(page.getByText("3 options confirmed.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Round 1 of 3" })).toBeVisible();
 });
 
 test("shows Chinese fallback and separate image availability states without loading remote images", async ({ page }) => {

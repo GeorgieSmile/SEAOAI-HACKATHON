@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { confirmSelection, getCurrentSnapshot, uploadListing } from "./api";
-import type { ConfirmSelection, ListingSnapshot, Selection } from "./api";
+import { caseVersion, getCurrentCase, resetCase, uploadListing } from "./api";
+import type { CaseVersion, ListingSnapshot } from "./api";
+import { Interview } from "./Interview";
 import { Listing, OptionImage } from "./Listing";
+import { useInterviewSession } from "./useInterviewSession";
 
 type ImportState =
   | { status: "recovering" | "recovery-failed" | "replacement" | "empty" }
@@ -10,49 +12,75 @@ type ImportState =
   | { status: "failed"; filename?: string; message: string }
   | { status: "ready"; filename?: string; snapshot: ListingSnapshot };
 
-type ConfirmationState =
-  | { status: "idle" }
-  | { status: "saving" }
-  | { status: "failed"; message: string }
-  | { status: "confirmed"; selection: Selection };
-
 const MAX_CONTEXT_LENGTH = 2_000;
+
+interface ResetTarget {
+  snapshotId: string;
+  previousCase: CaseVersion | null;
+}
+
+function matchesResetTarget(target: ResetTarget, listing: Awaited<ReturnType<typeof getCurrentCase>>) {
+  return target.snapshotId === listing.snapshot?.snapshot_id
+    && target.previousCase?.case_id === listing.case?.case_id
+    && target.previousCase?.revision === listing.case?.revision;
+}
+
+const workMessages = {
+  start: "Preparing your questions…",
+  continue: "Saving answers and checking what else to ask…",
+  review: "Saving inputs for the purchase review…",
+  retry: "Retrying your last request…",
+  refresh: "Loading your saved progress…",
+};
 
 export function App() {
   const [intake, setIntake] = useState<ImportState>({ status: "recovering" });
   const [selected, setSelected] = useState<string[]>([]);
   const [buyerContext, setBuyerContext] = useState("");
   const [selectionError, setSelectionError] = useState("");
-  const [confirmation, setConfirmation] = useState<ConfirmationState>({ status: "idle" });
+  const [editingSelection, setEditingSelection] = useState(true);
+  const [resetTarget, setResetTarget] = useState<ResetTarget | null>(null);
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetStale, setResetStale] = useState(false);
   const [dragging, setDragging] = useState(false);
   const generation = useRef(0);
-  const pendingConfirmation = useRef<ConfirmSelection | null>(null);
-  const saving = useRef(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const statusElement = useRef<HTMLParagraphElement>(null);
+  const selectionTitle = useRef<HTMLHeadingElement>(null);
+  const resetHeading = useRef<HTMLHeadingElement>(null);
+  const startOverButton = useRef<HTMLButtonElement>(null);
+  const interview = useInterviewSession();
+  const restoreInterview = interview.restore;
   const recovering = intake.status === "recovering";
   const recoveryFailed = intake.status === "recovery-failed";
   const replacing = intake.status === "replacement";
-  const canUpload = !recovering && !recoveryFailed;
+  const resetPrompt = resetTarget !== null;
+  const canUpload = !recovering && !recoveryFailed && !resetPrompt;
 
   useEffect(() => {
     if (!recovering) return;
     const controller = new AbortController();
     const activeGeneration = generation.current;
     const isCurrent = () => !controller.signal.aborted && generation.current === activeGeneration;
-    void getCurrentSnapshot(controller.signal).then((snapshot) => {
+    void getCurrentCase(controller.signal).then(({ snapshot, case: saved }) => {
       if (isCurrent()) {
         setIntake(snapshot ? { status: "ready", snapshot } : { status: "empty" });
+        if (snapshot && saved?.snapshot_id === snapshot.snapshot_id) {
+          restoreInterview(saved);
+          setSelected(saved.selected_option_ids);
+          setBuyerContext(saved.buyer_context);
+          setEditingSelection(false);
+        }
       }
     }).catch(() => {
       if (isCurrent()) setIntake({ status: "recovery-failed" });
     });
     return () => controller.abort();
-  }, [recovering]);
+  }, [recovering, restoreInterview]);
 
   useEffect(() => {
-    if (confirmation.status === "confirmed") statusElement.current?.focus();
-  }, [confirmation.status]);
+    if (resetPrompt) resetHeading.current?.focus();
+  }, [resetPrompt]);
 
   async function importFile(file: File) {
     if (!canUpload) return;
@@ -60,9 +88,9 @@ export function App() {
     setSelected([]);
     setBuyerContext("");
     setSelectionError("");
-    setConfirmation({ status: "idle" });
-    pendingConfirmation.current = null;
-    saving.current = false;
+    setEditingSelection(true);
+    setResetError("");
+    restoreInterview(null);
     setIntake({ status: "loading", filename: file.name });
     try {
       const snapshot = await uploadListing(file);
@@ -76,13 +104,7 @@ export function App() {
     }
   }
 
-  function forgetConfirmation() {
-    pendingConfirmation.current = null;
-    setConfirmation({ status: "idle" });
-  }
-
   function toggleSelection(id: string) {
-    if (saving.current) return;
     if (selected.includes(id)) {
       setSelected(selected.filter((selectedId) => selectedId !== id));
     } else if (selected.length < 3) {
@@ -92,41 +114,93 @@ export function App() {
       return;
     }
     setSelectionError("");
-    forgetConfirmation();
   }
 
   const contextLength = [...buyerContext].length;
   const contextTooLong = contextLength > MAX_CONTEXT_LENGTH;
-  const selectionDisabled = confirmation.status === "saving";
   const snapshot = intake.status === "ready" ? intake.snapshot : null;
+  const activeInterview = snapshot && interview.view?.snapshot_id === snapshot.snapshot_id
+    && interview.view.buyer_context === buyerContext && interview.view.selected_option_ids.length === selected.length
+    && interview.view.selected_option_ids.every((id, index) => id === selected[index])
+    ? interview.view
+    : null;
+  const savedInterviewChanged = !editingSelection && interview.view !== null && activeInterview === null
+    && !interview.error && !interview.work;
+  const mustReloadInterview = interview.requiresReload || savedInterviewChanged;
 
-  async function submitSelection(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!snapshot || selected.length < 1 || selected.length > 3 || contextTooLong || saving.current) return;
+  async function clearListing() {
+    if (!resetTarget || resetting || resetStale) return;
+    setResetting(true);
+    setResetError("");
+    interview.suspend();
+    try {
+      const saved = await getCurrentCase();
+      if (!matchesResetTarget(resetTarget, saved)) {
+        setResetError("The saved listing or answers changed. Reload saved progress before confirming again.");
+        setResetStale(true);
+        setResetting(false);
+        return;
+      }
+      await resetCase(resetTarget.snapshotId, resetTarget.previousCase);
+    } catch (error) {
+      const saved = await getCurrentCase().catch(() => null);
+      if (!saved || saved.snapshot !== null || saved.case !== null) {
+        const changed = saved !== null && !matchesResetTarget(resetTarget, saved);
+        setResetStale(changed);
+        setResetError(changed
+          ? "The saved listing or answers changed. Reload saved progress before confirming again."
+          : error instanceof Error ? error.message : "Could not clear the saved listing.");
+        setResetting(false);
+        return;
+      }
+    }
+    ++generation.current;
+    restoreInterview(null);
+    setSelected([]);
+    setBuyerContext("");
+    setSelectionError("");
+    setIntake({ status: "empty" });
+    setEditingSelection(true);
+    setResetTarget(null);
+    setResetting(false);
+    requestAnimationFrame(() => document.getElementById("upload-heading")?.focus());
+  }
 
-    const activeGeneration = generation.current;
-    const payload = pendingConfirmation.current ?? {
-      operation_id: crypto.randomUUID(),
+  function reloadListing() {
+    ++generation.current;
+    restoreInterview(null);
+    setSelected([]);
+    setBuyerContext("");
+    setSelectionError("");
+    setEditingSelection(true);
+    setResetTarget(null);
+    setResetError("");
+    setResetStale(false);
+    setIntake({ status: "recovering" });
+  }
+
+  function beginQuestions() {
+    if (!snapshot || resetPrompt || mustReloadInterview || selected.length < 1 || selected.length > 3 || contextTooLong) return;
+    setEditingSelection(false);
+    void interview.start({
       snapshot_id: snapshot.snapshot_id,
-      previous_case: null,
       selected_option_ids: selected,
       buyer_context: buyerContext,
-    };
-    pendingConfirmation.current = payload;
-    saving.current = true;
-    setConfirmation({ status: "saving" });
-    try {
-      const selection = await confirmSelection(payload);
-      if (activeGeneration === generation.current) setConfirmation({ status: "confirmed", selection });
-    } catch (error) {
-      if (activeGeneration === generation.current) setConfirmation({ status: "failed", message: (error as Error).message });
-    } finally {
-      if (activeGeneration === generation.current) saving.current = false;
+    });
+  }
+
+  function submitSelection(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (resetPrompt || mustReloadInterview) return;
+    if (snapshot && activeInterview) {
+      setEditingSelection(false);
+      if (interview.needsRefresh) void interview.refresh(snapshot.snapshot_id);
+    } else {
+      beginQuestions();
     }
   }
 
   const filename = "filename" in intake ? intake.filename : undefined;
-  const summaryIds = confirmation.status === "confirmed" ? confirmation.selection.selected_option_ids : selected;
 
   return (
     <>
@@ -134,13 +208,15 @@ export function App() {
         <div className="container site-header-inner">Before you order</div>
       </header>
       <main className="container">
-        <div className="intro">
-          <h1>Confirm what you’re buying</h1>
-          <p>Upload a saved TTP Cargo listing, check the seller’s wording and photos, then confirm the exact options you want to buy.</p>
-        </div>
+        {(!snapshot || editingSelection) && (
+          <div className="intro">
+            <h1>Confirm what you’re buying</h1>
+            <p>Upload a saved TTP Cargo listing, check the seller’s wording and photos, then confirm the exact options you want to buy.</p>
+          </div>
+        )}
 
         <section
-          className={`upload${canUpload && dragging ? " is-dragging" : ""}`}
+          className={`upload${canUpload && dragging ? " is-dragging" : ""}${snapshot && !editingSelection ? " interview-upload" : ""}`}
           aria-labelledby="upload-heading"
           onDragOver={(event) => {
             if (event.dataTransfer.types.includes("Files")) {
@@ -162,7 +238,7 @@ export function App() {
           }}
         >
           <div className="upload-copy">
-            <h2 id="upload-heading">Listing ZIP</h2>
+            <h2 id="upload-heading" tabIndex={-1}>Listing ZIP</h2>
             {recovering && <p className="muted" role="status">Checking for a saved listing…</p>}
             {recoveryFailed && <p className="error" role="alert">Could not check for a saved listing.</p>}
             {replacing && (
@@ -198,7 +274,7 @@ export function App() {
                 Retry saved listing
               </button>
             )}
-            {canUpload ? (
+            {canUpload && (
               <button
                 className="button button-secondary"
                 type="button"
@@ -207,7 +283,8 @@ export function App() {
               >
                 {replacing ? "Choose replacement ZIP" : filename || snapshot ? "Choose another ZIP" : "Choose ZIP"}
               </button>
-            ) : (
+            )}
+            {(recovering || recoveryFailed) && (
               <button
                 className="button button-secondary"
                 type="button"
@@ -219,25 +296,57 @@ export function App() {
                 Start a new listing
               </button>
             )}
+            {snapshot && !resetPrompt && (
+              <button ref={startOverButton} className="button button-secondary" type="button" onClick={() => {
+                setResetTarget({
+                  snapshotId: snapshot.snapshot_id,
+                  previousCase: caseVersion(interview.view),
+                });
+              }}>
+                Start over
+              </button>
+            )}
           </div>
+          {resetPrompt && (
+            <div className="reset-confirmation" role="group" aria-labelledby="reset-heading">
+              <h3 id="reset-heading" ref={resetHeading} tabIndex={-1}>Clear the saved listing and answers?</h3>
+              <p className="muted">Starting over removes the current listing, photos and answers from this app.</p>
+              {resetError && <p className="error" role="alert">{resetError}</p>}
+              <div className="upload-actions">
+                <button className="button button-secondary" type="button" disabled={resetting} onClick={() => {
+                  setResetTarget(null);
+                  setResetError("");
+                  setResetStale(false);
+                  requestAnimationFrame(() => startOverButton.current?.focus());
+                }}>Cancel</button>
+                {resetStale ? (
+                  <button className="button button-secondary" type="button" onClick={reloadListing}>Reload saved progress</button>
+                ) : (
+                  <button className="button button-danger" type="button" disabled={resetting} onClick={() => void clearListing()}>
+                    {resetting ? "Clearing…" : "Clear listing and answers"}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
 
-        {snapshot && (
+        {snapshot && editingSelection && (
           <form onSubmit={submitSelection}>
             <Listing
               key={snapshot.snapshot_id}
               snapshot={snapshot}
               selected={selected}
-              disabled={selectionDisabled}
+              disabled={false}
               selectionError={selectionError}
               onToggle={toggleSelection}
             />
             <section className="confirmation" aria-labelledby="confirm-heading">
               <div>
-                <h2 id="confirm-heading">Confirm your selection</h2>
-                {summaryIds.length === 0 ? <p className="muted">Choose an option to see it here.</p> : (
+                <h2 id="confirm-heading" tabIndex={-1} ref={selectionTitle}>Confirm your selection</h2>
+                {selected.length === 0 ? <p className="muted">Choose an option to see it here.</p> : (
                   <ol className="selected-options" aria-label="Selected options in order">
-                    {summaryIds.map((id, index) => {
+                    {selected.map((id, index) => {
                       const option = snapshot.options.find((candidate) => candidate.option_id === id);
                       if (!option) return null;
                       const imageSource = snapshot.sources.find((source) => source.source_id === option.image_source_id);
@@ -266,33 +375,51 @@ export function App() {
                   value={buyerContext}
                   aria-invalid={contextTooLong || undefined}
                   aria-describedby="context-length"
-                  disabled={selectionDisabled}
-                  onChange={(event) => {
-                    setBuyerContext(event.currentTarget.value);
-                    forgetConfirmation();
-                  }}
+                  onChange={(event) => setBuyerContext(event.currentTarget.value)}
                 />
                 <p id="context-length" className={contextTooLong ? "error" : "muted"}>
                   {contextTooLong ? "Use 2,000 characters or fewer. " : ""}
                   {contextLength.toLocaleString("en-US")} / 2,000
                 </p>
-                {confirmation.status === "failed" && <p role="alert" className="error">{confirmation.message}</p>}
-                {confirmation.status === "confirmed" ? (
-                  <p className="confirmed" tabIndex={-1} ref={statusElement} role="status">
-                    {summaryIds.length === 1 ? "1 option confirmed." : `${summaryIds.length} options confirmed.`}
-                  </p>
-                ) : (
-                  <button
-                    className="button button-primary"
-                    type="submit"
-                    disabled={selected.length === 0 || contextTooLong || selectionDisabled}
-                  >
-                    {selectionDisabled ? "Confirming…" : "Confirm options"}
-                  </button>
-                )}
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={resetPrompt || mustReloadInterview || selected.length === 0 || contextTooLong}
+                >
+                  {activeInterview ? "Resume questions" : "Confirm options"}
+                </button>
               </div>
             </section>
           </form>
+        )}
+        {snapshot && (!editingSelection || interview.view) && (
+          <Interview
+            key={interview.view?.case_id ?? snapshot.snapshot_id}
+            hidden={editingSelection}
+            snapshot={snapshot}
+            selected={selected}
+            context={buyerContext}
+            view={activeInterview}
+            busy={interview.work !== null}
+            blocked={resetPrompt}
+            workingMessage={interview.work ? workMessages[interview.work] : ""}
+            error={savedInterviewChanged ? "The saved interview changed. Reload saved progress to open it." : interview.error}
+            needsRefresh={interview.needsRefresh || mustReloadInterview}
+            onChangeSelection={mustReloadInterview ? undefined : () => {
+              interview.suspend();
+              setEditingSelection(true);
+              requestAnimationFrame(() => selectionTitle.current?.focus());
+            }}
+            onStartAgain={beginQuestions}
+            onRetry={() => { if (activeInterview) interview.retry(activeInterview); }}
+            onRefresh={() => {
+              if (mustReloadInterview) reloadListing();
+              else void interview.refresh(snapshot.snapshot_id);
+            }}
+            onSubmit={(submission, action) => activeInterview
+              ? interview.submit(activeInterview, submission, action)
+              : Promise.resolve(null)}
+          />
         )}
       </main>
     </>

@@ -108,6 +108,21 @@ main.container { padding-bottom: 60px; }
   color: #754817;
 }
 
+.reset-confirmation {
+  flex: 1 0 100%;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.reset-confirmation h3 { font-size: 1rem; }
+
+.reset-confirmation .upload-actions { margin-top: 10px; }
+
+.button-danger {
+  background: var(--error);
+  color: white;
+}
+
 .upload h2 {
   margin-bottom: 2px;
   font-size: 1.025rem;
@@ -502,4 +517,206 @@ fieldset {
 
 @media (max-width: 345px) {
   .option-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+.interview-shell { margin-top: 32px; }
+
+.interview-upload { margin-top: 23px; }
+
+.interview-header {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 20px;
+  margin-block: 0 18px;
+}
+
+.interview-header h1 {
+  font-size: clamp(1.6rem, 3vw, 2.4rem);
+  letter-spacing: -.035em;
+}
+
+.interview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 29%);
+  align-items: start;
+  gap: 20px;
+}
+
+.interview-main { display: grid; gap: 16px; min-width: 0; }
+
+.interview-status, .interview-error {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--tint);
+}
+
+.interview-error {
+  background: #fbefea;
+  border-color: #efcabb;
+  color: var(--error);
+}
+
+.interview-status > .button { margin-top: 10px; }
+
+.interview-selection, .interview-round, .interview-history {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.interview-selection h3, .interview-history h3 { font-size: 1.1rem; }
+
+.interview-context {
+  margin-top: 15px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.interview-context p {
+  color: var(--muted);
+  margin-top: 3px;
+  white-space: pre-wrap;
+}
+
+.interview-round h3 {
+  font-size: 1.25rem;
+  letter-spacing: -.025em;
+}
+
+.round-reason { margin-top: 6px; }
+
+.interview-round > .muted { margin-top: 4px; }
+
+.interview-questions {
+  display: grid;
+  gap: 22px;
+  margin-block: 18px 20px;
+}
+
+.interview-question {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  min-width: 0;
+  padding: 4px 13px 13px;
+}
+
+.interview-question legend {
+  max-width: 100%;
+  padding-inline: 4px;
+  font-weight: 680;
+}
+
+.question-why {
+  font-size: .9rem;
+  color: var(--muted);
+}
+
+.question-scope {
+  margin-top: 4px;
+  font-size: .85rem;
+  color: var(--green);
+}
+
+.question-choices {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.question-choice {
+  display: flex;
+  align-items: start;
+  gap: 9px;
+  min-height: 43px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.question-choice:has(input:checked) {
+  border-color: #4e7a66;
+  background: var(--tint);
+}
+
+.question-choice input {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  margin: 4px 0 0;
+  accent-color: var(--green);
+}
+
+.skip-choice { color: var(--muted); }
+
+.free-answer {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.free-answer label { font-weight: 650; }
+
+.free-answer textarea {
+  width: 100%;
+  border: 1px solid #aab8ad;
+  border-radius: 8px;
+  padding: 9px 11px;
+  resize: vertical;
+  color: var(--ink);
+}
+
+.free-answer textarea[aria-invalid="true"] { border-color: var(--error); }
+
+.free-answer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  font-size: .875rem;
+}
+
+.free-answer button[aria-pressed="true"] { background: var(--tint); border-color: #4e7a66; }
+
+.interview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.round-history {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 8px;
+  padding-block: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.round-history:last-child { border-bottom: 0; padding-bottom: 0; }
+
+.round-history > .button { flex-shrink: 0; }
+
+.round-history details { min-width: 0; padding: 10px 0 0; }
+
+.round-history summary { cursor: pointer; font-weight: 650; }
+
+.round-history dl { margin: 6px 0 0; }
+
+.round-history dt { font-size: .875rem; color: var(--muted); }
+
+.round-history dd { margin: 0 0 8px; white-space: pre-wrap; }
+
+@media (max-width: 760px) {
+  .interview-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 620px) {
+  .interview-selection, .interview-history, .interview-round { padding: 15px; }
 }
