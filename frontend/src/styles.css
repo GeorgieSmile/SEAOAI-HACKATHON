@@ -701,6 +701,8 @@ fieldset {
 
 .round-history:last-child { border-bottom: 0; padding-bottom: 0; }
 
+.round-history > .button { flex-shrink: 0; }
+
 .round-history details { min-width: 0; padding: 10px 0 0; }
 
 .round-history summary { cursor: pointer; font-weight: 650; }
