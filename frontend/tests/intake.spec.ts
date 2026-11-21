@@ -294,7 +294,7 @@ test("a deliberate replacement cannot be overwritten by a slow saved listing res
 });
 
 test("offers ZIP recovery when a TTP Cargo link fails", async ({ page }) => {
-  const link = "https://taobao.ttpcargo.com/product?provider=1688&itemId=123";
+  const link = "https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639";
   await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ contentType: "image/png", body: tinyPng }));
   await page.route("**/api/imports", (route) => {
     if (route.request().headers()["content-type"] === "application/json") {
@@ -304,7 +304,7 @@ test("offers ZIP recovery when a TTP Cargo link fails", async ({ page }) => {
     return route.fulfill({ json: { status: "ready", snapshot } });
   });
   await startWithoutListing(page);
-  await page.getByLabel("TTP Cargo product link").fill(link);
+  await expect(page.getByLabel("TTP Cargo product link")).toHaveValue(link);
   await page.getByRole("button", { name: "Import link" }).click();
   await expect(page.getByRole("alert")).toContainText("could not load");
   await page.locator("input[type=file]").setInputFiles(archive("saved.zip"));

@@ -17,7 +17,7 @@ DiliDoo! turns a TTP Cargo product link or saved listing ZIP into a pre-order re
 
 ## Try the demo
 
-1. Open the demo and import the [sample TTP Cargo listing](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639) or upload the [redacted listing ZIP](samples/raw-save/raw-save-redacted.zip).
+1. Open the demo and click **Import link** to use the prefilled [sample TTP Cargo listing](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639) or upload the [redacted listing ZIP](samples/raw-save/raw-save-redacted.zip).
 2. Select 1–3 variants and add a buying requirement. Answer the follow-up questions or open **Review buying brief** early. Review the requirements by SKU, edit them if needed, and select **Confirm brief and generate review**.
    To change a submitted answer, go to **Saved answers**, click **Edit** beside its round, and update the answer. Click **Preview answer changes**, scroll to the preview, then click **Save answer changes**.
 3. In **Before you order**, open a finding to inspect the original text or SKU image. Review and copy the supplier message.
@@ -80,7 +80,7 @@ Start the frontend in a second terminal from the same repository root.
 npm --prefix frontend run dev
 ```
 
-Open the [local app](http://127.0.0.1:5173), paste the [sample product link](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639), and select **Import link**. The importer supports 1688, Taobao, and Tmall. If the link contains a `skuId`, the corresponding variant is marked **From your link** for you to select and confirm. If the source site is unavailable or the demo machine is offline, use **Choose ZIP** with the [redacted browser save](samples/raw-save/raw-save-redacted.zip). Select 1–3 SKUs in your preferred order, add optional buying context, and start the question round. Reopen the same URL to see the saved case and answers.
+Open the [local app](http://127.0.0.1:5173), use the prefilled [sample product link](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639), and select **Import link**. The importer supports 1688, Taobao, and Tmall. If the link contains a `skuId`, the corresponding variant is marked **From your link** for you to select and confirm. If the source site is unavailable or the demo machine is offline, use **Choose ZIP** with the [redacted browser save](samples/raw-save/raw-save-redacted.zip). Select 1–3 SKUs in your preferred order, add optional buying context, and start the question round. Reopen the same URL to see the saved case and answers.
 
 To run the regular backend, stop the offline server and run the command below. The app stores its SQLite database in `backend/.local/`. Live API calls incur charges and require approval. Set `OPENAI_API_KEY` in the backend process environment and enable only the approved stages. Use `OPENAI_LIVE_TRANSLATION=1` for translation, `OPENAI_LIVE_QUESTIONS=1` for questions, and `OPENAI_LIVE_REVIEW=1` for reports. The app reports an error at any disabled stage it reaches. Keep the key local, for example in the Git-ignored `backend/.env`, and load that file into the backend process environment explicitly.
 

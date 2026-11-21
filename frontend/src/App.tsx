@@ -44,6 +44,8 @@ const workMessages = {
   refresh: "Loading your saved progress…",
 };
 
+const DEFAULT_PRODUCT_LINK = "https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639";
+
 export function App() {
   const [intake, setIntake] = useState<ImportState>({ status: "recovering" });
   const [selected, setSelected] = useState<string[]>([]);
@@ -54,7 +56,7 @@ export function App() {
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState("");
   const [resetStale, setResetStale] = useState(false);
-  const [productLink, setProductLink] = useState("");
+  const [productLink, setProductLink] = useState(DEFAULT_PRODUCT_LINK);
   const [dragging, setDragging] = useState(false);
   const [interviewScreen, setInterviewScreen] = useState<InterviewScreen>("questions");
   const [showImport, setShowImport] = useState(false);
@@ -183,7 +185,7 @@ export function App() {
     setBuyerContext("");
     setSelectionError("");
     setIntake({ status: "empty" });
-    setProductLink("");
+    setProductLink(DEFAULT_PRODUCT_LINK);
     setEditingSelection(true);
     setResetTarget(null);
     setResetting(false);
