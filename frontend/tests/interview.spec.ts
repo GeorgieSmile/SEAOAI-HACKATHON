@@ -634,3 +634,25 @@ test("Resume questions loads the same tab's completed round without another writ
     release();
   }
 });
+
+test("explains replacement before importing over saved answers and retrying a failed request", async ({ page }) => {
+  const writes = trackWrites(page);
+  await mockSaved(page, () => view({
+    revision: 1, rounds: [{ ...firstRound, answers: adaptiveAnswers }, secondRound],
+  }));
+  await expect(page.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
+  const warning = /clears any saved listing, photos, and answers, even if the new import fails/i;
+  await expect(page.getByText(warning)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Import link" })).toHaveAccessibleDescription(warning);
+  await expect(page.getByRole("button", { name: "Choose another ZIP" })).toHaveAccessibleDescription(warning);
+  expect(writes).toEqual([]);
+
+  // The backend can still hold the saved answers if the POST never reaches it.
+  await page.route("**/api/imports", (route) => route.abort("connectionfailed"));
+  await page.getByLabel("TTP Cargo product link").fill("https://taobao.ttpcargo.com/product?provider=1688&itemId=123");
+  await page.getByRole("button", { name: "Import link" }).click();
+  await expect(page.getByRole("alert")).toContainText("server could not be reached");
+  await expect(page.getByText(warning)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Import link" })).toHaveAccessibleDescription(warning);
+  await expect(page.getByRole("button", { name: "Choose another ZIP" })).toHaveAccessibleDescription(warning);
+});

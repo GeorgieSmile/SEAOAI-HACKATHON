@@ -50,3 +50,13 @@ Status: not run ใช้รูปแบบหลักฐานใน team plan
 
 Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
 
+
+## Local combined UI check — 2026-11-21
+
+Local branch `codex/combined-ui` combines main `30c6d94`, evidence review `b3fe973`, and product-link import `1dc3041`. The reset handler keeps the case workflow and import ordering from the two branches. The running demo restored the existing snapshot with 12 options and displayed the new product-link input.
+
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build` passed.
+- `npm --prefix frontend test -- --workers=3 --reporter=dot` passed 29 tests using installed Edge.
+- `.venv/Scripts/python.exe -m pytest -q backend/tests --tb=short` passed 329 tests after explicitly reading the official-source test fixture as UTF-8 on Windows.
+- Isolated offline server on port 8001 and Vite on 5175. Uploaded `samples/raw-save/raw-save-redacted.zip` by multipart POST through the Vite proxy, opened the saved listing in Edge, selected one SKU, confirmed options, and opened the purchase review. Playwright screenshots of the top, middle, and bottom of each screen at 1280 and 390 px showed no visible overlap. Document width stayed within the viewport. Browser file-picker upload was not verified end to end in this smoke check.
+- Live translation stays enabled on port 8000. Live link retrieval and paid question/report generation were not exercised. Independent integrated release reviews and rehearsal remain pending.

@@ -7,6 +7,12 @@ Version: 0.5
 
 ยอมรับเป็นส่วนหนึ่งของ [spec v0.15](../spec.md) วันที่ 19 พ.ย. ตาม [บันทึกการยอมรับ](../acceptance.md) การยอมรับ Design ไม่ใช่หลักฐานว่าแอปทำงานแล้วหรือคำสั่ง Build
 
+## Link import on the Phase 2 branch
+
+The default input is an HTTPS product link at `taobao.ttpcargo.com/product` with exactly `provider=1688` and a positive decimal `itemId` of up to 18 digits, in either order. ZIP remains available for offline use and upstream failures. Both inputs return the same snapshot and require explicit SKU selection.
+
+For link imports the backend sends only the provider and item ID with the public product-detail action to the fixed endpoint used by TTP Cargo. It checks the returned product ID, parses the product fragment as static HTML, and retrieves only mapped SKU thumbnails from the supported CDN path. Redirects are disabled. The HTML, image and total download limits are 5, 10 and 50 MiB respectively. Missing or unsupported images remain scoped to their SKU. The ZIP path continues to resolve only local archive assets.
+
 ## ผลที่ต้องส่งมอบ
 
 รับไฟล์ ZIP ที่ผู้ซื้อบันทึกจากหน้า TTP Cargo แล้วคืน ListingSnapshot ให้เลือกสินค้าเป็นอังกฤษ พร้อมต้นฉบับและรูปที่ผูกกับตัวเลือกจริง จากนั้นผู้ซื้อยืนยัน 1–3 ตัวเลือกและบริบทก่อนเตรียมคำถาม ไม่เริ่มวิเคราะห์จากค่า checked ที่ติดมากับหน้า
