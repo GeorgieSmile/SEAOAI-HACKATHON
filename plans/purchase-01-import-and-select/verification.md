@@ -65,3 +65,72 @@ Authority: [plan](plan.md), [ชุดเกณฑ์รับหลักฐา
 ## Review รวมก่อนปิด ticket
 
 Required review: pending implementation/integrated state คู่ Standards/Spec ต้องตรวจ acceptance ของใบนั้นอย่างชัดเจนก่อน complete บันทึก base/target/state, reviewers, findings/dispositions/final checks และ full-round ledger ต่อ ticket การส่งต่อเพื่อรวมยังไม่นับว่าปิดงาน
+
+## TTP Cargo link import, 21 November 2026
+
+Tested the uncommitted working tree on `codex/ttp-link-import`, based on Phase 2 commit `799e028`. The link and ZIP paths use the same SKU and image validation, translation seam and SQLite publication. Live checks used the offline translation and question adapters with a temporary database.
+
+| Real app check | Observed result |
+| --- | --- |
+| Paste the [sample link](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639), select a SKU and confirm | Product title and all 12 ordered Chinese SKU names matched the saved inventory. SHA-256 of the bytes served for each of the 12 SKU images matched its saved thumbnail. Round 1 opened. |
+| Paste a [second product](https://taobao.ttpcargo.com/product?provider=1688&itemId=950217987281), select a SKU and confirm | Compared against a separate signed-out Chrome page on TTP Cargo. The title, eight ordered SKU names and all eight original thumbnail hashes matched the app. Round 1 opened. |
+| Choose the raw browser-save ZIP and reload | All 12 names and image hashes matched the saved inventory. The listing restored after a page reload. |
+| Browser layout | Inspected the form, SKU grid and confirmation area at the top, middle and bottom at 1280×820 and 390×844. Controls and Chinese labels were readable. No horizontal overflow or overlapping controls observed. |
+
+Commands from the worktree root, using the existing project virtual environment for Python and local Google Chrome for Playwright:
+
+- `python -m pytest -q -p no:cacheprovider backend/tests` passed 138 tests, including link validation, wrong product identity, thumbnail redirects and a slow link request superseded by a ZIP.
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build` passed.
+- `PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test` passed 23 tests, including recovery from a link failure using ZIP.
+- `python -m backend.tests.offline_server --port 8057` and `PURCHASE_BACKEND_URL=http://127.0.0.1:8057 npm --prefix frontend run dev -- --port 5183` served the real UI checks. A temporary Chrome host rule mapped the normal app origin on port 5173 to port 5183 so the existing demo could keep running. The Playwright smoke check fetched the images through each rendered option and compared their bytes to the expected source.
+- An exploratory product-detail request for item `1098255410083` returned HTTP 502. Live availability depends on TTP Cargo. Existing supported SKU layouts and the CDN thumbnail allowlist still apply.
+
+Paid AI translation and model quality were outside this import check. Fresh independent Standards/Spec review of the integrated release remains pending. Review should check remote resource limits, product identity binding, and handling of failed replacement imports.
+
+### Pre-commit review and fixes, 21 November 2026
+
+Base `799e028`. The first independent Standards/Spec review identified four findings. The fixes and checks below apply to the uncommitted branch. The SHA-256 of the reviewed backend, frontend source and test diff, including the untracked link importer, is `33f6a8d4bb12452fa5a5d787b1dd783f4d6814895265e8a4a456aac416cfa570`.
+
+| Finding | Regression result |
+| --- | --- |
+| Delayed link request could restore a listing after Start over | A successful reset now advances the import ordering marker. A delayed link returned HTTP 409 and the workspace stayed empty. The existing delayed-link versus newer-ZIP case also passed. |
+| Import could clear an interview without explaining the consequence | A saved interview with submitted answers showed the consequence before either import action. Both buttons had the same accessible description. Restoring the interview issued zero writes. When the import POST failed to reach the backend, both controls retained the warning before retry. |
+| Waiting for upstream headers could hold the ZIP parser slot past the deadline | Product and thumbnail requests share a cancellable 75-second network deadline. With a shortened 300 ms deadline and a stalled headers response, the upstream wait was cancelled, the superseded link returned 409 and the queued ZIP published the expected listing. |
+| Server reference-pack errors could blame the buyer’s ZIP | A valid sample with a missing pack, missing required fields, an invalid limitations field, empty guidance or limitations, a seller-source kind, or missing translation or URL returned HTTP 500 with `intake_failed`. No snapshot was published. |
+
+- `python -m pytest -q -p no:cacheprovider backend/tests` passed 148 tests. `npm --prefix frontend run typecheck` and `npm --prefix frontend run build` passed. `PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --output=/private/tmp/ttp-fixes-frontend-suite` passed 24 tests.
+- Ran the real browser flow on the temporary backend and frontend described above with `node /private/tmp/ttp-fixes-qa/check.cjs`. For item `1035537244639`, all 12 names and thumbnail hashes matched the saved inventory. For `950217987281`, all eight names and thumbnail hashes matched a separately opened live listing. Both reached round one. Raw ZIP fallback matched all 12 saved thumbnails and restored after reload. Translation and questions used the offline adapters.
+- Inspected selection and interview screenshots at the top, middle and bottom at 1280×820 and 390×844. The replacement warning was visible before the import controls on both screens. The labels wrapped within the mobile viewport, with no overlapping controls or horizontal overflow observed.
+- Independent Standards and Spec reviewers re-examined all four findings on candidate `33f6a8d4`. During review, Spec found two additional cases within the original findings: loss of the warning after an undelivered POST, and acceptance of an empty or mislabeled guidance pack. Both were fixed and covered by regressions. Each reviewer independently ran all 42 backend intake tests and reported all four findings resolved with no additional blockers in the reviewed scope. The final integrated release review across PR-01–04 remains a separate gate.
+
+### Three providers and linked SKU verification, 21 November 2026
+
+Tested the uncommitted `codex/ttp-link-import` worktree on base `fd2ceef`. Links accept 1688, Taobao and Tmall, with or without a numeric `skuId`. A supplied ID must identify one source option. The UI marks that option “From your link” and waits for explicit buyer selection. The existing single main selector and optional shared secondary selector limits still apply.
+
+| Live product and requested SKU | Result through the app |
+| --- | --- |
+| [Tmall 988441343788, SKU 5985509084995](https://taobao.ttpcargo.com/product?provider=tmall&itemId=988441343788&skuId=5985509084995) | Matched 新将进酒葫芦保温杯-墨染黑【基础款】. All 10 ordered names and thumbnail SHA-256 values matched the corresponding source inventory. The marker survived reload. |
+| [Taobao 1003065116802, SKU 6156598687347](https://taobao.ttpcargo.com/product?provider=taobao&itemId=1003065116802&skuId=6156598687347) | Marked the cloud-white 800 ml option. All 15 ordered names and thumbnail hashes matched the corresponding source inventory. |
+| [1688 1035537244639, SKU 6048851312288](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639&skuId=6048851312288) | Marked 暮色316-字母粉蓝. All 12 names and thumbnail hashes matched the saved sample. |
+
+- Captured real retail detail fragments from the site's signed-out page and public product endpoint. The Tmall item returned both a 13-option parent-selector inventory and a 10-option child1-selector inventory. Both identified the same requested SKU. Taobao also returned two inventories. Expected names and thumbnail hashes were collected independently of the app from the corresponding source responses. A repeat load of the external Tmall page timed out during setup; the final comparison used the captured source inventories and fetched fresh listings through the app.
+- Ran `python -m backend.tests.offline_server --port 8068`, `PURCHASE_BACKEND_URL=http://127.0.0.1:8068 npm --prefix frontend run dev -- --port 5198`, and the temporary `node /private/tmp/ttp-three/check.cjs` browser check. All three links started with zero selected options and reached interview round one after explicit confirmation. Tmall SKU ID 1 returned an import failure with no selectable options. The raw ZIP fallback matched all 12 saved thumbnails and restored after reload. Translation and questions used offline adapters.
+- Inspected the Tmall selection screen at the top, middle and bottom at 1280×820 and 390×844. The linked label, Chinese option names and confirmation controls were readable. No control overlap or horizontal overflow was observed.
+- `python -m pytest -q -p no:cacheprovider backend/tests` passed 150 tests. `PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --output=/private/tmp/ttp-three/playwright-tests` passed 25 tests. Typecheck, production build and `git diff --check` passed. That candidate went to independent review. Findings and rechecks are recorded below.
+
+### Three-provider SKU mapping fixes, 21 November 2026
+
+The first independent review found that the requested provider family, the retail seller name, and the thumbnail source could each disagree with the published option. It also found that reversing two correctly identified properties rejected a supported listing. Regression tests exercise each case through the import API.
+
+During independent review of the fixes, both reviewers reproduced two more cases. An embedded mapping overrode the source product’s Basic SKU with Pro. Two retail maps could also disagree about a SKU’s original image when the ZIP contained a local thumbnail. The final parser checks the requested product’s own mapping and reconciles SKU IDs and recognized image identities across mapping copies. Tests cover both failures, an absent upstream image in one copy, and ZIP fallback. The next review also found that a source image supplied solely by a retail SKU row was dropped. The final change retains that reference. A link import can retrieve the allowlisted image and a ZIP with no corresponding file records a missing image scoped to the correct SKU.
+
+| Final live import | Linked seller option | Verification |
+| --- | --- | --- |
+| [Tmall 988441343788, SKU 5985509084995](https://taobao.ttpcargo.com/product?provider=tmall&itemId=988441343788&skuId=5985509084995) | 新将进酒葫芦保温保冷杯-墨染黑【基础款】 (ink-black Basic flask) | All 13 names and thumbnail hashes matched the source inventory. Reload restored the marker. An earlier run returned the 10-option revision and matched all 10. |
+| [Taobao 1003065116802, SKU 6156598687347](https://taobao.ttpcargo.com/product?provider=taobao&itemId=1003065116802&skuId=6156598687347) | Cloud-white 800 ml | All 19 names and thumbnail hashes matched the source inventory. |
+| [1688 1035537244639, SKU 6048851312288](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639&skuId=6048851312288) | 暮色316-字母粉蓝 | All 12 names and thumbnail hashes matched the saved sample. |
+
+- On base `fd2ceef`, the working-tree diff excluding this verification file had SHA-256 `419cab3092b0f553faed0b9d073f56b205932294a2acf746ad2f74017035bb83`. `python -m pytest -q -p no:cacheprovider backend/tests` passed 166 tests. `npm --prefix frontend run typecheck`, `npm --prefix frontend run build`, and `git diff --check` passed. `PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --output=/private/tmp/ttp-three-fixed-browser` passed 25 tests.
+- Ran `python -m backend.tests.offline_server --port 8068`, `PURCHASE_BACKEND_URL=http://127.0.0.1:8068 npm --prefix frontend run dev -- --port 5198`, and `node /private/tmp/ttp-three/check.cjs`. Each live import left all boxes unchecked and reached round one after explicit confirmation. The unknown Tmall SKU failed. The raw ZIP matched all 12 saved thumbnail hashes and restored after reload. The backend used live TTP Cargo and CDN requests with offline translation and interview adapters.
+- Replayed every SKU through the parser across five independently captured responses. All 69 rows resolved to their source names. Each plain link had no marked SKU and each capture rejected unknown SKU 1. Inspected the Tmall selection screen at the top, middle and bottom at 1280×820 and 390×844. Labels and confirmation controls were legible, and the browser detected no horizontal overflow.
+- Independent Standards and Spec reviewers passed the final import changes on candidate `419cab30`. Both repeated the previously failing Tmall ZIP with only the seller row’s image reference and verified the missing image source belonged to the Basic SKU. Both ran the 166 backend tests. Spec also replayed all five captured inventories and rejected the wrong provider family, wrong item ID, and unknown SKU for each one. Spec and the controller each passed the full 25-test Playwright suite.

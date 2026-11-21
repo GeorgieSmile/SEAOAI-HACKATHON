@@ -186,6 +186,16 @@ Copies of 26 databases written by `1e950d0` reopened twice without provider requ
 
 The integrated checks passed 373 backend tests, 31 Chrome tests, frontend typechecking, the production build and whitespace checks.
 
+### Product-link integration and follow-up review
+
+The branch incorporates the product-link import from main at `324616b`. Chrome exercised the default link path through a controlled supplier response and the fallback from an upstream error to the actual Website Test.zip. The ZIP case reached revision 3 after editing an earlier answer, copied its revised supplier draft, and reopened after restarting the backend at both desktop and mobile widths. Its three images matched the original ZIP entries by SHA-256.
+
+Astra’s review of `2276432` identified three additional cases. The combined branch accepts “The logo needs to be laser engraved.” and carries engraving into the scoped supplier question. Skipping a follow-up about a settled deadline preserves that deadline, while a separate unanswered sample question remains open. A legacy report containing independent screen-printing and matte-finish requirements can now reopen with both original requirements and supplier questions.
+
+The expanded original-ZIP endpoint suite passed 26 cases. The database comparison used 26 cases saved on `1e950d0`: nine reports reopened directly, nine retained validation failures, and eight needed explicit regeneration. A second set of 26 cases written by `2276432` retained their exact saved state over two restarts after link support was added. Recovery used local SQLite and made zero provider requests.
+
+All 417 backend tests and 36 Chrome tests passed with the combined implementation. Frontend typechecking, the production build and whitespace checks passed. A separate HTTP test exercised a simulated 1688 product response, linked SKU selection, its original image, purchase review, workspace replacement and restart.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

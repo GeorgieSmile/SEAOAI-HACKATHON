@@ -92,16 +92,19 @@ _CAPACITY = r"(?P<amount>\d+(?:\.\d+)?)\s*(?P<unit>ml|l|fl oz)"
 def _direction(text: str, term: str) -> Literal["require", "avoid"] | None:
     # Whole statements prevent a mere mention or permissive wording from becoming a direction.
     subject = r"(?:(?:the|my|our|this) (?:logo|design|artwork|product|surface|item|decoration)|it)"
+    requirement = r"(?:must|needs? to|(?:has|have) to)"
+    operation = rf"(?:be |have (?:a |an )?)(?:{term})"
     if re.fullmatch(
         rf"(?:(?:i|we) (?:need|require) (?:a |an )?(?:{term})|"
         rf"(?:a |an )?(?:{term}) (?:is required|only)|"
-        rf"{subject} must (?:be |have (?:a |an )?)(?:{term}))", text
+        rf"{subject} {requirement} {operation}|"
+        rf"(?:i|we) (?:need|require) {subject} to {operation})", text
     ):
         return "require"
     if re.fullmatch(
         rf"(?:(?:a |an )?(?:{term}) (?:is unacceptable|is not acceptable)|"
         rf"(?:i|we) (?:cannot accept|do not accept) (?:a |an )?(?:{term})|"
-        rf"no (?:{term})|{subject} must not (?:be |have (?:a |an )?)(?:{term}))", text
+        rf"no (?:{term})|{subject} {requirement} not {operation})", text
     ):
         return "avoid"
     return None

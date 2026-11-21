@@ -39,6 +39,71 @@ async function openWorkspace(page: Page, saved: () => CaseView) {
   await page.goto("/");
 }
 
+for (const entry of ["TTP Cargo link", "ZIP after a link failure"] as const) {
+  test(`opens and resumes the purchase review from ${entry}`, async ({ page }) => {
+    const usingLink = entry === "TTP Cargo link";
+    const url = "https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639&skuId=6048851312288";
+    let saved: CaseView | null = null;
+    let imported: ListingSnapshot | null = null;
+    await page.route("**/api/case", (route) => route.fulfill({ json: { snapshot: imported, case: saved } }));
+    await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ status: 404 }));
+    await page.route("**/api/imports", (route) => {
+      const isLink = route.request().headers()["content-type"] === "application/json";
+      if (isLink) {
+        expect(route.request().postDataJSON()).toEqual({ url });
+        if (!usingLink) {
+          return route.fulfill({ json: { status: "failed", code: "link_unavailable", message: "TTP Cargo could not load this listing." } });
+        }
+      }
+      imported = { ...snapshot, linked_option_id: isLink ? skipReport.selected_option_ids.at(-1)! : null };
+      return route.fulfill({ json: { status: "ready", snapshot: imported } });
+    });
+    await page.route("**/api/questions", (route) => {
+      const request = route.request().postDataJSON();
+      expect(request.selected_option_ids).toEqual(skipReport.selected_option_ids);
+      saved = reviewed(skipReport, {
+        revision: 0, phase: "awaiting_answers", report: null, buyer_context: request.buyer_context,
+        rounds: [{ ...skip.first_round, answers: null }],
+        last_operation: { stage: "start", status: "ready", operation_id: request.operation_id, code: null, message: null },
+      });
+      return route.fulfill({ json: ready(saved) });
+    });
+    await page.route("**/api/reviews", (route) => {
+      const request = route.request().postDataJSON();
+      expect(request.submission.answers).toEqual(asSubmission(linked.input.answers));
+      saved = reviewed(skipReport, {
+        buyer_context: "",
+        last_operation: { stage: "review", status: "ready", operation_id: request.operation_id, code: null, message: null },
+      });
+      return route.fulfill({ json: ready(saved) });
+    });
+
+    await page.goto("/");
+    await page.getByLabel("TTP Cargo product link").fill(url);
+    await page.getByRole("button", { name: "Import link" }).click();
+    if (!usingLink) {
+      await expect(page.getByRole("alert")).toContainText("TTP Cargo could not load");
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: "Choose another ZIP" }).click();
+      await (await chooser).setFiles({ name: "listing.zip", mimeType: "application/zip", buffer: Buffer.from("Fixture") });
+    }
+    await expect(page.getByText("From your link")).toHaveCount(usingLink ? 1 : 0);
+    const options = page.getByRole("group", { name: "Product options" });
+    const confirm = page.getByRole("button", { name: "Confirm options" });
+    await expect(confirm).toBeDisabled();
+    for (const id of skipReport.selected_option_ids) await options.locator(`input[value="${id}"]`).check();
+    await confirm.click();
+    await page.getByRole("button", { name: "View purchase review" }).click();
+    await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Message to supplier" })).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "Change options or context" }).click();
+    await expect(page.getByText("From your link")).toHaveCount(usingLink ? 1 : 0);
+    await page.getByRole("button", { name: "Resume purchase review" }).click();
+    await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+  });
+}
+
 test("shows scoped requirement decisions and saves an effect-only change to an earlier answer", async ({ page }) => {
   const finish = "Screen printing is required.";
   const answerText = "  Matte would work for this one.  ";

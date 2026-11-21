@@ -37,6 +37,8 @@ NO_PRINT = replace(WAIVE_PRINT, prompt="Is screen printing required?", answer="W
 NO_SAMPLE = Decision("Do you need a pre-production sample?", "No sample is required.", "sample", "other", "waive")
 LOGO = "The logo must be screen printed."
 LASER = "The logo must be laser engraved."
+NEEDS_LASER = "The logo needs to be laser engraved."
+AVOID_LASER = "The logo must not be laser engraved."
 OPTIONAL = replace(WAIVE_PRINT, prompt="Is screen printing still required for your logo?",
                    answer="Screen printing is optional.", revisits=LOGO)
 DEC_1 = Decision("What is your required delivery deadline?", "The order must be delivered by 1 December.",
@@ -77,6 +79,8 @@ CASES = {
     # The three release acceptance cases.
     "reaffirmed-stock": Interview((STOCK, KEEP), (STOCK.answer,)),
     "engraving-independent-of-texture": Interview((ANY_TEXTURE,), (LASER,), context=LASER),
+    "engraving-needs-to-be": Interview(expected=(NEEDS_LASER,), context=NEEDS_LASER),
+    "engraving-prohibited": Interview(expected=(AVOID_LASER,), context=AVOID_LASER),
     "per-sku-deadline": Interview((DEC_15,), (DEC_1.answer, DEC_15.answer), context=DEC_1.answer, revise_a_only=True),
 }
 IMAGE_CASES = ("cropped-selector", "complete-selector", "different-readings",
@@ -198,6 +202,10 @@ def test_original_zip_review_matrix(tmp_path, name):
                     assert term in draft
             if name == "current-deadline":
                 assert "1 december" not in draft
+            if name == "engraving-needs-to-be":
+                assert "with laser engraving?" in draft and "without laser engraving?" not in draft
+            if name == "engraving-prohibited":
+                assert "without laser engraving?" in draft and "with laser engraving?" not in draft
         if name in ("complete-selector", "readable", "different-readings"):
             assert report["claims"]
         if name == "unreadable":

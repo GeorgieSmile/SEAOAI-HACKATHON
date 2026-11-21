@@ -1,11 +1,12 @@
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
 from functools import partial
+from itertools import count
 import os
 from pathlib import Path
 import sqlite3
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -23,6 +24,7 @@ from .case_models import ContinueCase, ResetCase, RetryCase, ReviewCase, StartCa
 from .case_workflow import CaseCommandError, CaseWorkflow, QuestionGenerator, ReviewGenerator
 from .contracts import ContractModel, IntakeFailed, IntakeReady, ListingSnapshot
 from .intake import ParsedListing, parse_listing
+from .link_intake import LINK_HINT, fetch_listing, parse_product_link
 from .report import build_review_client, generate_review
 from .state import Store
 
@@ -32,6 +34,10 @@ MAX_IMPORT_BODY = 21 * MiB
 DEFAULT_DATABASE = Path(__file__).resolve().parent / ".local" / "purchase.sqlite3"
 Translator = Callable[[ListingSnapshot], Awaitable[ListingSnapshot]]
 CASE_COMMANDS = frozenset({"/api/questions", "/api/questions/continue", "/api/reviews", "/api/case/retry", "/api/case/reset"})
+
+
+class LinkRequest(ContractModel):
+    url: Annotated[StrictStr, Field(max_length=512)]
 
 
 class SelectionRequest(ContractModel):
@@ -61,7 +67,7 @@ def _case_failure(error: CaseCommandError) -> JSONResponse:
 
 
 def _obsolete_import() -> JSONResponse:
-    return _intake_failure("intake_failed", "This import was replaced by a newer upload.", 409)
+    return _intake_failure("intake_failed", "This import was replaced by a newer import.", 409)
 
 
 async def _read_zip(request: Request) -> bytes:
@@ -98,6 +104,7 @@ def _translation(original: ListingSnapshot, output: ListingSnapshot) -> ListingS
     verified = ListingSnapshot.model_validate(output.model_dump())
     if (
         verified.snapshot_id != original.snapshot_id
+        or verified.linked_option_id != original.linked_option_id
         or verified.title != original.title
         or len(verified.options) != len(original.options)
         or len(verified.sources) != len(original.sources)
@@ -125,6 +132,8 @@ def create_app(
     async def lifespan(app: FastAPI):
         store = Store(database)
         app.state.store = store
+        app.state.workspace_order = count(1)
+        app.state.last_workspace_change = 0
         app.state.parser_lock = asyncio.Lock()
         app.state.parse_task = None
         client = None
@@ -191,14 +200,14 @@ def create_app(
             status_code=500,
         )
 
-    async def parse_current(generation: int, payload: bytes) -> ParsedListing | None:
+    async def parse_current(generation: int, parse: Callable[[], Coroutine[Any, Any, ParsedListing]]) -> ParsedListing | None:
         state = application.state
         await state.parser_lock.acquire()
         try:
             if not state.store.is_current(generation):
                 state.parser_lock.release()
                 return None
-            task = asyncio.create_task(asyncio.to_thread(parse_listing, payload))
+            task = asyncio.create_task(parse())
         except BaseException:
             state.parser_lock.release()
             raise
@@ -217,17 +226,37 @@ def create_app(
 
     @application.post("/api/imports")
     async def import_listing(request: Request):
-        store = application.state.store
+        state = application.state
+        store = state.store
+        order = next(state.workspace_order)
+        is_link = request.headers.get("content-type", "").split(";")[0].strip().lower() == "application/json"
+        if is_link:
+            body = bytearray()
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > 2048:
+                    return _intake_failure("intake_failed", LINK_HINT, 413)
+                body.extend(chunk)
+            try:
+                link = parse_product_link(LinkRequest.model_validate_json(body).url)
+            except ValueError:
+                return _intake_failure("intake_failed", LINK_HINT, 422)
+        # A slow link body may finish validating after a newer import or a successful reset.
+        if order < state.last_workspace_change:
+            return _obsolete_import()
+        state.last_workspace_change = order
         generation = store.begin_import()
         try:
-            payload = await _read_zip(request)
+            if is_link:
+                parse = partial(fetch_listing, link)
+            else:
+                parse = partial(asyncio.to_thread, parse_listing, await _read_zip(request))
         except HTTPException as error:
             if error.status_code == 413:
                 return _intake_failure("archive_limit", str(error.detail), 413)
             return _intake_failure("invalid_archive", 'Upload one ZIP using the multipart "file" field.', 400)
 
         try:
-            parsed = await parse_current(generation, payload)
+            parsed = await parse_current(generation, parse)
         except IntakeError as error:
             if not store.is_current(generation):
                 return _obsolete_import()
@@ -236,7 +265,7 @@ def create_app(
         except (OSError, ValidationError, ValueError):
             return _intake_failure("intake_failed", "The server could not prepare the listing evidence.", 500)
         finally:
-            del payload
+            del parse
 
         if parsed is None or not store.is_current(generation):
             return _obsolete_import()
@@ -276,7 +305,7 @@ def create_app(
     async def confirm_selection(payload: SelectionRequest):
         snapshot = application.state.store.snapshot()
         if snapshot is None or snapshot.snapshot_id != payload.snapshot_id:
-            return _invalid_request("This listing is no longer active. Upload the ZIP again.", 409)
+            return _invalid_request("This listing is no longer active. Import the listing again.", 409)
 
         selected = payload.selected_option_ids
         options = {option.option_id for option in snapshot.options}
@@ -309,7 +338,9 @@ def create_app(
 
     @application.post("/api/case/reset")
     async def reset_case(command: ResetCase):
-        application.state.case_workflow.reset(command)
+        state = application.state
+        state.case_workflow.reset(command)
+        state.last_workspace_change = next(state.workspace_order)
         return {"snapshot": None, "case": None}
 
     return application

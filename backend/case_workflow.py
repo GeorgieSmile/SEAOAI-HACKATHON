@@ -1,3 +1,4 @@
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from hashlib import sha256
 import json
@@ -15,10 +16,10 @@ from .case_models import (
 )
 from .contracts import (
     AnsweredQuestion, AnswerSubmission, IssuedRound, ListingSnapshot, QuestionInput,
-    QuestionResult, ReviewInput,
+    QuestionResult, ResolvedRequirement, ReviewInput,
 )
 from .report import assemble_review, review_sent_evidence
-from .report_models import PurchaseReview, ReviewFailed, ReviewResult, SentReviewEvidence
+from .report_models import BuyerRequirement, PurchaseReview, RequirementSelection, ReviewFailed, ReviewResult, SentReviewEvidence
 from .requirements import (
     issue_requirement_plan, legacy_context_rows, recover_direct_legacy_requirement, resolve_requirements,
     validate_submission_effect,
@@ -124,6 +125,19 @@ def _resolved_view(record: CaseRecord, case: CaseView) -> CaseView:
     })
 
 
+def _only_new_supplier_targets(saved: CaseView, resolved: CaseView) -> bool:
+    before, after = saved.requirements, resolved.requirements
+    if before is None or after is None or len(before) != len(after):
+        return False
+    return all(
+        previous == current or (
+            previous.supplier_target is None and current.supplier_target is not None
+            and previous == current.model_copy(update={"supplier_target": None})
+        )
+        for previous, current in zip(before, after, strict=True)
+    )
+
+
 def _upgrade_legacy_case(record: CaseRecord) -> CaseRecord:
     case = record.view
     initial = legacy_context_rows(case.case_id, case.buyer_context, case.selected_option_ids)
@@ -135,49 +149,72 @@ def _upgrade_legacy_case(record: CaseRecord) -> CaseRecord:
     return upgraded.model_copy(update={"view": case, "question_input": pending})
 
 
-def _safe_legacy_review(
-    upgraded: CaseRecord, inputs: ReviewInput, restored: PurchaseReview, saved: SavedReview,
-) -> tuple[CaseRecord, SavedReview] | None:
-    content = saved.content
-    if content.open_preferences:
-        return None
-    if not inputs.buyer_context.strip() and not inputs.answers and not content.buyer_requirements:
-        return upgraded, saved
-    if len(content.buyer_requirements) != 1 or len(restored.buyer_requirements) != 1:
-        return None
-
-    selection = content.buyer_requirements[0]
-    prior = restored.buyer_requirements[0]
+def _legacy_candidate(
+    inputs: ReviewInput, selection: RequirementSelection, prior: BuyerRequirement,
+) -> ResolvedRequirement | None:
     if selection.input_ref == "context":
-        if inputs.answers or selection.quote != inputs.buyer_context.strip() or prior.option_ids != inputs.selected_option_ids:
+        if selection.quote != inputs.buyer_context.strip() or prior.option_ids != inputs.selected_option_ids:
             return None
         start = inputs.buyer_context.index(selection.quote)
         facet = None
     else:
-        if inputs.buyer_context.strip() or len(inputs.answers) != 1:
-            return None
-        answer = inputs.answers[0]
+        answer = next((item for item in inputs.answers if selection.input_ref == f"answer:{item.question_id}"), None)
         if (
-            selection.input_ref != f"answer:{answer.question_id}" or selection.quote != answer.answer_text
+            answer is None or selection.quote != answer.answer_text
             or prior.question_text != answer.question_text or prior.option_ids != inputs.answer_option_ids[answer.question_id]
         ):
             return None
         start = None
         facet = answer.buyer_facet
 
-    requirement = recover_direct_legacy_requirement(
+    return recover_direct_legacy_requirement(
         case_id=inputs.case_id, input_ref=selection.input_ref, quote=selection.quote,
         question_text=prior.question_text, option_ids=prior.option_ids, topic=selection.topic,
         buyer_facet=facet, context_start=start,
     )
-    if requirement is None:
-        return None
-    updated = upgraded.model_copy(update={"initial_requirements": [requirement]})
+
+
+def _legacy_review_migration(
+    upgraded: CaseRecord, inputs: ReviewInput, restored: PurchaseReview, saved: SavedReview,
+) -> tuple[CaseRecord, SavedReview | None]:
+    content = saved.content
+    shown = {row.requirement_id: row for row in restored.buyer_requirements}
+    ref_counts = Counter(selection.input_ref for selection in content.buyer_requirements)
+    candidates = {
+        selection.input_ref: (selection.requirement_id, row)
+        for selection in content.buyer_requirements
+        if ref_counts[selection.input_ref] == 1 and selection.requirement_id in shown
+        and (row := _legacy_candidate(inputs, selection, shown[selection.requirement_id])) is not None
+    }
+    origins = {
+        f"answer:{answer.question_id}": (inputs.answer_option_ids[answer.question_id], answer.buyer_facet)
+        for answer in inputs.answers if answer.answer_text is not None
+    }
+    if inputs.buyer_context.strip():
+        origins["context"] = (inputs.selected_option_ids, None)
+    for ref, (_, row) in candidates.items():
+        origins[ref] = (row.option_ids, row.buyer_facet)
+
+    # A typed decision survives only when every other saved input is scoped off
+    # it or known to concern a different facet. Untyped overlaps remain open.
+    confirmed = {
+        ref: (old_id, row) for ref, (old_id, row) in candidates.items()
+        if all(
+            not set(row.option_ids).intersection(options) or facet not in {None, "other", row.buyer_facet}
+            for other_ref, (options, facet) in origins.items() if other_ref != ref
+        )
+    }
+    initial = [] if "context" in confirmed else (upgraded.initial_requirements or [])
+    initial = [*initial, *(row for _, row in confirmed.values())]
+    updated = upgraded.model_copy(update={"initial_requirements": initial})
     updated = updated.model_copy(update={"view": _resolved_view(updated, updated.view)})
+    if confirmed.keys() != origins.keys() or len(confirmed) != len(content.buyer_requirements) or content.open_preferences:
+        return updated, None
+    remap = {old_id: row.requirement_id for old_id, row in confirmed.values()}
     remapped = content.model_copy(update={
         "buyer_requirements": [],
         "findings": [finding.model_copy(update={
-            "requirement_ids": [requirement.requirement_id if item == prior.requirement_id else item for item in finding.requirement_ids],
+            "requirement_ids": [remap[item] for item in finding.requirement_ids],
         }) for finding in content.findings],
     })
     return updated, saved.model_copy(update={"content": remapped})
@@ -256,6 +293,9 @@ def _review_digest(
     if version == 2:
         excluded.add("answer_option_ids")
     input_fields = inputs.model_dump(mode="json", exclude=excluded)
+    # Older snapshots omitted the optional linked SKU. Keep their report binding intact.
+    if inputs.snapshot.linked_option_id is None:
+        del input_fields["snapshot"]["linked_option_id"]
     material = {
         "input": input_fields, "operation_id": operation_id,
         "scope": scope.model_dump(mode="json"), "attachments": attachments,
@@ -283,14 +323,17 @@ class CaseWorkflow:
             resolved = _resolved_view(upgraded, upgraded.view)
         except (KeyError, ValueError) as error:
             raise sqlite3.DatabaseError("The saved buyer decisions could not be matched to the interview.") from error
-        if not legacy and resolved.requirements != case.requirements:
-            raise sqlite3.DatabaseError("The saved buyer decisions do not match the retained interview.")
+        new_targets = not legacy and resolved.requirements != case.requirements
+        if new_targets:
+            if not _only_new_supplier_targets(case, resolved):
+                raise sqlite3.DatabaseError("The saved buyer decisions do not match the retained interview.")
+            upgraded = record.model_copy(update={"view": resolved})
         if operation.status == "running":
             interrupted = _failure(upgraded, "analysis_failed", _interrupted(operation.stage))
             self._save(generation, record, interrupted)
             return
         if case.phase != "reviewed":
-            if legacy or report is not None or saved_review is not None:
+            if legacy or new_targets or report is not None or saved_review is not None:
                 self._save(generation, record, upgraded)
             return
         if snapshot is None or case.snapshot_id != snapshot.snapshot_id or operation.stage != "review":
@@ -323,16 +366,20 @@ class CaseWorkflow:
             elif rebuilt != PurchaseReview.model_validate(report):
                 raise ValueError("The saved report does not match its validated claims.")
             if legacy:
-                migration = _safe_legacy_review(upgraded, inputs, rebuilt, validated)
-                if migration is None:
+                upgraded, migrated = _legacy_review_migration(upgraded, inputs, rebuilt, validated)
+                if migrated is None:
                     failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
                     self._save(generation, record, failed)
                     return
-                upgraded, validated = migration
+                validated = migrated
                 inputs = _review_input(snapshot, upgraded.view)
                 rebuilt = assemble_review(inputs, validated.content, sent_evidence=validated.sent_evidence)
         except ValueError:
             failed = _failure(upgraded, "invalid_review", INVALID_REVIEW)
+            self._save(generation, record, failed)
+            return
+        if new_targets:
+            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
         if legacy or validated.version < 4:

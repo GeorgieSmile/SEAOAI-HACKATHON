@@ -259,6 +259,55 @@ def test_provider_cannot_reattach_replaced_or_stale_buyer_requirements(resolved_
     assert result.code == "invalid_review"
 
 
+def test_current_report_cannot_reopen_a_settled_deadline_from_a_skipped_revisit(resolved_deadlines):
+    request, images = resolved_deadlines
+    deadline = "Has the required delivery deadline changed?"
+    sample = "Do you need a pre-production sample?"
+    data = request.model_dump()
+    data["answers"].extend([
+        {"question_id": "skipped-revisit", "question_text": deadline, "answer_text": None,
+         "buyer_facet": "delivery_deadline"},
+        {"question_id": "skipped-sample", "question_text": sample, "answer_text": None,
+         "buyer_facet": "other"},
+    ])
+    data["answer_option_ids"].update({"skipped-revisit": ["v1"], "skipped-sample": ["v0"]})
+    data["requirements"].append({
+        "requirement_id": "sample-open", "statement": sample, "topic": "sample", "status": "unresolved",
+        "option_ids": ["v0"], "provenance": [{
+            "input_ref": "answer:skipped-sample", "quote": None, "question_text": sample,
+            "action": "unresolved", "option_ids": ["v0"],
+        }],
+    })
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "deadline")
+    payload.pop("buyer_requirements")
+    attempts = []
+
+    def serve(http_request):
+        body = json.loads(http_request.content)
+        wire = json.loads(body["input"][0]["content"][0]["text"])
+        assert wire["skipped_questions"] == [{
+            "input_ref": "answer:skipped-sample", "question_text": sample, "buyer_facet": "other", "option_ids": ["v0"],
+        }]
+        attempts.append(body["instructions"])
+        if len(attempts) == 1:
+            return response(http_request, {
+                **payload, "open_preferences": [{
+                    "preference_id": "reopen-deadline", "topic": "deadline",
+                    "input_refs": ["answer:skipped-revisit"], "finding_ids": [],
+                }],
+            })
+        return response(http_request, payload)
+
+    result = run_review(request, images, serve)
+    assert isinstance(result, ReviewReady)
+    assert len(attempts) == 2 and "preference input references" in attempts[1]
+    assert [row.input_refs for row in result.report.open_preferences] == [["answer:skipped-sample"]]
+    assert result.report.open_preferences[0].option_ids == ["v0"]
+    kept = next(row for row in result.report.buyer_requirements if row.option_ids == ["v1"])
+    assert kept.quote == "The order must be delivered by 1 December."
+
+
 def test_unresolved_current_buyer_context_is_visible_and_supplier_question_stays_neutral(example):
     request, images = example
     context = "Laser engraving could work, depending on our internal margin."

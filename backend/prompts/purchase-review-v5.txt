@@ -62,8 +62,10 @@ seller language. The backend adds those open preferences automatically and links
 decide_preference finding scoped to the unresolved decision's topic and option_ids.
 
 When you need a new buyer decision beyond the ledger, add an open preference for it.
-Use only skipped_questions input_ref values as optional input_refs. Use empty input_refs
-when the preference was never asked, and use finding_ids to indicate affected options.
+Use only skipped_questions input_ref values as optional input_refs, within each entry's
+option_ids. The backend only supplies skipped answers that still support unresolved
+decisions. Use empty input_refs when the preference was never asked, and use finding_ids
+to indicate affected options.
 A decide_preference finding needs an open preference about the same topic, either selected
 here or from an unresolved requirement in the ledger. Use deadline for delivery timing.
 

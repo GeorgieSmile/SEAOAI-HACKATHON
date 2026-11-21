@@ -175,7 +175,7 @@ def test_round_four_is_rejected_before_provider_request(request_input):
 
 def test_first_provider_response_can_save_context_without_issuing_a_question(request_input):
     stock = "Ready-made stock only."
-    decoration = "The logo must be laser engraved."
+    decoration = "The logo needs to be laser engraved."
     request_input = request_input.model_copy(update={
         "buyer_context": f"{stock} {decoration} Internal margin target: 43.5%.",
     })
@@ -184,7 +184,10 @@ def test_first_provider_response_can_save_context_without_issuing_a_question(req
         "questions": [],
         "context_requirements": [
             {"statement": stock, "quote": stock, "topic": "customization", "option_ids": request_input.selected_option_ids},
-            {"statement": decoration, "quote": decoration, "topic": "finish", "option_ids": request_input.selected_option_ids},
+            {
+                "statement": decoration, "quote": decoration, "topic": "finish", "option_ids": request_input.selected_option_ids,
+                "supplier_target": {"kind": "decoration_method", "method": "laser_engraving", "intent": "require"},
+            },
         ],
     }
 
@@ -200,6 +203,27 @@ def test_first_provider_response_can_save_context_without_issuing_a_question(req
     result = run_questions(request_input, serve)
     assert result.questions == []
     assert [row.quote for row in result.context_requirements] == [stock, decoration]
+
+
+@pytest.mark.parametrize("context", [
+    "The logo does not need to be laser engraved.",
+    "The logo must not be laser engraved.",
+    "The logo needs to be laser engraved if Cedar-914 reaches its target margin.",
+])
+def test_provider_cannot_turn_negated_or_conditional_engraving_into_a_supplier_requirement(request_input, context):
+    request_input = request_input.model_copy(update={"buyer_context": context})
+    payload = {
+        "reason": "Review the buyer's decoration requirements.",
+        "questions": [],
+        "context_requirements": [{
+            "statement": context, "quote": context, "topic": "finish", "option_ids": request_input.selected_option_ids,
+            "supplier_target": {"kind": "decoration_method", "method": "laser_engraving", "intent": "require"},
+        }],
+    }
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, payload))
+    assert invalid.value.code == "invalid_questions"
+    assert "Cedar-914" not in str(invalid.value)
 
 
 @pytest.mark.parametrize(("context", "excerpt"), [

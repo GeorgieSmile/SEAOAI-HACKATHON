@@ -18,6 +18,7 @@ export interface Source {
 }
 
 export interface ListingSnapshot {
+  linked_option_id?: string | null;
   snapshot_id: string;
   title: string;
   options: ListingOption[];
@@ -236,15 +237,18 @@ export async function getCurrentCase(signal?: AbortSignal) {
   return result;
 }
 
-export async function uploadListing(file: File) {
-  const body = new FormData();
-  body.append("file", file);
-  const result = await request<IntakeResult>("/api/imports", "Could not read this ZIP file.", {
-    method: "POST", body,
-  });
-  if (result.status !== "ready" || !result.snapshot) {
-    throw new Error("Could not read this ZIP file.");
+export async function importListing(source: File | string) {
+  let init: RequestInit;
+  if (typeof source === "string") {
+    init = { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: source }) };
+  } else {
+    const body = new FormData();
+    body.append("file", source);
+    init = { method: "POST", body };
   }
+  const message = "Could not import the listing. Try again or choose a saved ZIP.";
+  const result = await request<IntakeResult>("/api/imports", message, init);
+  if (result.status !== "ready" || !result.snapshot) throw new Error(message);
   return result.snapshot;
 }
 

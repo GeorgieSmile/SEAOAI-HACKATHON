@@ -20,7 +20,7 @@ from .ai import (
     _build_client,
     _request_structured,
 )
-from .contracts import BuyerFacet, Option, ResolvedRequirement, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
+from .contracts import AnsweredQuestion, BuyerFacet, Option, ResolvedRequirement, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
 from .intake import IMAGE_MIME
 from .report_coverage import render_coverage, thumbnail_limitations
 from .report_models import (
@@ -282,6 +282,24 @@ class ReviewEvidence:
     metadata_only_image_ids: tuple[str, ...]
 
 
+def _open_skipped_questions(request: ReviewInput) -> Iterable[tuple[AnsweredQuestion, list[str]]]:
+    # A skipped revisit leaves its prior decision in place. Only a skip retained in
+    # current unresolved provenance can support an open preference.
+    scopes: dict[str, set[str]] = {}
+    for requirement in request.requirements or []:
+        if requirement.status == "unresolved":
+            for entry in requirement.provenance:
+                if entry.quote is None and entry.input_ref.startswith("answer:"):
+                    scopes.setdefault(entry.input_ref, set()).update(requirement.option_ids)
+    for answer in request.answers:
+        if answer.answer_text is not None:
+            continue
+        unresolved = scopes.get(f"answer:{answer.question_id}", set())
+        option_ids = [option_id for option_id in request.answer_option_ids.get(answer.question_id, []) if option_id in unresolved]
+        if option_ids:
+            yield answer, option_ids
+
+
 def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, bytes]]) -> ReviewEvidence:
     selected = set(request.selected_option_ids)
     image_inventory = [source for source in request.snapshot.sources if source.kind == "listing_image"]
@@ -340,10 +358,9 @@ def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, byte
                 "input_ref": f"answer:{answer.question_id}",
                 "question_text": answer.question_text,
                 "buyer_facet": answer.buyer_facet,
-                "option_ids": request.answer_option_ids[answer.question_id],
+                "option_ids": option_ids,
             }
-            for answer in request.answers
-            if answer.answer_text is None and answer.question_id in request.answer_option_ids
+            for answer, option_ids in _open_skipped_questions(request)
         ]
     content: list[ResponseInputContentParam] = [{"type": "input_text", "text": json.dumps(data, ensure_ascii=False)}]
     included_images: dict[tuple[str, bytes], list[str]] = {}
@@ -1097,10 +1114,10 @@ def assemble_review(
             raise ValueError("Use the supplied current requirement IDs instead of proposing buyer requirements.")
         inputs = {
             f"answer:{answer.question_id}": _BuyerInput(None, scope, _BuyerPosition(), PreferenceQuestion(
-                question_id=answer.question_id, question_text=answer.question_text, option_ids=scope,
+                question_id=answer.question_id, question_text=answer.question_text,
+                option_ids=request.answer_option_ids[answer.question_id],
             ))
-            for answer in request.answers
-            if answer.answer_text is None and (scope := request.answer_option_ids.get(answer.question_id))
+            for answer, scope in _open_skipped_questions(request)
         }
         requirements = _current_report_requirements(request, request.requirements)
         current_requirements = {row.requirement_id: row for row in request.requirements if row.status == "active"}

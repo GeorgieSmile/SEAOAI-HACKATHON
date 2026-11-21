@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from backend import requirements
 from backend.contracts import ContextRequirement, QuestionDraft, QuestionResult
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
@@ -172,3 +173,141 @@ def test_legacy_review_only_reuses_decisions_with_direct_stored_provenance(tmp_p
             changed = ready(client.post("/api/reviews", json=round_request(reopened, texts=["No."])))
             assert changed["requirements"][0]["status"] == "unresolved"
             assert changed["report"]["buyer_requirements"] == []
+
+
+@pytest.mark.parametrize(("case_type", "active", "keeps_review"), [
+    ("independent", ["Screen printing is required.", "A matte finish is required."], True),
+    ("different-sku", ["Screen printing is required.", "The logo must be laser engraved."], True),
+    ("same-facet", [], False),
+    ("indirect-overlap", [], False),
+    ("independent-unknown", ["Screen printing is required."], False),
+])
+def test_legacy_migration_preserves_independent_direct_decisions(tmp_path, case_type, active, keeps_review):
+    database = tmp_path / "legacy.db"
+    first_quote = "Screen printing is required."
+    second_quote, second_facet = {
+        "independent": ("A matte finish is required.", "surface_finish"),
+        "different-sku": ("The logo must be laser engraved.", "decoration_method"),
+        "same-facet": ("The logo must be laser engraved.", "decoration_method"),
+        "indirect-overlap": ("No.", None),
+        "independent-unknown": ("No preference on texture yet.", "surface_finish"),
+    }[case_type]
+
+    async def ask(inputs):
+        return QuestionResult(reason="Check the intended finish.", questions=[
+            QuestionDraft(
+                prompt="How should the artwork be applied?", why_ask="It determines the expected decoration.",
+                buyer_facet="decoration_method", option_ids=inputs.selected_option_ids[:1],
+                source_ids=[], choices=[first_quote],
+            ),
+            QuestionDraft(
+                prompt="Which surface texture do you need?" if second_facet == "surface_finish" else "Does the order need a different decoration?",
+                why_ask="This affects what to request from the supplier.", buyer_facet=second_facet,
+                option_ids=inputs.selected_option_ids[1:2] if case_type == "different-sku" else inputs.selected_option_ids[:1],
+                source_ids=[], choices=[second_quote],
+            ),
+        ])
+
+    async def old_review(inputs, images):
+        accepted = {"same-facet": (1,), "indirect-overlap": (0,), "independent-unknown": (0,)}.get(case_type, (0, 1))
+        content = minimal_content(inputs, topic="finish")
+        for index in accepted:
+            answer = inputs.answers[index]
+            old_id = f"legacy-{index}"
+            content["buyer_requirements"].append({
+                "requirement_id": old_id, "topic": "finish", "input_ref": f"answer:{answer.question_id}",
+                "quote": answer.answer_text,
+            })
+            content["findings"].append(finding_selection(
+                inputs.answer_option_ids[answer.question_id], finding_id=f"finish-{index}",
+                topic="finish", requirement_ids=[old_id],
+            ))
+        evidence = review_sent_evidence(inputs, images)
+        exact = ReviewContent.model_validate(content)
+        return ReviewReady(report=assemble_review(inputs, exact, sent_evidence=evidence), content=exact, sent_evidence=evidence)
+
+    with TestClient(create_app(database, translator=stub, question_generator=ask, review_generator=old_review)) as client:
+        snapshot = _upload(client).json()["snapshot"]
+        case = ready(client.post("/api/questions", json=initial_request(snapshot)))
+        old = ready(client.post("/api/reviews", json=round_request(case, texts=[first_quote, second_quote])))
+    _replace_saved_case(database, lambda record: record.pop("requirement_version"))
+
+    async def forbidden(*args):
+        pytest.fail("Startup must not call a provider.")
+
+    with TestClient(create_app(database, translator=stub, question_generator=forbidden, review_generator=forbidden)) as client:
+        recovered = client.get("/api/case").json()["case"]
+        assert recovered["rounds"] == old["rounds"]
+        assert [row["statement"] for row in recovered["requirements"] if row["status"] == "active"] == active
+        if keeps_review:
+            assert recovered["phase"] == "reviewed"
+            assert {finding["requirement_ids"][0] for finding in recovered["report"]["findings"]} == {
+                row["requirement_id"] for row in recovered["requirements"]
+            }
+        else:
+            assert recovered["last_operation"]["code"] == "review_regeneration_required"
+            assert recovered["report"] is None
+            assert any(row["status"] == "unresolved" for row in recovered["requirements"])
+
+    if not keeps_review:
+        with TestClient(create_app(database, translator=stub, question_generator=forbidden, review_generator=offline_review)) as client:
+            regenerated = ready(client.post("/api/case/retry", json=retry_request(recovered)))
+            assert [row["quote"] for row in regenerated["report"]["buyer_requirements"]] == active
+            assert regenerated["report"]["open_preferences"]
+
+
+@pytest.mark.parametrize("had_review", [True, False])
+def test_expanded_supplier_wording_preserves_saved_answer(tmp_path, monkeypatch, had_review):
+    database = tmp_path / "case.db"
+    quote = "The logo needs to be laser engraved."
+    infer = requirements.supplier_target_from_answer
+
+    async def ask(inputs):
+        if inputs.round_number > 1:
+            return QuestionResult(reason="There are no remaining questions.", questions=[])
+        return QuestionResult(reason="Check the intended decoration.", context_requirements=[], questions=[QuestionDraft.model_validate({
+            "prompt": "How should the artwork be applied?", "why_ask": "The method affects the expected result.",
+            "topic": "finish", "buyer_facet": "decoration_method", "option_ids": inputs.selected_option_ids,
+            "source_ids": [], "choices": [quote], "requirement_ids": [],
+            "choice_effects": [{"choice": quote, "action": "add", "statement": quote, "requirement_id": None}],
+        })])
+
+    def old_infer(answer, topic, facet):
+        return None if answer == quote else infer(answer, topic, facet)
+
+    options = dict(translator=stub, question_generator=ask, review_generator=offline_review)
+    with monkeypatch.context() as patch:
+        patch.setattr(requirements, "supplier_target_from_answer", old_infer)
+        with TestClient(create_app(database, **options)) as client:
+            snapshot = _upload(client).json()["snapshot"]
+            case = ready(client.post("/api/questions", json=initial_request(snapshot)))
+            endpoint = "/api/reviews" if had_review else "/api/questions/continue"
+            previous = ready(client.post(endpoint, json=round_request(case, texts=[quote])))
+            assert previous["requirements"][0]["supplier_target"] is None
+
+    async def forbidden(*args):
+        pytest.fail("Recovery must not call a provider.")
+
+    with TestClient(create_app(database, **{**options, "question_generator": forbidden, "review_generator": forbidden})) as client:
+        recovered = client.get("/api/case").json()["case"]
+        if had_review:
+            assert recovered["last_operation"]["code"] == "review_regeneration_required"
+        else:
+            assert recovered["phase"] == "ready_for_review"
+            assert recovered["last_operation"] == previous["last_operation"]
+        assert recovered["report"] is None
+        assert recovered["rounds"] == previous["rounds"]
+        current, = recovered["requirements"]
+        assert current["statement"] == quote
+        assert current["requirement_id"] == previous["requirements"][0]["requirement_id"]
+        assert current["supplier_target"] == {"kind": "decoration_method", "method": "laser_engraving", "intent": "require"}
+
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == recovered
+        if had_review:
+            regenerated = ready(client.post("/api/case/retry", json=retry_request(recovered)))
+        else:
+            command = {**reference(recovered), "operation_id": str(uuid4()), "submission": None}
+            regenerated = ready(client.post("/api/reviews", json=command))
+        assert regenerated["requirements"] == recovered["requirements"]
+        assert "laser engraving" in regenerated["report"]["supplier_draft"]
