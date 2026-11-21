@@ -77,10 +77,12 @@ export function useInterviewSession() {
     return id;
   }
 
-  function requireReload() {
+  function acceptSavedVersion(saved: CaseView | null, expected: CaseVersion | null) {
+    if (canReconcile(saved, expected, lastSent.current)) return true;
     setRequiresReload(true);
     setNeedsRefresh(true);
     setError("The saved interview changed. Reload saved progress before confirming again.");
+    return false;
   }
 
   async function run(
@@ -125,11 +127,7 @@ export function useInterviewSession() {
       // A lost response can still leave committed answers or a running operation.
       try {
         const saved = await savedInterview(snapshotId);
-        if (!isCurrent()) return null;
-        if (!canReconcile(saved, expected, lastSent.current)) {
-          requireReload();
-          return null;
-        }
+        if (!isCurrent() || !acceptSavedVersion(saved, expected)) return null;
         setView(saved);
         if (id && saved?.last_operation?.operation_id === id) {
           if (saved.last_operation.status === "ready") {
@@ -162,11 +160,7 @@ export function useInterviewSession() {
     const refreshBeforeStart = pending.current || needsRefresh;
     return run("start", selection.snapshot_id, async (bind, isCurrent) => {
       const previous = refreshBeforeStart ? await savedInterview(selection.snapshot_id) : view;
-      if (!isCurrent()) return null;
-      if (!canReconcile(previous, caseVersion(view), lastSent.current)) {
-        requireReload();
-        return null;
-      }
+      if (!isCurrent() || !acceptSavedVersion(previous, caseVersion(view))) return null;
       const payload = { ...selection, previous_case: caseVersion(previous) };
       return startQuestions({ ...payload, operation_id: bind(payload, payload.previous_case, "start") });
     }, true);
@@ -198,7 +192,7 @@ export function useInterviewSession() {
     setError("");
     try {
       const saved = await savedInterview(snapshotId);
-      if (activeRequest.current === request) {
+      if (activeRequest.current === request && acceptSavedVersion(saved, caseVersion(view))) {
         setView(saved);
         setNeedsRefresh(false);
       }

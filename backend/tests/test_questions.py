@@ -447,6 +447,47 @@ def test_first_person_clause_does_not_hide_real_lists(request_input):
         assert invalid.value.code == "invalid_questions"
 
 
+@pytest.mark.parametrize("choice", [
+    "For Option B, a printed proof would be enough.",
+    "For Option B, a clearly dated, independently printed proof would be enough.",
+    "I would buy Option B, and a dated printed proof would be enough.",
+    "I would choose Option B and a signed copy of the proof.",
+])
+def test_article_clause_is_not_part_of_an_option_list(request_input, choice):
+    output = plan(
+        option_ids=["v0"], source_ids=[],
+        prompt="Which proof do you need for Option B before ordering?",
+        why_ask="Your answer determines which paperwork to request.",
+        choices=[choice],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+    output["questions"][0]["choices"] = [choice.replace("Option B", "Option A")]
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+@pytest.mark.parametrize("choice", [
+    "Options B, C, and a would require proof.",
+    "Options B and a would require proof.",
+    "Options B/a would require proof.",
+    "Option B and SKU a would require proof.",
+    "For Options B, a, and C, a printed proof would be enough.",
+])
+def test_real_lists_still_validate_every_option_with_a_lowercase_a(request_input, choice):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v1", "v0", "v6"]})
+    output = plan(
+        option_ids=["v0", "v6"], source_ids=[],
+        why_ask="Your answer determines which paperwork to request.",
+        choices=[choice],
+    )
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
 def test_question_about_required_proof_does_not_assert_a_product_fact(request_input):
     request_input = request_input.model_copy(update={
         "buyer_context": "We supply schools and may need paperwork for the drinks containers.",

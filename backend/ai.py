@@ -59,11 +59,9 @@ CLAUSE_BOUNDARY = re.compile(
     re.IGNORECASE,
 )
 GENERIC_OPTION_PREFIX = re.compile(r"\b(?:an|any|the|which|whichever|this|that|each)\s*$", re.IGNORECASE)
-ARTICLE_FOLLOWED_BY_NOUN = re.compile(
-    r"^\s+\w+\s+(?:is|are|has|have|can|could|will|would|may|might|must|needs?|wants?|chooses?|requested)\b",
-    re.IGNORECASE,
+BARE_CLAUSE_START = re.compile(
+    r"(?:(?P<comma>,)\s*(?P<oxford>(?i:and|or)\s+)?|\s+(?i:and|or)\s+)(?P<word>a|[Ii])$"
 )
-COMMA_BEFORE_I = re.compile(r",\s*(?P<conjunction>(?:and|or)\s+)?I$", re.IGNORECASE)
 OPTION_NAME_AFTER = re.compile(
     r"^\s*(?:(?:['’]s?\s+|,\s+(?:the\s+)?)(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\b"
     r"|(?:uses?|includes?|contains?)\b[^,.;?!]*\b(?:wording|names?)\b)",
@@ -353,6 +351,33 @@ def _normalized_question_text(text: str) -> str:
     return " ".join(normalize("NFKC", text).casefold().split()).rstrip(" ?!.")
 
 
+def _option_references(match: re.Match[str], before: str, after: str) -> tuple[set[str], str]:
+    option_list = match["letters"] or match["possessive"]
+    kind = (match["kind"] or "").casefold()
+    tail = BARE_CLAUSE_START.search(option_list)
+    if tail and re.match(r"^(?:\s+|['’](?!s\b))\w", after):
+        head = option_list[:tail.start()]
+        oxford_list = tail["oxford"] and "," in head
+        # "Option B, a printed proof..." and "Option B and a signed copy..." start prose.
+        # An Oxford list, plural coordination, slash, or repeated label still names options.
+        if (tail["comma"] and not oxford_list) or (
+            tail["word"] == "a" and len(head) == 1 and not kind.endswith("s")
+        ):
+            after = option_list[tail.start():] + after
+            option_list = head
+
+    if (
+        option_list == "a"
+        and kind == "option"
+        and GENERIC_OPTION_PREFIX.search(before)
+        and re.match(r"^\s+\w+\s+\w", after)
+        and not OPTION_CLAIM_AFTER.match(after)
+    ):
+        # In "an option a buyer can choose", the second "a" introduces a relative clause.
+        return set(), after
+    return {letter.upper() for letter in re.findall(r"\b[A-Za-z]\b", option_list)}, after
+
+
 def _validate_named_options(
     text: str,
     *,
@@ -368,22 +393,9 @@ def _validate_named_options(
     for statement in CLAUSE_BOUNDARY.split(text):
         for match in NAMED_OPTIONS.finditer(statement):
             before = statement[:match.start()]
-            after = statement[match.end():]
-            option_list = match["letters"] or match["possessive"]
-            comma = COMMA_BEFORE_I.search(option_list)
-            if comma and re.match(r"^(?:\s+|['’](?!s\b))\w", after):
-                # A comma can start a first-person clause. Keep a terminal I in an Oxford list.
-                if not (comma["conjunction"] and "," in option_list[:comma.start()]):
-                    after = option_list[comma.start():] + after
-                    option_list = option_list[:comma.start()]
-            letters = re.findall(r"\b[A-Za-z]\b", option_list)
-            if letters[-1] == "a" and ARTICLE_FOLLOWED_BY_NOUN.match(after):
-                if len(letters) == 1 and match["kind"].casefold() == "option" and GENERIC_OPTION_PREFIX.search(before):
-                    continue
-                # A joined clause may start with an article, as in "Option B and a buyer can...".
-                if len(letters) > 1 and re.search(r"(?:,|\band\b|\bor\b)\s+a$", match["letters"]):
-                    letters.pop()
-            references = {letter.upper() for letter in letters}
+            references, after = _option_references(match, before, statement[match.end():])
+            if not references:
+                continue
             if not references.issubset(allowed):
                 raise QuestionGenerationError(
                     "invalid_questions", "Use only the option references covered by this question or reason."

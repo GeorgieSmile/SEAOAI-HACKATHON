@@ -413,8 +413,15 @@ test("retains a draft and resends the identical command after a lost submission"
   await expect(page.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
 });
 
-for (const change of ["different case", "newer revision"] as const) {
-  test(`requires reload before replacing another tab's ${change} while one's own request is delayed`, async ({ page: tabA, context }) => {
+const staleTabScenarios = [
+  { change: "different case", action: "Confirm options" },
+  { change: "newer revision", action: "Confirm options" },
+  { change: "different case", action: "Resume questions" },
+  { change: "newer revision", action: "Resume questions" },
+] as const;
+
+for (const { change, action } of staleTabScenarios) {
+  test(`requires reload for another tab's ${change} after ${action} during a delayed request`, async ({ page: tabA, context }) => {
     const tabB = await context.newPage();
     let saved = view();
     let release!: () => void;
@@ -467,7 +474,7 @@ for (const change of ["different case", "newer revision"] as const) {
       await tabA.getByRole("button", { name: "Continue", exact: true }).click();
       await ownRequest;
       await tabA.getByRole("button", { name: "Change options or context" }).click();
-      await tabA.getByRole("checkbox").nth(1).uncheck();
+      if (action === "Confirm options") await tabA.getByRole("checkbox").nth(1).uncheck();
       await expect.poll(() => saved.revision).toBe(1);
 
       await tabB.goto("/");
@@ -482,8 +489,12 @@ for (const change of ["different case", "newer revision"] as const) {
       await expect(tabB.getByText("Saved by the other tab.")).toBeVisible();
       const newer = saved;
 
-      await tabA.getByRole("button", { name: "Confirm options" }).click();
-      await expect(tabA.getByRole("alert")).toContainText("The saved interview changed.");
+      await tabA.getByRole("button", { name: action }).click();
+      await expect(tabA.getByRole("button", { name: "Change options or context" })).toBeDisabled();
+      await expect(tabA.getByRole("alert")).toHaveText(
+        "The saved interview changed. Reload saved progress before confirming again.",
+      );
+      await expect(tabA.getByText("Saved by the other tab.")).toHaveCount(0);
       expect(tabAWrites).toEqual(["/api/questions/continue"]);
       await tabA.getByRole("button", { name: "Reload saved progress" }).click();
       await expect(tabA.getByText("Saved by the other tab.")).toBeVisible();
@@ -581,6 +592,44 @@ test("can replace the case created by the current tab's own delayed initial star
       previous_case: { case_id: "own-first-case", revision: 0 }, selected_option_ids: ["v1"],
     });
     await expect(page.getByText("New selection in this tab.")).toBeVisible();
+  } finally {
+    release();
+  }
+});
+
+test("Resume questions loads the same tab's completed round without another write", async ({ page }) => {
+  let saved = view();
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  const writes = trackWrites(page);
+  await page.route("**/api/questions/continue", async (route) => {
+    const request = route.request().postDataJSON();
+    const result = view({
+      revision: 1, rounds: [{ ...firstRound, answers: request.submission.answers }, secondRound],
+      last_operation: operation("continue", "ready", request.operation_id),
+    });
+    saved = result;
+    await hold;
+    await route.fulfill({ json: response(result) });
+  });
+  await mockSaved(page, () => saved);
+
+  try {
+    await page.getByRole("radio", { name: "Screen printing is required." }).check();
+    const submitted = page.waitForRequest("**/api/questions/continue");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await submitted;
+    await page.getByRole("button", { name: "Change options or context" }).click();
+    await expect.poll(() => saved.revision).toBe(1);
+
+    const restored = page.waitForRequest("**/api/case");
+    await page.getByRole("button", { name: "Resume questions" }).click();
+    expect((await restored).method()).toBe("GET");
+    await expect(page.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await page.getByText("Round 1 answers", { exact: true }).click();
+    await expect(page.getByText("Screen printing is required.", { exact: true })).toBeVisible();
+    expect(writes).toEqual(["/api/questions/continue"]);
   } finally {
     release();
   }
