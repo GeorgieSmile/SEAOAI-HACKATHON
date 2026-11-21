@@ -64,6 +64,7 @@ test("opens scoped source evidence and compares ordered options while draft edit
           option_id: id,
           claim_ids: id === "v6" ? [nameClaim.claim_id, imageClaim.claim_id] : [],
           summary: id === "v6" ? "" : "No SKU-specific evidence cited for this topic.",
+          limitations: [],
         })),
       },
     ],
@@ -148,6 +149,56 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);
 });
 
+test("shows an option's thumbnail limitation beside its available comparison evidence", async ({ page }) => {
+  const limitation = "The saved thumbnail for Option A is missing. Its capacity label could not be checked.";
+  const base = richReport.comparisons.find((comparison) => comparison.label === "Capacity")!;
+  const nameClaim = richReport.claims.find((claim) => claim.source_id === "name-v0")!;
+  const report = {
+    ...richReport,
+    comparisons: [{
+      ...base,
+      values: base.values.map((value) => value.option_id === "v0"
+        ? { ...value, summary: nameClaim.display_text, claim_ids: [nameClaim.claim_id], limitations: [limitation] }
+        : value),
+    }],
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openWorkspace(page, () => reviewed(report));
+  const comparison = page.getByRole("table", { name: "Compare selected options" });
+  const cells = comparison.getByRole("cell");
+  const affected = cells.nth(0);
+  await expect(affected.getByText("Option A", { exact: true })).toBeVisible();
+  await expect(affected.locator("summary")).toHaveText(nameClaim.display_text);
+  await expect(affected.getByText(limitation, { exact: true })).toBeVisible();
+  await expect(affected.getByText("Thumbnail label: 750 ml", { exact: true })).toHaveCount(0);
+  await expect(cells.nth(1).getByText(limitation, { exact: true })).toHaveCount(0);
+  await expect(cells.nth(2).getByText(limitation, { exact: true })).toHaveCount(0);
+});
+
+test("shows report buyer inputs with the issued questions and their SKU scopes", async ({ page }) => {
+  const report: PurchaseReview = {
+    ...skipReport,
+    buyer_requirements: [{
+      requirement_id: "scoped-finish", text: "Screen printing is required.", quote: "Screen printing is required.",
+      input_ref: "answer:q-finish", option_ids: ["v1"],
+      question_text: "Does the black and white option need screen printing?",
+    }],
+    open_preferences: [{
+      preference_id: "open-use", text: "Your requirements for drink use remain open.",
+      input_refs: ["context", "answer:q-use"], finding_ids: [], option_ids: ["v0", "v6"],
+      questions: [{
+        question_id: "q-use", question_text: "Will you use the first option for hot drinks?", option_ids: ["v0"],
+      }],
+    }],
+  };
+  await openWorkspace(page, () => reviewed(report));
+  const inputs = page.getByRole("region", { name: "Buyer inputs" });
+  await expect(inputs.getByText("Your answer to “Does the black and white option need screen printing?” · Option B")).toBeVisible();
+  await expect(inputs.getByText("Your requirements for drink use remain open. · Option A, Option C")).toBeVisible();
+  await expect(inputs.getByText("Your purchase context", { exact: true })).toBeVisible();
+  await expect(inputs.getByText("Question “Will you use the first option for hot drinks?” · Option A")).toBeVisible();
+});
+
 test("shows three coverage groups and limitations for a report with no findings or supplier draft", async ({ page }) => {
   const empty = {
     ...skipReport, findings: [], open_preferences: [], supplier_draft: "",
@@ -162,6 +213,9 @@ test("shows three coverage groups and limitations for a report with no findings 
     "Product match", "Intended use", "Supporting evidence", "Review limitations",
   ]);
   await expect(coverage.getByText("Reviewed", { exact: true })).toBeVisible();
+  await expect(coverage.locator(".review-coverage > li > p:last-child")).toHaveText(
+    empty.coverage.map((group) => group.note),
+  );
   await expect(coverage.getByText(/Product-detail images were not reviewed/)).toBeVisible();
   await expect(page.getByText("This review has no questions for the supplier.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);

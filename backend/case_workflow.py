@@ -85,6 +85,17 @@ def _input_fields(snapshot: ListingSnapshot, case: CaseView) -> dict:
     }
 
 
+def _review_input(snapshot: ListingSnapshot, case: CaseView) -> ReviewInput:
+    return ReviewInput(
+        **_input_fields(snapshot, case),
+        answer_option_ids={
+            question.question_id: question.option_ids
+            for round in case.rounds if round.answers is not None
+            for question in round.questions
+        },
+    )
+
+
 def _apply_submission(case: CaseView, submission: AnswerSubmission) -> CaseView:
     for index, round in enumerate(case.rounds):
         if round.round_id == submission.round_id:
@@ -123,19 +134,25 @@ def _failure(record: CaseRecord, code: str, message: str) -> CaseRecord:
 def _legacy_report_matches(report: object, inputs: ReviewInput) -> bool:
     if not isinstance(report, dict) or report.keys() != LEGACY_REPORT_FIELDS:
         return False
-    if (
-        report["case_id"], report["revision"], report["snapshot_id"], report["selected_option_ids"],
-    ) != (inputs.case_id, inputs.revision, inputs.snapshot.snapshot_id, inputs.selected_option_ids):
-        return False
     return (
-        isinstance(report["comparisons"], list) and len(report["comparisons"]) > 0
+        _report_binding_matches(report, inputs)
+        and isinstance(report["comparisons"], list) and len(report["comparisons"]) > 0
         and all(isinstance(row, dict) and row.keys() == {"label", "values"} for row in report["comparisons"])
         and isinstance(report["findings"], list)
         and all(isinstance(row, dict) and "claim_ids" not in row for row in report["findings"])
     )
 
 
-def _review_digest(inputs: ReviewInput, operation_id: str, images: ReviewImages, scope: SentReviewEvidence) -> str:
+def _report_binding_matches(report: dict, inputs: ReviewInput) -> bool:
+    return (report.get("case_id"), report.get("revision"), report.get("snapshot_id"), report.get("selected_option_ids")) == (
+        inputs.case_id, inputs.revision, inputs.snapshot.snapshot_id, inputs.selected_option_ids,
+    )
+
+
+def _review_digest(
+    inputs: ReviewInput, operation_id: str, images: ReviewImages, scope: SentReviewEvidence, *,
+    include_answer_scope: bool = True,
+) -> str:
     if scope != review_sent_evidence(inputs, images):
         raise ValueError("The sent evidence does not match the case request.")
     # Include the source binding and bytes of each attachment, not just its snapshot locator.
@@ -143,8 +160,9 @@ def _review_digest(inputs: ReviewInput, operation_id: str, images: ReviewImages,
     for source_id in scope.attached_image_ids:
         mime, payload = images[source_id]
         attachments.append((source_id, mime, sha256(payload).hexdigest()))
+    input_fields = inputs.model_dump(mode="json", exclude=None if include_answer_scope else {"answer_option_ids"})
     material = {
-        "input": inputs.model_dump(mode="json"), "operation_id": operation_id,
+        "input": input_fields, "operation_id": operation_id,
         "scope": scope.model_dump(mode="json"), "attachments": attachments,
     }
     return sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -172,7 +190,7 @@ class CaseWorkflow:
             return
         if snapshot is None or case.snapshot_id != snapshot.snapshot_id or operation.stage != "review":
             raise sqlite3.DatabaseError("The saved review has no matching case snapshot or operation.")
-        inputs = ReviewInput(**_input_fields(snapshot, case))
+        inputs = _review_input(snapshot, case)
         if operation.status == "ready" and saved_review is None and _legacy_report_matches(report, inputs):
             failed = _failure(record, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
@@ -183,14 +201,34 @@ class CaseWorkflow:
                 raise ValueError("The saved review operation has not completed successfully.")
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
             images = self._review_images(inputs)
-            if validated.input_digest != _review_digest(inputs, operation.operation_id, images, validated.sent_evidence):
+            digest = _review_digest(
+                inputs, operation.operation_id, images, validated.sent_evidence,
+                include_answer_scope=validated.version == 3,
+            )
+            if validated.input_digest != digest:
                 raise ValueError("The saved review belongs to different case input or evidence.")
             rebuilt = assemble_review(inputs, validated.content, sent_evidence=validated.sent_evidence)
-            if rebuilt != PurchaseReview.model_validate(report):
+            if validated.version == 2:
+                if (
+                    not isinstance(report, dict) or report.keys() != LEGACY_REPORT_FIELDS | {"contract_version", "claims"}
+                    or report["contract_version"] != 2 or not _report_binding_matches(report, inputs)
+                ):
+                    raise ValueError("The saved report does not match the earlier case projection.")
+            elif rebuilt != PurchaseReview.model_validate(report):
                 raise ValueError("The saved report does not match its validated claims.")
         except ValueError:
             failed = _failure(record, "invalid_review", INVALID_REVIEW)
             self._save(generation, record, failed)
+            return
+        if validated.version == 2:
+            # Earlier envelopes bound the answer text. The issued questions supply its scope on migration.
+            migrated = validated.model_copy(update={
+                "version": 3,
+                "input_digest": _review_digest(inputs, operation.operation_id, images, validated.sent_evidence),
+            })
+            self._save(generation, record, record.model_copy(update={
+                "view": case.model_copy(update={"report": rebuilt}), "saved_review": migrated,
+            }))
 
     def reset(self, command: ResetCase) -> None:
         generation, snapshot, current = self.store.workspace()
@@ -248,7 +286,7 @@ class CaseWorkflow:
             ):
                 self._save(generation, current, current, command=command, stage=stage)
                 return _operation_result(previous)
-            review_input = ReviewInput(**_input_fields(snapshot, case))
+            review_input = _review_input(snapshot, case)
             images = self._review_images(review_input)
             case = case.model_copy(update={
                 "phase": "generating_review",
@@ -287,7 +325,7 @@ class CaseWorkflow:
         if operation.stage == "review":
             if snapshot is None or snapshot.snapshot_id != case.snapshot_id:
                 raise _obsolete(case)
-            review_input = ReviewInput(**_input_fields(snapshot, case))
+            review_input = _review_input(snapshot, case)
             images = self._review_images(review_input)
             pending = CaseRecord(review_input=review_input, view=case.model_copy(update={
                 "phase": "generating_review", "last_operation": operation,
@@ -400,7 +438,7 @@ class CaseWorkflow:
                     raise ValueError("The report does not match its validated claims.")
                 settled = CaseRecord(
                     view=record.view.model_copy(update={"phase": "reviewed", "report": report, "last_operation": operation}),
-                    saved_review=SavedReview(version=2, input_digest=digest, content=result.content, sent_evidence=scope),
+                    saved_review=SavedReview(version=3, input_digest=digest, content=result.content, sent_evidence=scope),
                 )
         except (AttributeError, TypeError, ValidationError, ValueError):
             settled = _failure(record, "invalid_review", INVALID_REVIEW)

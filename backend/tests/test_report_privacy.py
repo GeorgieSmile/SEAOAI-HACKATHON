@@ -11,14 +11,16 @@ from backend.tests.test_reports import (
 
 
 def build_case(listing, buyer_text, *, source="answer"):
+    option_id = listing.snapshot.options[0].option_id
     return ReviewInput.model_validate({
         "case_id": "privacy-case", "revision": 1, "snapshot": listing.snapshot.model_dump(),
-        "selected_option_ids": [listing.snapshot.options[0].option_id],
+        "selected_option_ids": [option_id],
         "buyer_context": buyer_text if source == "context" else "",
         "answers": [{
             "question_id": "issued-1", "question_text": "What else should the review consider?",
             "answer_text": buyer_text if source == "answer" else None,
         }],
+        "answer_option_ids": {"issued-1": [option_id]},
     })
 
 
@@ -145,3 +147,168 @@ def test_order_type_action_requires_a_related_buyer_reference(parsed_listing):
 
     with pytest.raises(ValueError, match="buyer requirement about order type"):
         assemble(request, {}, payload)
+
+
+def stock_finding(option_ids, *requirement_ids, action="confirm_custom_order"):
+    return finding_selection(
+        option_ids, topic="finish", requirement_ids=list(requirement_ids), supplier_action=action,
+    )
+
+
+def buyer_selection(requirement_id, question_id, quote, *, topic="customization"):
+    return {
+        "requirement_id": requirement_id, "topic": topic,
+        "input_ref": f"answer:{question_id}", "quote": quote,
+    }
+
+
+def test_requirement_rejects_a_buyer_substring_that_reverses_full_intent(parsed_listing):
+    request = build_case(parsed_listing, "I do not require screen printing.")
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [
+        buyer_selection("finish", "issued-1", "require screen printing", topic="finish"),
+    ]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "finish", action="confirm_specification")]
+
+    with pytest.raises(ValueError, match="full verbatim quote"):
+        assemble(request, {}, payload)
+
+    payload["buyer_requirements"][0]["quote"] = "I do not require screen printing."
+    rendered = assemble(request, {}, payload)
+    assert rendered.buyer_requirements[0].quote == "I do not require screen printing."
+    assert rendered.buyer_requirements[0].question_text == "What else should the review consider?"
+    assert "with screen printing?" not in rendered.supplier_draft
+    assert "without screen printing?" not in rendered.supplier_draft
+
+
+@pytest.mark.parametrize(("buyer_text", "target", "wrong"), [
+    ("Screen printing is required.", "with screen printing?", "without screen printing?"),
+    ("Screen printing is unacceptable.", "without screen printing?", "with screen printing?"),
+    ("Screen printing might work, but I am not sure.", None, "without screen printing?"),
+])
+def test_supplier_checks_required_or_avoided_finish_from_the_complete_answer(parsed_listing, buyer_text, target, wrong):
+    request = build_case(parsed_listing, f"  {buyer_text} ")
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("finish", "issued-1", buyer_text, topic="finish")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "finish", action="confirm_specification")]
+
+    rendered = assemble(request, {}, payload)
+
+    assert rendered.buyer_requirements[0].text == buyer_text
+    if target is not None:
+        assert target in rendered.supplier_draft
+    else:
+        assert "with screen printing?" not in rendered.supplier_draft
+    assert wrong not in rendered.supplier_draft
+    assert buyer_text not in rendered.supplier_draft
+
+
+@pytest.mark.parametrize(("buyer_text", "custom", "stock"), [
+    ("Ready-made only", False, True),
+    ("Custom orders are acceptable", True, False),
+    ("Ready-made only for A, but I would consider a custom order for B.", False, False),
+    ("Custom orders might be acceptable. Private note: 40%.", False, False),
+    ("Custom orders are acceptable?", False, False),
+    ("I don't want custom orders.", False, False),
+])
+def test_provider_action_cannot_override_the_direction_of_the_complete_current_answer(parsed_listing, buyer_text, custom, stock):
+    request = build_case(parsed_listing, buyer_text)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("order", "issued-1", buyer_text)]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "order")]
+
+    rendered = assemble(request, {}, payload)
+
+    assert ("minimum order quantity" in rendered.supplier_draft) == custom
+    assert ("Please answer for ready-made stock." in rendered.supplier_draft) == stock
+    assert "40%" not in rendered.supplier_draft
+
+
+def test_later_answer_overrides_order_type_only_for_the_issued_option_scope(example):
+    request, images = example
+    data = request.model_dump()
+    data["answers"] = [
+        {"question_id": "original-order", "question_text": "Would you consider a custom order?", "answer_text": "Ready-made only"},
+        {
+            "question_id": "a-order", "question_text": "Would you consider custom production for Option A?",
+            "answer_text": "Custom orders are acceptable",
+        },
+    ]
+    data["answer_option_ids"] = {"original-order": ["v0", "v1", "v6"], "a-order": ["v0"]}
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [
+        buyer_selection("old-order", "original-order", "Ready-made only"),
+        buyer_selection("new-order", "a-order", "Custom orders are acceptable"),
+    ]
+    payload["findings"] = [
+        {**stock_finding(["v0"], "new-order"), "finding_id": "custom-a"},
+        {**stock_finding(["v1", "v6"], "old-order"), "finding_id": "stock-bc"},
+    ]
+
+    rendered = assemble(request, images, payload)
+    assert [row.option_ids for row in rendered.buyer_requirements] == [["v1", "v6"], ["v0"]]
+    assert "minimum order quantity" in rendered.findings[0].supplier_question
+    assert "Please answer for ready-made stock." in rendered.findings[1].supplier_question
+
+    payload["findings"][0]["requirement_ids"] = ["old-order"]
+    with pytest.raises(ValueError, match="current option scope"):
+        assemble(request, images, payload)
+
+
+def test_a_later_ambiguous_answer_blocks_a_stale_direction_even_if_provider_omits_it(parsed_listing):
+    request = build_case(parsed_listing, "Custom orders are acceptable")
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "follow-up",
+        "question_text": "Has your position on custom orders changed?",
+        "answer_text": "I'm undecided and will have to check.",
+    })
+    data["answer_option_ids"]["follow-up"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("old-order", "issued-1", "Custom orders are acceptable")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "old-order")]
+
+    with pytest.raises(ValueError, match="current buyer input"):
+        assemble(request, {}, payload)
+
+    payload["buyer_requirements"] = [buyer_selection("current", "follow-up", "I'm undecided and will have to check.")]
+    payload["findings"][0]["requirement_ids"] = ["current"]
+    payload["findings"][0]["supplier_action"] = "confirm_specification"
+    rendered = assemble(request, {}, payload)
+    assert "minimum order quantity" not in rendered.supplier_draft
+
+
+def test_a_later_sample_answer_does_not_replace_a_custom_order_answer(parsed_listing):
+    request = build_case(parsed_listing, "Custom orders are acceptable")
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "sample",
+        "question_text": "Would you require a sample before placing a custom order?",
+        "answer_text": "A sample is required.",
+    })
+    data["answer_option_ids"]["sample"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [
+        buyer_selection("order", "issued-1", "Custom orders are acceptable"),
+        buyer_selection("sample", "sample", "A sample is required.", topic="sample"),
+    ]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "order")]
+
+    rendered = assemble(request, {}, payload)
+
+    assert "minimum order quantity" in rendered.supplier_draft
+    assert {requirement.requirement_id for requirement in rendered.buyer_requirements} == {"order", "sample"}
+
+
+def test_exact_capacity_requirement_yields_controlled_seller_question(parsed_listing):
+    request = build_case(parsed_listing, "I require 720.0 mL.")
+    payload = minimal_content(request, "capacity")
+    payload["buyer_requirements"] = [buyer_selection("exact", "issued-1", "I require 720.0 mL.", topic="capacity")]
+    payload["findings"] = [finding_selection(request.selected_option_ids, requirement_ids=["exact"])]
+
+    rendered = assemble(request, {}, payload)
+    assert "Can each named option meet 720 ml" in rendered.supplier_draft
+    assert "I require 720.0 mL." not in rendered.supplier_draft

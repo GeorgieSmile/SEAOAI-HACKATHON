@@ -848,6 +848,7 @@ fieldset {
 .review-no-comparisons .original { font-weight: 400; }
 .review-option-name { display: block; margin-top: 2px; }
 .comparison-mobile-option { display: none; }
+.comparison-limitations { margin: 8px 0 0; padding-inline-start: 18px; font-size: .875rem; }
 
 .review-no-comparisons { margin-top: 12px; }
 .review-no-comparisons ul { margin-bottom: 0; padding-left: 20px; }

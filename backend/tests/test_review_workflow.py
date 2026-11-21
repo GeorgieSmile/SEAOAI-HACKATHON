@@ -9,16 +9,20 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+import httpx2
+from openai import AsyncOpenAI
 import pytest
 
 from backend.case_models import CaseOperation, CaseRecord
-from backend.contracts import QuestionResult, ReviewInput
+from backend.contracts import QuestionDraft, QuestionResult, ReviewInput
 from backend.main import create_app
+from backend.report import generate_review
 from backend.report_models import ReviewFailed
 from backend.state import Store
 from backend.tests.offline_server import offline_review
 from backend.tests.test_cases import drafts, initial_request, ready, reference, round_request
 from backend.tests.test_imports import INVENTORY, RAW, _copy_zip, _image_url, _upload, stub
+from backend.tests.test_reports import finding_selection, minimal_content, response as provider_response
 
 
 def retry_request(case):
@@ -280,6 +284,8 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
 """, str(database)], check=False, timeout=15)
     assert process.returncode == 23
 
+    # The old persisted input did not carry scope. Retry must read it from the actual questions.
+    _replace_saved_case(database, lambda record: record["review_input"].pop("answer_option_ids"))
     calls = []
 
     async def review(inputs, images):
@@ -303,6 +309,9 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
         (inputs, images), = calls
         assert inputs.snapshot.snapshot_id == snapshot["snapshot_id"]
         assert [answer.answer_text for answer in inputs.answers] == ["Already saved", None]
+        assert inputs.answer_option_ids == {
+            question["question_id"]: question["option_ids"] for question in saved["rounds"][0]["questions"]
+        }
         assert len(images) == 3
 
 
@@ -355,6 +364,90 @@ def _replace_saved_case(database, change):
         connection.execute("UPDATE active_case SET data = ?", (json.dumps(record),))
 
 
+def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tmp_path):
+    database = tmp_path / "case.db"
+    answer = "This option has to hold 720 ml."
+    requests = []
+    wrong_sku = True
+
+    async def ask_about_first_sku(inputs):
+        assert "answer_option_ids" not in inputs.model_dump()
+        return QuestionResult(reason="Identify the first option's requirement.", questions=[QuestionDraft(
+            prompt="What capacity is required for Option A?", why_ask="This applies to the first selected option.",
+            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[],
+        )])
+
+    async def review(inputs, images):
+        option_a, option_b = inputs.selected_option_ids
+
+        def serve(request):
+            wire_input = json.loads(request.content)["input"][0]["content"][0]["text"]
+            (wire_answer,) = json.loads(wire_input)["answers"]
+            requests.append(wire_answer)
+            payload = minimal_content(inputs)
+            payload["buyer_requirements"] = [{
+                "requirement_id": "only-option-a", "topic": "capacity",
+                "input_ref": f"answer:{wire_answer['question_id']}", "quote": answer,
+            }]
+            payload["findings"] = [finding_selection(
+                [option_b if wrong_sku else option_a], kind="requirement_unconfirmed",
+                requirement_ids=["only-option-a"],
+            )]
+            return provider_response(request, payload)
+
+        async with AsyncOpenAI(
+            api_key="offline-test-placeholder", max_retries=0, base_url="https://api.openai.com/v1",
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(serve)),
+        ) as sdk:
+            return await generate_review(inputs, images, client=sdk)
+
+    options = dict(translator=stub, question_generator=ask_about_first_sku, review_generator=review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        start = initial_request(snapshot)
+        start["selected_option_ids"] = start["selected_option_ids"][:2]
+        case = ready(client.post("/api/questions", json=start))
+        issued, = case["rounds"][0]["questions"]
+        response = client.post("/api/reviews", json=round_request(case, texts=[answer]))
+        assert response.status_code == 200
+        assert response.json()["code"] == "invalid_review"
+        saved = client.get("/api/case").json()["case"]
+        assert saved["phase"] == "failed"
+        assert saved["rounds"][0]["answers"] == [{"question_id": issued["question_id"], "answer_text": answer}]
+
+    expected_wire = {"question_id": issued["question_id"], "question_text": issued["prompt"],
+                     "answer_text": answer, "option_ids": issued["option_ids"]}
+    assert requests == [expected_wire, expected_wire]
+
+    wrong_sku = False
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == saved
+        assert len(requests) == 2
+        reviewed = ready(client.post("/api/case/retry", json=retry_request(saved)))
+        assert reviewed["rounds"] == saved["rounds"]
+        finding, = reviewed["report"]["findings"]
+        assert finding["option_ids"] == issued["option_ids"]
+        requirement, = reviewed["report"]["buyer_requirements"]
+        assert requirement["option_ids"] == issued["option_ids"]
+        assert requests == [expected_wire] * 3
+
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+        assert len(requests) == 3
+
+    # Same case, same quote, and same snapshot are insufficient if the issued scope itself changed.
+    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update({
+        "option_ids": start["selected_option_ids"],
+    }))
+    with TestClient(create_app(database, **options)) as client:
+        recovered = client.get("/api/case").json()["case"]
+        assert recovered["last_operation"]["code"] == "invalid_review"
+        assert recovered["report"] is None
+        assert reference(recovered) == reference(reviewed)
+        assert recovered["rounds"][0]["answers"] == saved["rounds"][0]["answers"]
+        assert len(requests) == 3
+
+
 @pytest.mark.parametrize("damage, expected_code", [
     ("legacy", "review_regeneration_required"),
     ("missing_envelope", "invalid_review"),
@@ -394,7 +487,7 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
             for finding in report["findings"]:
                 del finding["claim_ids"]
         elif damage == "unknown_version":
-            saved_review["version"] = 3
+            saved_review["version"] = 999
         elif damage == "malformed_claims":
             saved_review["content"]["claims"] = {"not": "a claim list"}
         elif damage == "invalid_claim_reference":

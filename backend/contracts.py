@@ -155,7 +155,7 @@ class AnswerSubmission(ContractModel):
         return self
 
 
-class ReviewInput(ContractModel):
+class _CaseAnalysisInput(ContractModel):
     case_id: NonEmptyText
     revision: Revision
     snapshot: ListingSnapshot
@@ -175,7 +175,22 @@ class ReviewInput(ContractModel):
         return self
 
 
-class QuestionInput(ReviewInput):
+class ReviewInput(_CaseAnalysisInput):
+    answer_option_ids: dict[NonEmptyText, SelectedOptionIds] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_answer_scope(self) -> Self:
+        answered_ids = {answer.question_id for answer in self.answers}
+        selected = set(self.selected_option_ids)
+        if not answered_ids.issuperset(self.answer_option_ids):
+            raise ValueError("Answer scope must refer to submitted question IDs.")
+        for option_ids in self.answer_option_ids.values():
+            if len(option_ids) != len(set(option_ids)) or not selected.issuperset(option_ids):
+                raise ValueError("Answer scope must refer to distinct selected options.")
+        return self
+
+
+class QuestionInput(_CaseAnalysisInput):
     round_number: RoundNumber
 
     @model_validator(mode="after")

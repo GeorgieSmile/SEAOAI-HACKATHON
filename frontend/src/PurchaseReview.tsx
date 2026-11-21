@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
-  CaseView, ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewClaim, ReviewFinding, ReviewRequirement, Source,
+  ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewClaim, ReviewFinding, ReviewRequirement, Source,
 } from "./api";
 
 const findingKinds = {
@@ -117,29 +117,29 @@ function ClaimEvidence({ claimIds, context, showOptionScope }: {
   });
 }
 
-function requirementOrigin(inputRef: string, rounds: CaseView["rounds"]) {
-  const question = rounds.flatMap((round) => round.questions)
-    .find((candidate) => `answer:${candidate.question_id}` === inputRef);
-  return question ? `Your answer to “${question.prompt}”` : "Your purchase context";
+function narrowerScope(selected: string[], optionIds: string[]) {
+  if (optionIds.length >= selected.length) return "";
+  return selected.filter((id) => optionIds.includes(id)).map((id) => optionLabel(selected, id)).join(", ");
 }
 
-function Requirement({ requirement, rounds }: { requirement: ReviewRequirement; rounds: CaseView["rounds"] }) {
+function Requirement({ requirement, selected }: { requirement: ReviewRequirement; selected: string[] }) {
+  const scope = narrowerScope(selected, requirement.option_ids);
+  const origin = requirement.question_text ? `Your answer to “${requirement.question_text}”` : "Your purchase context";
   return (
     <div className="review-requirement">
       {requirement.text !== requirement.quote && <p>{requirement.text}</p>}
       <blockquote>
         <p>{requirement.quote}</p>
-        <footer>{requirementOrigin(requirement.input_ref, rounds)}</footer>
+        <footer>{origin}{scope && ` · ${scope}`}</footer>
       </blockquote>
     </div>
   );
 }
 
-function FindingCard({ finding, report, context, rounds }: {
+function FindingCard({ finding, report, context }: {
   finding: ReviewFinding;
   report: Review;
   context: EvidenceContext;
-  rounds: CaseView["rounds"];
 }) {
   const requirements = report.buyer_requirements.filter((requirement) =>
     finding.requirement_ids.includes(requirement.requirement_id),
@@ -159,7 +159,9 @@ function FindingCard({ finding, report, context, rounds }: {
         {requirements.length > 0 && (
           <div>
             <h4>Buyer requirement{requirements.length === 1 ? "" : "s"}</h4>
-            {requirements.map((requirement) => <Requirement key={requirement.requirement_id} requirement={requirement} rounds={rounds} />)}
+            {requirements.map((requirement) => (
+              <Requirement key={requirement.requirement_id} requirement={requirement} selected={context.selected} />
+            ))}
           </div>
         )}
         <div>
@@ -251,6 +253,11 @@ function Comparisons({ report, snapshot, context }: { report: Review; snapshot: 
                       {value?.claim_ids.length
                         ? <ClaimEvidence claimIds={value.claim_ids} context={context} showOptionScope={false} />
                         : <p className="muted">{value?.summary ?? "No comparison value provided."}</p>}
+                      {value && value.limitations.length > 0 && (
+                        <ul className="comparison-limitations muted">
+                          {value.limitations.map((limitation) => <li key={limitation}>{limitation}</li>)}
+                        </ul>
+                      )}
                     </td>
                   );
                 })}
@@ -341,10 +348,9 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, rounds, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft }: {
   report: Review;
   snapshot: ListingSnapshot;
-  rounds: CaseView["rounds"];
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
 }) {
@@ -365,7 +371,7 @@ export function PurchaseReview({ report, snapshot, rounds, supplierDraft, onChan
           <h2 id="findings-heading">What to resolve</h2>
           {report.findings.length === 0 && <p className="review-panel">No findings were reported. See the coverage and limitations below.</p>}
           {report.findings.map((finding) => (
-            <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} rounds={rounds} />
+            <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} />
           ))}
         </section>
         <Comparisons report={report} snapshot={snapshot} context={context} />
@@ -377,20 +383,33 @@ export function PurchaseReview({ report, snapshot, rounds, supplierDraft, onChan
           {otherRequirements.length > 0 && (
             <div>
               <h3>Other buyer requirements</h3>
-              {otherRequirements.map((requirement) => <Requirement key={requirement.requirement_id} requirement={requirement} rounds={rounds} />)}
+              {otherRequirements.map((requirement) => (
+                <Requirement key={requirement.requirement_id} requirement={requirement} selected={context.selected} />
+              ))}
             </div>
           )}
           {report.open_preferences.length > 0 && (
             <div>
               <h3>Open preferences</h3>
               <ul>
-                {report.open_preferences.map((preference) => (
-                  <li key={preference.preference_id}>
-                    <p>{preference.text}</p>
-                    {preference.input_refs.map((ref) => <p key={ref} className="muted">{requirementOrigin(ref, rounds)}</p>)}
-                    <FindingLinks ids={preference.finding_ids} findings={report.findings} />
-                  </li>
-                ))}
+                {report.open_preferences.map((preference) => {
+                  const scope = narrowerScope(context.selected, preference.option_ids);
+                  return (
+                    <li key={preference.preference_id}>
+                      <p>{preference.text}{scope && ` · ${scope}`}</p>
+                      {preference.input_refs.includes("context") && <p className="muted">Your purchase context</p>}
+                      {preference.questions.map((question) => {
+                        const questionScope = narrowerScope(context.selected, question.option_ids);
+                        return (
+                          <p key={question.question_id} className="muted">
+                            Question “{question.question_text}”{questionScope && ` · ${questionScope}`}
+                          </p>
+                        );
+                      })}
+                      <FindingLinks ids={preference.finding_ids} findings={report.findings} />
+                    </li>
+                  );
+                })}
               </ul>
             </div>
           )}

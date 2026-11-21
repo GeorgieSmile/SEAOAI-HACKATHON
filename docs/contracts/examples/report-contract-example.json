@@ -226,7 +226,24 @@
         "answer_text": "Includes hot drinks."
       }
     ],
-    "revision": 1
+    "revision": 1,
+    "answer_option_ids": {
+      "q-finish": [
+        "v0",
+        "v1",
+        "v6"
+      ],
+      "q-capacity": [
+        "v0",
+        "v1",
+        "v6"
+      ],
+      "q-use": [
+        "v0",
+        "v1",
+        "v6"
+      ]
+    }
   },
   "expected_result": {
     "status": "ready",
@@ -358,19 +375,37 @@
           "requirement_id": "r-print",
           "text": "Screen printing is required.",
           "input_ref": "answer:q-finish",
-          "quote": "Screen printing is required."
+          "quote": "Screen printing is required.",
+          "option_ids": [
+            "v0",
+            "v1",
+            "v6"
+          ],
+          "question_text": "Is screen printing required, or are applied graphics acceptable?"
         },
         {
           "requirement_id": "r-capacity",
           "text": "720 ml is required.",
           "input_ref": "answer:q-capacity",
-          "quote": "720 ml is required."
+          "quote": "720 ml is required.",
+          "option_ids": [
+            "v0",
+            "v1",
+            "v6"
+          ],
+          "question_text": "Do you require an exact capacity?"
         },
         {
           "requirement_id": "r-hot",
           "text": "Includes hot drinks.",
           "input_ref": "answer:q-use",
-          "quote": "Includes hot drinks."
+          "quote": "Includes hot drinks.",
+          "option_ids": [
+            "v0",
+            "v1",
+            "v6"
+          ],
+          "question_text": "What drink conditions should this review consider?"
         }
       ],
       "open_preferences": [],
@@ -386,7 +421,8 @@
               "summary": "SKU wording (source translation): 暮色316 · applied-picture design · pink/blue",
               "source_ids": [
                 "name-v0"
-              ]
+              ],
+              "limitations": []
             },
             {
               "option_id": "v1",
@@ -396,7 +432,8 @@
               "summary": "SKU wording (source translation): 暮色316 · applied-picture design · black/white",
               "source_ids": [
                 "name-v1"
-              ]
+              ],
+              "limitations": []
             },
             {
               "option_id": "v6",
@@ -406,7 +443,8 @@
               "summary": "SKU wording (source translation): 暮色316 · letter design · pink/blue",
               "source_ids": [
                 "name-v6"
-              ]
+              ],
+              "limitations": []
             }
           ],
           "shared_claim_ids": []
@@ -422,7 +460,8 @@
               "summary": "Thumbnail label: 750 ml",
               "source_ids": [
                 "image-v0"
-              ]
+              ],
+              "limitations": []
             },
             {
               "option_id": "v1",
@@ -432,7 +471,8 @@
               "summary": "Thumbnail label: 750 ml",
               "source_ids": [
                 "image-v1"
-              ]
+              ],
+              "limitations": []
             },
             {
               "option_id": "v6",
@@ -442,7 +482,8 @@
               "summary": "Thumbnail label: 750 ml",
               "source_ids": [
                 "image-v6"
-              ]
+              ],
+              "limitations": []
             }
           ],
           "shared_claim_ids": [
@@ -509,7 +550,7 @@
           ],
           "requested_evidence": "Ask for a written specification identifying the exact listing option.",
           "evidence_limits": "A written answer identifies the seller's stated specification. Verification requires evidence for the exact item.",
-          "supplier_question": "Please confirm the decoration process and finish for each named option and identify it by its exact listing name."
+          "supplier_question": "Please confirm the decoration process and finish for each named option and identify it by its exact listing name. Can each named option be supplied with screen printing?"
         },
         {
           "finding_id": "f-capacity",
@@ -569,7 +610,7 @@
           ],
           "requested_evidence": "Ask for the delivered specification, the explanation for different readings, and SKU-specific evidence.",
           "evidence_limits": "A written answer identifies the seller's stated specification. Verification requires evidence for the exact item.",
-          "supplier_question": "Do these saved readings describe the same specification? Option A: shared selector 720 ml and thumbnail label 750 ml. Option B: shared selector 720 ml and thumbnail label 750 ml. Option C: shared selector 720 ml and thumbnail label 750 ml. Please confirm the delivered capacity, its units, and whether it is usable or brim-full for each named option and send evidence identifying that option."
+          "supplier_question": "Do these saved readings describe the same specification? Option A: shared selector 720 ml and thumbnail label 750 ml. Option B: shared selector 720 ml and thumbnail label 750 ml. Option C: shared selector 720 ml and thumbnail label 750 ml. Please confirm the delivered capacity, its units, and whether it is usable or brim-full for each named option and send evidence identifying that option. Can each named option meet 720 ml, and is that capacity usable or brim-full?"
         },
         {
           "finding_id": "f-use",
@@ -646,7 +687,7 @@
             "f-artwork",
             "f-capacity"
           ],
-          "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+          "note": "The comparison cites listing evidence for Decoration and finish, Capacity. Whether the delivered options meet the linked buyer requirements still needs confirmation."
         },
         {
           "group": "intended_use",
@@ -654,7 +695,7 @@
           "finding_ids": [
             "f-use"
           ],
-          "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+          "note": "The review includes the buyer’s stated use or temperature conditions. Confirm the intended conditions and the product limits that apply to them."
         },
         {
           "group": "supporting_evidence",
@@ -662,7 +703,7 @@
           "finding_ids": [
             "f-use"
           ],
-          "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+          "note": "Cited evidence includes 9 listing text sources, 3 SKU thumbnails, and 1 guidance source. Listing material alone cannot verify the delivered item."
         }
       ],
       "limitations": [
@@ -679,7 +720,7 @@
         "v1",
         "v6"
       ],
-      "supplier_draft": "Hello, I am reviewing these exact options:\nA. 暮色316-贴画粉蓝\nB. 暮色316-贴画黑白\nC. 暮色316-字母粉蓝\n\nPlease identify the relevant option names in your reply.\n\n1. [Options A, B, C] Please confirm the decoration process and finish for each named option and identify it by its exact listing name.\n\n2. [Options A, B, C] Do these saved readings describe the same specification? Option A: shared selector 720 ml and thumbnail label 750 ml. Option B: shared selector 720 ml and thumbnail label 750 ml. Option C: shared selector 720 ml and thumbnail label 750 ml. Please confirm the delivered capacity, its units, and whether it is usable or brim-full for each named option and send evidence identifying that option.\n\n3. [Options A, B, C] Could you confirm which tests or documents apply to the exact product and materials for each named option and send the applicable specification or test documents showing the exact model and materials?"
+      "supplier_draft": "Hello, I am reviewing these exact options:\nA. 暮色316-贴画粉蓝\nB. 暮色316-贴画黑白\nC. 暮色316-字母粉蓝\n\nPlease identify the relevant option names in your reply.\n\n1. [Options A, B, C] Please confirm the decoration process and finish for each named option and identify it by its exact listing name. Can each named option be supplied with screen printing?\n\n2. [Options A, B, C] Do these saved readings describe the same specification? Option A: shared selector 720 ml and thumbnail label 750 ml. Option B: shared selector 720 ml and thumbnail label 750 ml. Option C: shared selector 720 ml and thumbnail label 750 ml. Please confirm the delivered capacity, its units, and whether it is usable or brim-full for each named option and send evidence identifying that option. Can each named option meet 720 ml, and is that capacity usable or brim-full?\n\n3. [Options A, B, C] Could you confirm which tests or documents apply to the exact product and materials for each named option and send the applicable specification or test documents showing the exact model and materials?"
     }
   },
   "additional_examples": [
@@ -705,7 +746,24 @@
             "answer_text": null
           }
         ],
-        "revision": 1
+        "revision": 1,
+        "answer_option_ids": {
+          "q-finish": [
+            "v0",
+            "v1",
+            "v6"
+          ],
+          "q-capacity": [
+            "v0",
+            "v1",
+            "v6"
+          ],
+          "q-use": [
+            "v0",
+            "v1",
+            "v6"
+          ]
+        }
       },
       "expected_result": {
         "status": "ready",
@@ -842,6 +900,22 @@
               ],
               "finding_ids": [
                 "f-artwork"
+              ],
+              "option_ids": [
+                "v0",
+                "v1",
+                "v6"
+              ],
+              "questions": [
+                {
+                  "question_id": "q-finish",
+                  "question_text": "Is screen printing required, or are applied graphics acceptable?",
+                  "option_ids": [
+                    "v0",
+                    "v1",
+                    "v6"
+                  ]
+                }
               ]
             },
             {
@@ -852,6 +926,22 @@
               ],
               "finding_ids": [
                 "f-capacity"
+              ],
+              "option_ids": [
+                "v0",
+                "v1",
+                "v6"
+              ],
+              "questions": [
+                {
+                  "question_id": "q-capacity",
+                  "question_text": "Do you require an exact capacity?",
+                  "option_ids": [
+                    "v0",
+                    "v1",
+                    "v6"
+                  ]
+                }
               ]
             },
             {
@@ -862,6 +952,22 @@
               ],
               "finding_ids": [
                 "f-use"
+              ],
+              "option_ids": [
+                "v0",
+                "v1",
+                "v6"
+              ],
+              "questions": [
+                {
+                  "question_id": "q-use",
+                  "question_text": "What drink conditions should this review consider?",
+                  "option_ids": [
+                    "v0",
+                    "v1",
+                    "v6"
+                  ]
+                }
               ]
             }
           ],
@@ -877,7 +983,8 @@
                   "summary": "SKU wording (source translation): 暮色316 · applied-picture design · pink/blue",
                   "source_ids": [
                     "name-v0"
-                  ]
+                  ],
+                  "limitations": []
                 },
                 {
                   "option_id": "v1",
@@ -887,7 +994,8 @@
                   "summary": "SKU wording (source translation): 暮色316 · applied-picture design · black/white",
                   "source_ids": [
                     "name-v1"
-                  ]
+                  ],
+                  "limitations": []
                 },
                 {
                   "option_id": "v6",
@@ -897,7 +1005,8 @@
                   "summary": "SKU wording (source translation): 暮色316 · letter design · pink/blue",
                   "source_ids": [
                     "name-v6"
-                  ]
+                  ],
+                  "limitations": []
                 }
               ],
               "shared_claim_ids": []
@@ -913,7 +1022,8 @@
                   "summary": "Thumbnail label: 750 ml",
                   "source_ids": [
                     "image-v0"
-                  ]
+                  ],
+                  "limitations": []
                 },
                 {
                   "option_id": "v1",
@@ -923,7 +1033,8 @@
                   "summary": "Thumbnail label: 750 ml",
                   "source_ids": [
                     "image-v1"
-                  ]
+                  ],
+                  "limitations": []
                 },
                 {
                   "option_id": "v6",
@@ -933,7 +1044,8 @@
                   "summary": "Thumbnail label: 750 ml",
                   "source_ids": [
                     "image-v6"
-                  ]
+                  ],
+                  "limitations": []
                 }
               ],
               "shared_claim_ids": [
@@ -1131,7 +1243,7 @@
                 "f-artwork",
                 "f-capacity"
               ],
-              "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+              "note": "The comparison cites listing evidence for Decoration and finish, Capacity. No buyer requirement was linked for checking product fit."
             },
             {
               "group": "intended_use",
@@ -1139,7 +1251,7 @@
               "finding_ids": [
                 "f-use"
               ],
-              "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+              "note": "No buyer requirement describing use or temperature conditions was linked. Confirm the intended conditions and the product limits that apply to them."
             },
             {
               "group": "supporting_evidence",
@@ -1147,7 +1259,7 @@
               "finding_ids": [
                 "f-use"
               ],
-              "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+              "note": "Cited evidence includes 9 listing text sources, 3 SKU thumbnails, and 1 guidance source. Listing material alone cannot verify the delivered item."
             }
           ],
           "limitations": [

@@ -22,12 +22,12 @@ from .ai import (
 )
 from .contracts import Option, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
 from .intake import IMAGE_MIME
+from .report_coverage import render_coverage, thumbnail_limitations
 from .report_models import (
     BuyerRequirement,
     Citation,
     Comparison,
     ComparisonValue,
-    Coverage,
     DisplayClaim,
     DisplayImageDetailClaim,
     DisplayImageMeasurementClaim,
@@ -37,6 +37,7 @@ from .report_models import (
     ImageDetailClaim,
     ImageMeasurementClaim,
     OpenPreference,
+    PreferenceQuestion,
     PurchaseReview,
     ReviewContent,
     ReviewFailed,
@@ -69,6 +70,7 @@ TOPICS = {
     "weight": ("Weight", "the delivered weight, units, and whether packaging is included"),
     "sample": ("Samples", "whether a sample of the exact option is available"),
     "sku_wording": ("SKU wording", "what is supplied under the exact listing name"),
+    "deadline": ("Timing and deadline", "the expected ship date and delivery window"),
     "other": ("Delivered specification", "the specification of the exact item that would be delivered"),
 }
 UNIT_TOPICS = {
@@ -104,11 +106,51 @@ VISIBLE_DETAILS = {
     "protective_insert_visible": ("packaging", "A protective insert is visible"),
     "markings_visible": ("sku_wording", "Markings are visible"),
 }
-COVERAGE_NOTES = {
-    "reviewed": "The review considered the supplied material for this group. Product verification is separate.",
-    "limited": "The saved evidence allows a partial assessment. The applicable checks still need confirmation.",
-    "not_assessed": "The supplied buyer details or evidence did not support an assessment of this group.",
+BUYER_TARGETS = {
+    "customization": {
+        "ready-made only": "ready_made",
+        "ready-made stock only": "ready_made",
+        "ready-made options only": "ready_made",
+        "ready-made options are required": "ready_made",
+        "i only want ready-made stock": "ready_made",
+        "only ready-made": "ready_made",
+        "custom orders are acceptable": "custom_order",
+        "custom production is acceptable": "custom_order",
+        "i can accept custom orders": "custom_order",
+        "i would consider a custom order": "custom_order",
+    },
+    "finish": {
+        "screen printing is required": "screen_printing_required",
+        "i require screen printing": "screen_printing_required",
+        "i need screen printing": "screen_printing_required",
+        "screen print only": "screen_printing_required",
+        "screen printing only": "screen_printing_required",
+        "screen printing is unacceptable": "screen_printing_avoided",
+        "screen printing is not acceptable": "screen_printing_avoided",
+        "i cannot accept screen printing": "screen_printing_avoided",
+        "i do not accept screen printing": "screen_printing_avoided",
+        "do not use screen printing": "screen_printing_avoided",
+        "no screen printing": "screen_printing_avoided",
+    },
+    "capacity": {},
 }
+RELATED_QUESTION_PREFIXES = {
+    "customization": (
+        "would you consider a custom order", "would you consider custom production",
+        "are custom orders acceptable", "do you accept custom orders",
+        "would you prefer ready-made", "do you require ready-made",
+        "has your position on custom orders changed",
+    ),
+    "finish": (
+        "what finish", "which finish", "what decoration", "which decoration",
+        "is screen printing required", "do you require screen printing", "are applied graphics acceptable",
+    ),
+    "capacity": ("what capacity", "which capacity", "do you require an exact capacity", "do you have an exact capacity"),
+}
+EXACT_BUYER_CAPACITY = re.compile(
+    r"(?:(?:i (?:need|require) |exactly )(?P<first>[0-9]+(?:\.[0-9]+)?\s*(?:ml|l|fl oz))"
+    r"|(?P<second>[0-9]+(?:\.[0-9]+)?\s*(?:ml|l|fl oz)) (?:is required|only))",
+)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -209,7 +251,10 @@ def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, byte
             for reference, option in zip(OPTION_REFERENCES, _selected_options(request))
         ],
         "buyer_context": request.buyer_context,
-        "answers": [answer.model_dump() for answer in request.answers],
+        "answers": [
+            {**answer.model_dump(), "option_ids": request.answer_option_ids.get(answer.question_id, [])}
+            for answer in request.answers
+        ],
         "text_sources": [
             {
                 "source_id": source.source_id,
@@ -313,11 +358,16 @@ def _render_claim(
     return DisplayTextClaim(**claim.model_dump(), display_text=f"{label}: {wording}")
 
 
-def _check_claim_topic(claim: SourcedClaim, topic: str) -> None:
+def _check_claim_topic(claim: SourcedClaim, source: Source, topic: str) -> None:
     if isinstance(claim, ImageMeasurementClaim) and UNIT_TOPICS[claim.unit] != topic:
         raise ValueError("Use a thumbnail measurement with its matching topic.")
     if isinstance(claim, ImageDetailClaim) and VISIBLE_DETAILS[claim.detail][0] != topic:
         raise ValueError("Use a thumbnail detail with its matching topic.")
+    if isinstance(claim, TextClaim) and source.original_text is not None:
+        # Check the structured source, including when the selected excerpt is only part of a standalone field.
+        reading = _reading(claim.model_copy(update={"quote": source.original_text}), source)
+        if reading is not None and UNIT_TOPICS[reading.unit] != topic:
+            raise ValueError("Use a standalone text measurement with its matching topic.")
 
 
 @dataclass(frozen=True)
@@ -428,9 +478,99 @@ def _render_unknown(
     return Unknown(**selection.model_dump(), text=text)
 
 
-def _render_next_step(finding: FindingSelection, differences: list[str]) -> tuple[str | None, str, str]:
-    action = finding.supplier_action
-    _, spec = TOPICS[finding.topic]
+@dataclass(frozen=True)
+class _BuyerInput:
+    text: str | None
+    option_ids: list[str]
+    question: PreferenceQuestion | None = None
+
+
+@dataclass(frozen=True)
+class _BuyerTarget:
+    kind: str
+    measurement: str | None = None
+
+
+def _buyer_inputs(request: ReviewInput) -> dict[str, _BuyerInput]:
+    inputs = {"context": _BuyerInput(request.buyer_context, request.selected_option_ids)}
+    for answer in request.answers:
+        option_ids = request.answer_option_ids.get(answer.question_id, [])
+        inputs[f"answer:{answer.question_id}"] = _BuyerInput(
+            answer.answer_text,
+            option_ids,
+            PreferenceQuestion(
+                question_id=answer.question_id, question_text=answer.question_text, option_ids=option_ids,
+            ) if option_ids else None,
+        )
+    return inputs
+
+
+def _normalize_buyer_text(text: str) -> str:
+    return " ".join(normalize("NFKC", text).casefold().split()).removesuffix(".")
+
+
+def _buyer_target(topic: str, text: str) -> _BuyerTarget | None:
+    # Directional language is recognized only from complete, supported buyer statements.
+    wording = _normalize_buyer_text(text)
+    if target := BUYER_TARGETS[topic].get(wording):
+        return _BuyerTarget(target)
+    if topic == "capacity" and (match := EXACT_BUYER_CAPACITY.fullmatch(wording)) is not None:
+        reading = TEXT_READING.fullmatch(match["first"] or match["second"])
+        assert reading is not None
+        value = Decimal(reading["value"])
+        if 0 < value <= 1_000_000:
+            unit = UNIT_ALIASES["".join(reading["unit"].split())]
+            return _BuyerTarget("capacity_required", f"{value.normalize():f} {unit}")
+    return None
+
+
+def _current_buyer_inputs(
+    inputs: Mapping[str, _BuyerInput], content: ReviewContent,
+) -> dict[tuple[str, str], tuple[str, _BuyerTarget | None]]:
+    selected_topics = {(row.topic, row.input_ref) for row in content.buyer_requirements}
+    selected_topics.update((row.topic, ref) for row in content.open_preferences for ref in row.input_refs)
+    current = {}
+    for ref, entry in inputs.items():
+        if not entry.text or not entry.text.strip() or not entry.option_ids:
+            continue
+        question = _normalize_buyer_text(entry.question.question_text) if entry.question is not None else ""
+        for topic, question_prefixes in RELATED_QUESTION_PREFIXES.items():
+            target = _buyer_target(topic, entry.text)
+            # A related later response can make an earlier target stale. Its question wording
+            # and the model's topic selection never establish a new target.
+            if target is not None or (topic, ref) in selected_topics or question.startswith(question_prefixes):
+                for option_id in entry.option_ids:
+                    current[topic, option_id] = (ref, target)
+    return current
+
+
+def _linked_target(
+    current: Mapping[tuple[str, str], tuple[str, _BuyerTarget | None]],
+    topic: str, option_ids: list[str], input_refs: set[str],
+) -> _BuyerTarget | None:
+    targets = set()
+    for option_id in option_ids:
+        ref, target = current.get((topic, option_id), ("", None))
+        if ref not in input_refs or target is None:
+            return None
+        targets.add(target)
+    return next(iter(targets)) if len(targets) == 1 else None
+
+
+def _target_question(target: _BuyerTarget | None) -> str:
+    if target is None:
+        return ""
+    if target.kind == "screen_printing_required":
+        return "Can each named option be supplied with screen printing?"
+    if target.kind == "screen_printing_avoided":
+        return "Can each named option be supplied without screen printing? Please identify the alternative finish."
+    if target.kind == "capacity_required":
+        return f"Can each named option meet {target.measurement}, and is that capacity usable or brim-full?"
+    return ""
+
+
+def _render_next_step(topic: str, action: str | None, differences: list[str]) -> tuple[str | None, str, str]:
+    _, spec = TOPICS[topic]
     seller_limit = "A written answer identifies the seller's stated specification. Verification requires evidence for the exact item."
     if action is None:
         return None, "Choose what matters for this purchase before asking the supplier.", "This decision describes the buying criteria."
@@ -481,6 +621,7 @@ def _render_next_step(finding: FindingSelection, differences: list[str]) -> tupl
 
 def _render_finding(
     finding: FindingSelection, claims: list[DisplayClaim], unknowns: list[Unknown], differences: list[str],
+    order: _BuyerTarget | None, product_target: _BuyerTarget | None,
 ) -> Finding:
     label, _ = TOPICS[finding.topic]
     title = {
@@ -494,7 +635,15 @@ def _render_finding(
         "clarification_needed": "Confirm the specification with the supplier for the named options.",
         "evidence_gap": "Ask for evidence that identifies the exact options and the specification under review.",
     }
-    question, requested_evidence, limits = _render_next_step(finding, differences)
+    action = finding.supplier_action
+    if action in {"confirm_specification", "confirm_ready_made", "confirm_custom_order"}:
+        action = {
+            "ready_made": "confirm_ready_made",
+            "custom_order": "confirm_custom_order",
+        }.get(order.kind if order is not None else "", "confirm_specification")
+    question, requested_evidence, limits = _render_next_step(finding.topic, action, differences)
+    if question is not None and (target_question := _target_question(product_target)):
+        question = f"{question} {target_question}"
     return Finding(
         **finding.model_dump(include={"finding_id", "option_ids", "kind", "action_type", "requirement_ids", "claim_ids"}),
         title=title,
@@ -569,18 +718,30 @@ def assemble_review(
             raise ValueError("Claims must cite an available source actually sent for review.")
         claims[claim.claim_id] = _render_claim(claim, sources[claim.source_id], option_by_id, sent_evidence)
 
-    inputs = {"context": request.buyer_context, **{
-        f"answer:{answer.question_id}": answer.answer_text for answer in request.answers
-    }}
+    inputs = _buyer_inputs(request)
+    current_inputs = _current_buyer_inputs(inputs, content)
     _unique_ids((row.requirement_id for row in content.buyer_requirements), "buyer requirements")
     requirement_by_id = {row.requirement_id: row for row in content.buyer_requirements}
     requirements = []
+    requirement_scopes = {}
     for row in content.buyer_requirements:
-        quote_source = inputs.get(row.input_ref)
-        if not quote_source or row.quote not in quote_source:
-            raise ValueError("Each requirement needs a verbatim quote from its non-null buyer input reference.")
+        source = inputs.get(row.input_ref)
+        if source is None or not source.text or source.text.strip() != row.quote.strip():
+            raise ValueError("Each requirement needs the full verbatim quote from its non-null buyer input reference.")
+        if not source.option_ids:
+            raise ValueError("Buyer answer requirements need their issued option scope.")
+        scope = [
+            option_id for option_id in request.selected_option_ids
+            if option_id in source.option_ids
+            and current_inputs.get((row.topic, option_id), (row.input_ref, None))[0] == row.input_ref
+        ]
+        if not scope:
+            raise ValueError("Use the current buyer input for a requirement in its issued option scope.")
+        requirement_scopes[row.requirement_id] = set(scope)
         requirements.append(BuyerRequirement(
-            **row.model_dump(exclude={"topic"}), text=row.quote,
+            **row.model_dump(exclude={"topic", "quote"}),
+            text=source.text.strip(), quote=source.text.strip(), option_ids=scope,
+            question_text=source.question.question_text if source.question is not None else None,
         ))
 
     comparisons = []
@@ -595,6 +756,7 @@ def assemble_review(
             scope = sources[claim.source_id].option_ids
             if claim.option_ids or (scope and not selected.issubset(scope)):
                 raise ValueError("A shared comparison claim must cover the entire comparison without claiming a SKU.")
+            _check_claim_topic(claim, sources[claim.source_id], comparison.topic)
         values_by_id = {value.option_id: value for value in comparison.values}
         values = []
         for option_id in request.selected_option_ids:
@@ -604,11 +766,24 @@ def assemble_review(
             for claim in references:
                 if claim.option_ids != [option_id]:
                     raise ValueError("A comparison cell can cite only claims owned by its exact SKU.")
-                _check_claim_topic(claim, comparison.topic)
+                _check_claim_topic(claim, sources[claim.source_id], comparison.topic)
+            numeric_topic = comparison.topic in UNIT_TOPICS.values()
+            visual_topic = any(topic == comparison.topic for topic, _ in VISIBLE_DETAILS.values())
+            limits = []
+            if numeric_topic or visual_topic:
+                option = option_by_id[option_id]
+                aspect = f"{comparison.topic.replace('_', ' ')} label" if numeric_topic else "visible detail"
+                unreadable = any(
+                    finding.topic == comparison.topic and option_id in finding.option_ids
+                    and any(u.reason == "unreadable" and option.image_source_id in u.source_ids for u in finding.unknowns)
+                    for finding in content.findings
+                )
+                limits = thumbnail_limitations(option, aliases[option_id], aspect, sources, sent_evidence, unreadable)
             values.append(ComparisonValue(
                 **value.model_dump(),
                 summary="\n".join(claim.display_text for claim in references) or "No SKU-specific evidence cited for this topic.",
                 source_ids=list(dict.fromkeys(claim.source_id for claim in references)),
+                limitations=limits,
             ))
         comparisons.append(Comparison(
             label=TOPICS[comparison.topic][0], values=values, shared_claim_ids=comparison.shared_claim_ids,
@@ -620,6 +795,8 @@ def assemble_review(
     for finding in content.findings:
         scope = _validate_refs(finding.option_ids, selected, "finding options")
         linked_requirements = _validate_refs(finding.requirement_ids, requirement_by_id, "finding requirements")
+        if any(not scope.issubset(requirement_scopes[requirement_id]) for requirement_id in linked_requirements):
+            raise ValueError("A finding must stay within each linked buyer requirement's current option scope.")
         _validate_refs(finding.claim_ids, claims, "finding claims")
         references = [claims[claim_id] for claim_id in finding.claim_ids]
         for claim in references:
@@ -627,21 +804,29 @@ def assemble_review(
                 raise ValueError("A finding must cover the SKU that owns each SKU-specific claim.")
             if not claim.option_ids and (shared_scope := sources[claim.source_id].option_ids) and not scope.issubset(shared_scope):
                 raise ValueError("A finding using scoped shared text must cover only options associated with that text.")
-            _check_claim_topic(claim, finding.topic)
+            _check_claim_topic(claim, sources[claim.source_id], finding.topic)
         if finding.kind == "requirement_unconfirmed" and not linked_requirements:
             raise ValueError("A requirement_unconfirmed finding must link to an actual buyer requirement.")
         if (finding.kind == "listing_conflict") != (finding.supplier_action == "reconcile_sources"):
             raise ValueError("Use reconcile_sources for a supported listing conflict.")
         if (finding.action_type == "decide_preference") != (finding.supplier_action is None):
             raise ValueError("Every supplier-facing finding must select a supplier action. Use null only for buyer decisions.")
-        if finding.supplier_action in {"confirm_ready_made", "confirm_custom_order"} and not any(
-            requirement_by_id[requirement_id].topic == "customization" for requirement_id in linked_requirements
-        ):
+        order_refs = {
+            requirement_by_id[requirement_id].input_ref for requirement_id in linked_requirements
+            if requirement_by_id[requirement_id].topic == "customization"
+        }
+        if finding.supplier_action in {"confirm_ready_made", "confirm_custom_order"} and not order_refs:
             raise ValueError("A stock or customization question must link a buyer requirement about order type.")
+        product_refs = {
+            requirement_by_id[requirement_id].input_ref for requirement_id in linked_requirements
+            if requirement_by_id[requirement_id].topic == finding.topic
+        }
+        order = _linked_target(current_inputs, "customization", finding.option_ids, order_refs)
+        product_target = _linked_target(current_inputs, finding.topic, finding.option_ids, product_refs)
 
         unknowns = [_render_unknown(unknown, finding, sources, sent) for unknown in finding.unknowns]
         differences = _conflicting_readings(finding, references, sources, aliases) if finding.kind == "listing_conflict" else []
-        findings.append(_render_finding(finding, references, unknowns, differences))
+        findings.append(_render_finding(finding, references, unknowns, differences, order, product_target))
 
     _unique_ids((row.preference_id for row in content.open_preferences), "open preferences")
     preference_findings = set()
@@ -649,6 +834,19 @@ def assemble_review(
     for preference in content.open_preferences:
         _validate_refs(preference.input_refs, inputs, "preference input references")
         linked_findings = _validate_refs(preference.finding_ids, finding_ids, "preference findings")
+        scope = selected.copy()
+        questions = []
+        for ref in preference.input_refs:
+            entry = inputs[ref]
+            if not entry.option_ids:
+                raise ValueError("Buyer answer preferences need their issued option scope.")
+            scope.intersection_update(entry.option_ids)
+            if entry.question is not None:
+                questions.append(entry.question)
+        if not scope or any(
+            not scope.issuperset(finding_by_id[finding_id].option_ids) for finding_id in linked_findings
+        ):
+            raise ValueError("An open preference and its findings must stay within its linked buyer input scopes.")
         if any(
             finding_by_id[finding_id].action_type == "decide_preference"
             and finding_by_id[finding_id].topic != preference.topic
@@ -659,6 +857,8 @@ def assemble_review(
         preferences.append(OpenPreference(
             **preference.model_dump(exclude={"topic"}),
             text=f"Your preference for {TOPICS[preference.topic][0].lower()} is still open.",
+            option_ids=[option_id for option_id in request.selected_option_ids if option_id in scope],
+            questions=questions,
         ))
     if any(finding.action_type == "decide_preference" and finding.finding_id not in preference_findings
            for finding in content.findings):
@@ -676,7 +876,7 @@ def assemble_review(
         open_preferences=preferences,
         comparisons=comparisons,
         findings=findings,
-        coverage=[Coverage(**row.model_dump(), note=COVERAGE_NOTES[row.status]) for row in content.coverage],
+        coverage=[render_coverage(row, content, comparisons, aliases, sources, sent_evidence) for row in content.coverage],
         limitations=_review_limitations(request, set(sent_evidence.attached_image_ids)),
         case_id=request.case_id,
         revision=request.revision,

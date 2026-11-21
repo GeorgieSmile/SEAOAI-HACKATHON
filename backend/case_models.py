@@ -67,7 +67,7 @@ class CaseView(CaseReference):
 
 
 class SavedReview(ContractModel):
-    version: Literal[2]
+    version: Literal[2, 3]
     input_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     content: ReviewContent
     sent_evidence: SentReviewEvidence

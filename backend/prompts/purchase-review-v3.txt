@@ -41,17 +41,24 @@ shared_claim_ids once for the comparison. Use shared claims whose source covers 
 compared options, or a scoped finding if fewer options are covered. For a stated selector
 value that differs from a legible thumbnail measurement, include the shared selector reading
 and each legible exact-SKU thumbnail reading in the capacity comparison. Leave the delivered
-capacity to confirm and consider differing measurement conventions.
+capacity to confirm and consider differing measurement conventions. Use a standalone text
+measurement only with its matching topic, whether the claim is shared or SKU-specific.
 
 Use the buyer's submitted answers and context, with the latest clear answer superseding an
-earlier one about the same requirement and scope. Give each current requirement a topic,
-a verbatim quote from the actual buyer input, and input_ref context or answer:<question_id>.
-Use a quote that preserves whether the requirement is mandatory, optional, or conditional.
+earlier one only for the options covered by the later answer. The answer option_ids come from
+the issued question. An empty list means the answer scope is unknown, so do not use that answer
+as a requirement or an open-preference reference. Give each current requirement a topic, the
+complete exact input text as its quote (excluding surrounding whitespace if needed), and
+input_ref context or answer:<question_id>. Use only genuine purchase requirements. The report
+shows the complete cited input privately, so do not select unrelated or private business notes.
 Null answers, question wording, seller claims and private business details cannot establish a
 product requirement. For unresolved or conflicting preferences, select a topic and relevant
-input_refs and finding_ids. A null answer can support an open preference but not a requirement.
-Use [] for input_refs only when the preference was neither stated nor asked about. Link any
-decide_preference finding to an open preference.
+input_refs and finding_ids. Use deadline for purchase timing or delivery deadlines. A null
+answer from a question that was actually issued can support an open preference but not a
+requirement. Use [] for input_refs only when the preference was neither stated nor asked about.
+Every linked finding must fit each linked requirement's or preference's current option scope.
+Split findings across options when a buyer answer applies to only some of them. Link any
+decide_preference finding to an open preference about the same topic.
 
 Order findings by consequence for this purchase, prioritizing actual buyer requirements when
 relevant. Find material issues the buyer may have overlooked. Combine the same issue across
@@ -72,8 +79,11 @@ Use requirement_unconfirmed only with a
 linked current requirement. Select a concrete supplier action for ask_supplier or
 request_evidence. Use null for decide_preference. Use confirm_ready_made for purchases limited
 to stock and confirm_custom_order when the buyer would consider custom production. Both need a
-linked buyer requirement with topic customization. Customization availability is conditional
-and cannot verify what a stock SKU delivers. Select confirm_specification, request_documentation,
+linked current buyer requirement with topic customization. The backend will use an explicit
+whole current statement to distinguish order type and supported product targets, including
+required or prohibited screen printing and required capacity. Select neutral confirmation for
+unclear or conditional buyer wording. Customization availability is conditional and cannot
+verify what a stock SKU delivers. Select confirm_specification, request_documentation,
 request_sample, or request_close_up when those actions would better resolve the finding. Do not
 add supplier text, buyer contact details, margin, or other commercial information.
 

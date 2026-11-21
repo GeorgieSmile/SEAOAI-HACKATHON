@@ -214,3 +214,28 @@ def test_visual_artwork_and_sku_wording_cannot_be_promoted_to_a_conflict(joint_f
     )
     with pytest.raises(ValueError, match="comparable, different readings"):
         assemble(request, images, content)
+
+
+@pytest.mark.parametrize("placement", ["shared_comparison", "sku_cell", "finding"])
+@pytest.mark.parametrize("quote", ["720ml", "720"])
+def test_standalone_text_capacity_cannot_support_a_weight_topic(example, placement, quote):
+    request, images = example
+    content = minimal_content(request, "weight")
+    if placement == "sku_cell":
+        data = request.model_dump()
+        data["snapshot"]["sources"].append({
+            "source_id": "sku-capacity", "kind": "listing_text", "label": "Product attribute", "option_ids": ["v0"],
+            "availability": "available", "original_text": "容量: 720ml", "text_en": None, "image_file": None, "url": None,
+        })
+        request = ReviewInput.model_validate(data)
+        content["claims"] = [text_claim("wrong-topic", "sku-capacity", quote, "v0")]
+        content["comparisons"][0]["values"][0]["claim_ids"] = ["wrong-topic"]
+    else:
+        content["claims"] = [text_claim("wrong-topic", "capacity-selector", quote)]
+        if placement == "shared_comparison":
+            content["comparisons"][0]["shared_claim_ids"] = ["wrong-topic"]
+        else:
+            content["findings"] = [finding_selection(["v0"], topic="weight", claim_ids=["wrong-topic"])]
+
+    with pytest.raises(ValueError, match="standalone text measurement with its matching topic"):
+        assemble(request, images, content)

@@ -557,7 +557,24 @@
           "answer_text": null
         }
       ],
-      "revision": 1
+      "revision": 1,
+      "answer_option_ids": {
+        "q-finish": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "q-capacity": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "q-use": [
+          "v0",
+          "v1",
+          "v6"
+        ]
+      }
     },
     "expected_result": {
       "status": "ready",
@@ -694,6 +711,22 @@
             ],
             "finding_ids": [
               "f-artwork"
+            ],
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "questions": [
+              {
+                "question_id": "q-finish",
+                "question_text": "Is screen printing required, or are applied graphics acceptable?",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ]
+              }
             ]
           },
           {
@@ -704,6 +737,22 @@
             ],
             "finding_ids": [
               "f-capacity"
+            ],
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "questions": [
+              {
+                "question_id": "q-capacity",
+                "question_text": "Do you require an exact capacity?",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ]
+              }
             ]
           },
           {
@@ -714,6 +763,22 @@
             ],
             "finding_ids": [
               "f-use"
+            ],
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "questions": [
+              {
+                "question_id": "q-use",
+                "question_text": "What drink conditions should this review consider?",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ]
+              }
             ]
           }
         ],
@@ -729,7 +794,8 @@
                 "summary": "SKU wording (source translation): 暮色316 · applied-picture design · pink/blue",
                 "source_ids": [
                   "name-v0"
-                ]
+                ],
+                "limitations": []
               },
               {
                 "option_id": "v1",
@@ -739,7 +805,8 @@
                 "summary": "SKU wording (source translation): 暮色316 · applied-picture design · black/white",
                 "source_ids": [
                   "name-v1"
-                ]
+                ],
+                "limitations": []
               },
               {
                 "option_id": "v6",
@@ -749,7 +816,8 @@
                 "summary": "SKU wording (source translation): 暮色316 · letter design · pink/blue",
                 "source_ids": [
                   "name-v6"
-                ]
+                ],
+                "limitations": []
               }
             ],
             "shared_claim_ids": []
@@ -765,7 +833,8 @@
                 "summary": "Thumbnail label: 750 ml",
                 "source_ids": [
                   "image-v0"
-                ]
+                ],
+                "limitations": []
               },
               {
                 "option_id": "v1",
@@ -775,7 +844,8 @@
                 "summary": "Thumbnail label: 750 ml",
                 "source_ids": [
                   "image-v1"
-                ]
+                ],
+                "limitations": []
               },
               {
                 "option_id": "v6",
@@ -785,7 +855,8 @@
                 "summary": "Thumbnail label: 750 ml",
                 "source_ids": [
                   "image-v6"
-                ]
+                ],
+                "limitations": []
               }
             ],
             "shared_claim_ids": [
@@ -983,7 +1054,7 @@
               "f-artwork",
               "f-capacity"
             ],
-            "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+            "note": "The comparison cites listing evidence for Decoration and finish, Capacity. No buyer requirement was linked for checking product fit."
           },
           {
             "group": "intended_use",
@@ -991,7 +1062,7 @@
             "finding_ids": [
               "f-use"
             ],
-            "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+            "note": "No buyer requirement describing use or temperature conditions was linked. Confirm the intended conditions and the product limits that apply to them."
           },
           {
             "group": "supporting_evidence",
@@ -999,7 +1070,7 @@
             "finding_ids": [
               "f-use"
             ],
-            "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
+            "note": "Cited evidence includes 9 listing text sources, 3 SKU thumbnails, and 1 guidance source. Listing material alone cannot verify the delivered item."
           }
         ],
         "limitations": [

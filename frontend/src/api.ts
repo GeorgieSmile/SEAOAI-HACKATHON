@@ -81,6 +81,8 @@ export interface ReviewRequirement {
   text: string;
   input_ref: string;
   quote: string;
+  option_ids: string[];
+  question_text: string | null;
 }
 
 export type ReviewClaim = {
@@ -130,11 +132,13 @@ export interface PurchaseReview extends CaseVersion {
     text: string;
     input_refs: string[];
     finding_ids: string[];
+    option_ids: string[];
+    questions: { question_id: string; question_text: string; option_ids: string[] }[];
   }[];
   comparisons: {
     label: string;
     shared_claim_ids: string[];
-    values: { option_id: string; summary: string; claim_ids: string[] }[];
+    values: { option_id: string; summary: string; claim_ids: string[]; limitations: string[] }[];
   }[];
   findings: ReviewFinding[];
   coverage: {

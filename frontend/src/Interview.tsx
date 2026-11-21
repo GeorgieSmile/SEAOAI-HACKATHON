@@ -265,7 +265,7 @@ export function Interview({
 
       {showReport && report && view ? (
         <>
-          <PurchaseReview key={report.revision} report={report} snapshot={snapshot} rounds={view.rounds}
+          <PurchaseReview key={report.revision} report={report} snapshot={snapshot}
             supplierDraft={draftEdit?.revision === report.revision ? draftEdit.text : report.supplier_draft}
             onChangeDraft={(text) => setDraftEdit({ revision: report.revision, text })} />
           {history}

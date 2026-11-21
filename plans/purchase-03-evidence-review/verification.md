@@ -131,6 +131,16 @@ A local Chrome run independently verified the shared 720 ml selector and each of
 
 `python -m pytest -q backend/tests` passed 264 offline tests, including replacements for the old English-sentence parser tests. `npm --prefix frontend test -- --workers=2` passed 28 Chrome tests. Frontend typechecking, the production build and `git diff --check` passed. The v2 report checks used scripted provider responses; zero paid requests were made.
 
+### Follow-up to the review of `a7dfe95`
+
+The first independent Astra review of the redesigned report reproduced six problems. A buyer answer could influence the wrong SKU or lose its negation. A shared measurement could appear under the wrong heading. Supplier questions could omit a supported preference or the deadline topic. Coverage notes could repeat across all three groups. A SKU name in a table cell could hide the limitation for its missing thumbnail.
+
+The follow-up regression suite exercises the actual issued scope, complete answer, skipped and superseded answers, incompatible units, positive and negative screen-printing preferences, delivery timing, and neutral questions for ambiguous answers. Coverage and per-cell limitations are tested in both rendered reports and Chrome. In particular, the missing-thumbnail cell retains A’s available name evidence, explains A’s missing photo, and leaves B’s and C’s cells independently sourced.
+
+Three copies of reports saved on `a7dfe95` reopened twice each with their original answers and selection. Both correctly scoped reports remained ready. Applying A’s answer to B withheld the report and allowed an explicit retry. These reads made zero provider requests. The separate unversioned database still required explicit regeneration.
+
+The follow-up passed 291 offline backend tests, 30 Chrome tests, frontend typechecking, the production build and whitespace checks. The 15-case local ZIP matrix repeated its six valid and nine invalid outcomes. The Chrome walkthrough covered the original ZIP, a disposable copy missing A’s image, restart after editing, and explicit regeneration of the legacy case at desktop and mobile widths. Provider output was scripted for all redesigned-report checks.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

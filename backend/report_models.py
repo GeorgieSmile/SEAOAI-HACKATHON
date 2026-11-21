@@ -13,7 +13,7 @@ FindingAction = Literal["decide_preference", "ask_supplier", "request_evidence"]
 UnknownReason = Literal["not_found", "not_reviewed", "unreadable"]
 ReviewTopic = Literal[
     "capacity", "finish", "materials", "temperature_use", "testing", "customization",
-    "packaging", "dimensions", "weight", "sample", "sku_wording", "other",
+    "packaging", "dimensions", "weight", "sample", "sku_wording", "deadline", "other",
 ]
 SupplierAction = Literal[
     "confirm_specification", "reconcile_sources", "request_documentation",
@@ -139,6 +139,14 @@ class BuyerRequirement(ContractModel):
     text: NonEmptyText
     input_ref: NonEmptyText
     quote: NonEmptyText
+    option_ids: SelectedOptionIds
+    question_text: NonEmptyText | None
+
+
+class PreferenceQuestion(ContractModel):
+    question_id: NonEmptyText
+    question_text: NonEmptyText
+    option_ids: SelectedOptionIds
 
 
 class OpenPreference(ContractModel):
@@ -146,11 +154,14 @@ class OpenPreference(ContractModel):
     text: NonEmptyText
     input_refs: list[NonEmptyText]
     finding_ids: list[NonEmptyText]
+    option_ids: SelectedOptionIds
+    questions: list[PreferenceQuestion]
 
 
 class ComparisonValue(ComparisonValueSelection):
     summary: NonEmptyText
     source_ids: list[NonEmptyText]
+    limitations: list[NonEmptyText]
 
 
 class Comparison(ContractModel):

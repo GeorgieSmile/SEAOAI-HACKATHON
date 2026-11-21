@@ -26,6 +26,9 @@ def example():
     data["input"]["answers"].append({
         "question_id": "q-open", "question_text": "Would you accept another option?", "answer_text": None,
     })
+    data["input"]["answer_option_ids"] = {
+        answer["question_id"]: data["input"]["selected_option_ids"] for answer in data["input"]["answers"]
+    }
     request = ReviewInput.model_validate(data["input"])
     images = {
         source.source_id: ("image/png", b"mapped-thumbnail")
@@ -41,14 +44,16 @@ def parsed_listing():
 
 @pytest.fixture
 def parser_case(parsed_listing):
+    selected = [parsed_listing.snapshot.options[i].option_id for i in (1, 6, 0)]
     request = ReviewInput.model_validate({
         "case_id": "parser-case", "revision": 7, "snapshot": parsed_listing.snapshot.model_dump(),
-        "selected_option_ids": [parsed_listing.snapshot.options[i].option_id for i in (1, 6, 0)],
+        "selected_option_ids": selected,
         "buyer_context": "Retail trial. Private note: Cedar-914.",
         "answers": [
             {"question_id": "issued-1", "question_text": "How will it be used?", "answer_text": "For hot drinks."},
             {"question_id": "issued-2", "question_text": "Which decoration works?", "answer_text": None},
         ],
+        "answer_option_ids": {"issued-1": selected, "issued-2": [selected[1]]},
     })
     return request, {source_id: (image.mime, image.payload) for source_id, image in parsed_listing.images.items()}
 
@@ -180,7 +185,10 @@ def test_request_is_bound_to_real_selected_evidence(parser_case, caplog):
     assert [entry["reference"] for entry in payload["selected_options"]] == ["A", "B", "C"]
     assert [entry["option_id"] for entry in payload["selected_options"]] == review_input.selected_option_ids
     assert payload["buyer_context"] == review_input.buyer_context
-    assert payload["answers"] == [answer.model_dump() for answer in review_input.answers]
+    assert payload["answers"] == [
+        {**answer.model_dump(), "option_ids": review_input.answer_option_ids[answer.question_id]}
+        for answer in review_input.answers
+    ]
     assert len(payload["image_inventory"]) == 12
     assert set(payload["attached_image_ids"]).isdisjoint(payload["metadata_only_image_ids"])
     assert set(payload["attached_image_ids"] + payload["metadata_only_image_ids"]) == images.keys()
@@ -423,3 +431,42 @@ def test_supplier_finding_without_a_selected_action_gets_one_correction(parser_c
     else:
         assert isinstance(result, ReviewFailed)
         assert result.code == "invalid_review"
+
+
+def test_deadline_preference_uses_actual_scoped_issued_question(example):
+    request, images = example
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "a-deadline", "question_text": "What delivery deadline should we use for Option A?", "answer_text": None,
+    })
+    data["answer_option_ids"]["a-deadline"] = ["v0"]
+    request = ReviewInput.model_validate(data)
+    content = minimal_content(request, "deadline")
+    content["findings"] = [finding_selection(
+        ["v0"], topic="deadline", finding_id="decide-a", action_type="decide_preference", supplier_action=None,
+    )]
+    content["open_preferences"] = [{
+        "preference_id": "deadline", "topic": "deadline", "input_refs": ["answer:a-deadline"], "finding_ids": ["decide-a"],
+    }]
+
+    rendered = assemble(request, images, content)
+    preference = rendered.open_preferences[0]
+    assert preference.option_ids == ["v0"]
+    assert preference.questions[0].model_dump() == {
+        "option_ids": ["v0"], "question_text": "What delivery deadline should we use for Option A?", "question_id": "a-deadline",
+    }
+    assert rendered.supplier_draft == ""
+
+    content["findings"][0]["option_ids"] = ["v1"]
+    with pytest.raises(ValueError, match="linked buyer input scopes"):
+        assemble(request, images, content)
+
+
+def test_answer_without_issued_option_scope_cannot_anchor_a_requirement(example):
+    request, images = example
+    data = request.model_dump()
+    data["answer_option_ids"] = {}
+    request = ReviewInput.model_validate(data)
+    content = populated_content(request)
+    with pytest.raises(ValueError, match="issued option scope"):
+        assemble(request, images, content)
