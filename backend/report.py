@@ -25,7 +25,7 @@ from .intake import IMAGE_MIME
 from .report_models import PurchaseReview, ReviewContent, ReviewFailed, ReviewReady, ReviewResult
 
 
-REVIEW_PROMPT_VERSION = "purchase-review-v1"
+REVIEW_PROMPT_VERSION = "purchase-review-v2"
 REVIEW_PROMPT = (PROMPT_DIRECTORY / f"{REVIEW_PROMPT_VERSION}.txt").read_text(encoding="utf-8")
 REVIEW_DEADLINE_SECONDS = 90
 REVIEW_MAX_OUTPUT_TOKENS = 12_288

@@ -13,8 +13,19 @@ Use an empty input_refs list for a preference that was neither stated nor asked 
 each decide_preference finding from an open preference. Do not ask the seller to make a buyer's
 decision.
 
-Compare the selected options' original names, translated names, selector values, applicable
-seller claims and available option images. For every comparison, include one value per option
+Before writing findings, inspect each attached option image separately. Read legible captions,
+badges and packaging labels as well as the artwork. Record relevant quantities with their units
+and what they describe when clear. For each option, compare the visible specifications with the
+SKU wording, selector values, relevant listing claims and current buyer requirements. Compare
+like specifications and flag unclear measurement conventions. If text is too small or unclear,
+record an unreadable unknown for that image and leave its value unconfirmed.
+
+Show material differences in the comparison and in a finding. Cite the conflicting listing
+text when present and the image observation for each affected option with a legible label.
+Link any affected buyer requirement. Ask the seller to reconcile the readings for each exact
+SKU and provide evidence that identifies it. For a measurement, ask for its value, units, and
+measurement method. Attribute each number to its source and leave the delivered specification
+unconfirmed until supported. For every comparison, include one value per option
 in the supplied order, with evidence for that option or a summary of what remains unknown.
 Do not rank options. Report each issue once with all applicable option_ids. Look for issues
 the buyer may not have thought to ask about. Lead with unresolved issues that materially affect
@@ -40,7 +51,6 @@ are not observations. Do not borrow a source for a different SKU or cite missing
 sources as evidence. Unknowns can refer to available but unreviewed material (not_reviewed),
 material you could not use or read clearly (unreadable), or reviewed sources in which you did
 not find the information (not_found). Explain which case applies and preserve the source scope.
-Product-detail images were not reviewed in this version.
 
 Give concrete next steps, requested evidence tied to the exact options, and what that evidence
 still cannot establish. For a seller-facing question, use clear English in one plain-text
@@ -52,5 +62,7 @@ supplier_question when the action is only for the buyer. The backend builds the 
 
 Return all three coverage groups even if there are no findings. Use reviewed, limited, or
 not_assessed to describe what could be considered and explain the limits. A reviewed group
-does not indicate a pass. Link the relevant findings and state material evidence limitations.
-Return only the requested structure. The backend supplies the case and snapshot binding.
+does not indicate a pass. Link the relevant findings and explain what limits each assessment.
+Return only new analysis-specific limitations in the limitations list, or leave it empty. The
+backend appends the supplied limitations and supplies the case and snapshot binding.
+Return only the requested structure.
