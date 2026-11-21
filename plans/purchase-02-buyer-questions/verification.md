@@ -7,6 +7,19 @@ Status: Phase 2 handoff for issue #2. The internal `ReviewInput` is available to
 - Tested implementation `16cced4`, including the frontend recovery follow-up and mobile history fix. With live question and translation calls disabled, `.venv/bin/python -m pytest -q backend/tests` passed all 99 tests. The frontend typecheck, production build and all 15 Playwright tests passed using the installed Chrome. `git diff --check` passed.
 Authority: [plan](plan.md), [question contract](../../docs/contracts/question-contract.md)
 
+## PR #6 review regressions
+
+On `50bc102`, two offline checks reproduced the review findings with the original user-supplied ZIP:
+
+- The question route accepted a mock response that cited A’s name (暮色316-贴画粉蓝) while telling the buyer that B’s name (暮色316-字母粉蓝) described applied-picture artwork. The false attribution survived reopening SQLite.
+- In two Chrome tabs, A’s Continue response was delayed after the server committed it. B started a different case on the same listing and saved a deadline. A then confirmed different SKUs. Its request used B’s case ID and revision and replaced the saved case.
+
+Verification on implementation commit `003fe1e` included 117 backend tests, 19 Playwright tests in installed Chrome, the frontend typecheck and production build, and `git diff --check`. All passed. The fix checks used offline model responses, including for the original ZIP walkthrough.
+
+- The same mock provider response returned `invalid_questions`. Reopening SQLite showed a failed operation and zero issued rounds. Offline replay of the previously authorized four-question comparison still passed with its three correctly attributed option names.
+- In the same two-tab Chrome run, the stale confirmation and subsequent reload sent zero POSTs. The other tab’s deadline reappeared at revision 1. A deliberate selection change after the reload sent one POST bound to the newly displayed case and revision.
+- The original `Website Test.zip` also passed the edit/restart walkthrough at 1280 and 390 px. Three selected SKUs kept their order across two backend process restarts. Changing round one to “Ready-made only” preserved the exact purchase deadline, including surrounding spaces, and removed the dependent sample-approval answer from both the browser and `ReviewInput`. All 12 recovered SKU names and image hashes matched the independent inventory. A request using the old revision received HTTP 409.
+
 ## ตรวจส่วนของตนก่อนเปิด PR
 
 เกณฑ์ V02-A/B/C ใช้ตรวจ flow, binding และ question generation ผลจากการรันจริงอยู่ใต้ตาราง
