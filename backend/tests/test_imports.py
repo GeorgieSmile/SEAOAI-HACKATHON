@@ -144,6 +144,23 @@ def test_import_accepts_explicit_sku_images_without_sku_card_wrappers(tmp_path):
             assert sha256(photo.content).hexdigest() == expected["image_sha256"]
 
 
+def test_import_rejects_photo_label_with_duplicate_target_across_groups(tmp_path):
+    def change(entries):
+        document = BeautifulSoup(entries["listing.html"].decode(), "html.parser")
+        parent = document.find(attrs={"data-sku-group-type": "parent"})
+        child = document.find(attrs={"data-sku-group-type": "child"})
+        target_id = parent.find("input")["id"]
+        parent.find("label")["for"] = target_id
+        child.find("input")["id"] = target_id
+        parent.insert_before(child.extract())
+        entries["listing.html"] = document.encode()
+
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        result = _upload(client, _copy_zip(change)).json()
+        assert (result["status"], result.get("code")) == ("failed", "unsupported_layout")
+        assert client.get("/api/case").json()["snapshot"] is None
+
+
 def test_import_accepts_sku_card_labels_for_preceding_radios(tmp_path):
     def change(entries):
         document = BeautifulSoup(entries["listing.html"].decode(), "html.parser")

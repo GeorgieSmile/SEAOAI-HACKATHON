@@ -1,3 +1,4 @@
+from collections import Counter
 from dataclasses import dataclass
 import html
 from html.parser import HTMLParser
@@ -194,13 +195,13 @@ def _validate_mapping(root: Tag, selectors: list[Selector], shared_key: str | No
         raise _unsupported("The saved SKU mapping disagrees with the product selector.")
 
 
-def _selectors(group: Tag, kind: str) -> list[Selector]:
+def _selectors(group: Tag, kind: str, document_id_counts: Counter[str]) -> list[Selector]:
     inputs = group.find_all("input", attrs={"data-sku-type": kind}, limit=MAX_OPTIONS + 1)
     if len(inputs) > MAX_OPTIONS:
         raise _work_limit()
 
     options: dict[str, tuple[str, str | None]] = {}
-    control_keys: dict[str, str | None] = {}
+    control_keys: dict[str, str] = {}
     container_keys: dict[int, str | None] = {}
     for item in inputs:
         key = _source_text(item.get("data-sku", ""))
@@ -210,8 +211,8 @@ def _selectors(group: Tag, kind: str) -> list[Selector]:
         options[key] = (name, item.get("data-image", "").strip() or None)
 
         control_id = item.get("id")
-        if control_id:
-            control_keys[control_id] = None if control_id in control_keys else key
+        if control_id and document_id_counts[control_id] == 1:
+            control_keys[control_id] = key
         for container in item.parents:
             if container is group:
                 break
@@ -307,12 +308,14 @@ def read_product(payload: bytes) -> Product:
     child = [group for group in groups if group["data-sku-group-type"] == "child"]
     if len(main) != 1 or len(child) > 1 or len(groups) != len(main) + len(child):
         raise _unsupported("The saved product has unsupported SKU option groups.")
-    selectors = _selectors(main[0], "parent")
+    # HTML labels resolve by ID across the whole saved document.
+    document_id_counts = Counter(tag["id"] for tag in document.find_all(id=True))
+    selectors = _selectors(main[0], "parent", document_id_counts)
     if not selectors:
         raise IntakeError("product_unreadable", "No readable SKU options were found on the saved product page.")
     shared_key = shared_value = None
     if child:
-        secondary = _selectors(child[0], "child")
+        secondary = _selectors(child[0], "child", document_id_counts)
         if len(secondary) != 1:
             raise _unsupported("The saved product does not have one shared secondary selector value.")
         shared_key, shared_value = secondary[0].key, secondary[0].name
