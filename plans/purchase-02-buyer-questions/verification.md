@@ -24,6 +24,10 @@ A fresh Astra 6.2 high review of `348eb5f` confirmed both original P1 fixes. It 
 
 On `ef0096f`, all three valid cases issued a round and reopened correctly from SQLite. The original A-only citation falsely naming B still failed with zero issued rounds. The stored response from the previously approved live four-question plan also passed offline. The full backend suite passed all 126 tests. The edit/restart browser walkthrough passed again on this commit. All 19 Playwright regressions, typechecking, and the production build had passed on the same frontend code. No additional paid requests were made.
 
+On `0891ba6` the reviewer reproduced another stale-tab overwrite through **Resume questions** after a delayed Continue, and a B-only choice beginning “For Option B, a printed proof …” was rejected. On `a1cf550` the same two-tab walkthrough with the original ZIP preserved the second tab’s case and deadline. Resume and the subsequent reload sent zero writes. The B-only choice issued a round and survived reopening SQLite. Regressions cover Confirm and Resume for both a replaced case and a newer revision, same-tab recovery, and the distinction between buyer prose and actual option lists.
+
+On that implementation all 135 backend tests, all 22 Chrome Playwright tests, typechecking and the production build passed. The original ZIP edit/restart walkthrough passed again at desktop and mobile widths, including the exact saved deadline, discarded dependent answer and all 12 SKU photo hashes. The original wrong-SKU case still failed before publication, and the recorded four-question comparison still passed. All provider responses used for these checks were offline.
+
 ## ตรวจส่วนของตนก่อนเปิด PR
 
 เกณฑ์ V02-A/B/C ใช้ตรวจ flow, binding และ question generation ผลจากการรันจริงอยู่ใต้ตาราง
