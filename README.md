@@ -2,9 +2,9 @@
 
 ชุดเริ่มงานสำหรับทีม 3 คน: ผู้ซื้อส่ง ZIP หน้าสินค้าจีน เลือก 1–3 SKU ตอบคำถามที่ปรับตามคำตอบสูงสุด 3 รอบ รอบละ 5 ข้อ หรือไปดูรายงานได้เลย แล้วได้รายงานอังกฤษพร้อมหลักฐานและข้อความถามผู้ขายที่คัดลอกได้ กู้เคสล่าสุดพร้อมหลักฐานหลัง restart ด้วย SQLite
 
-Phase 1 เปิด ZIP เลือก SKU และยืนยันรายการได้ งานคำถามและรายงานอยู่ใน Phase 2–3 ตาม [spec v0.16](docs/spec.md)
+Phase 2 เปิด ZIP เลือก SKU แล้วถามความต้องการของผู้ซื้อได้สูงสุด 3 รอบ สามารถข้าม แก้คำตอบรอบก่อน หรือกลับมาทำเคสเดิมหลัง restart ได้ ปุ่ม **View purchase review** ใช้คำตอบที่กรอกเพื่อเตรียมข้อมูลสำหรับรายงาน ส่วนการสร้างรายงานอยู่ใน Phase 3 ตาม [spec v0.16](docs/spec.md)
 
-## เปิดแอป Phase 1
+## เปิดแอป Phase 2
 
 รันจาก root ของ repo บนเครื่องเดโม ติดตั้ง dependencies ครั้งแรกด้วย Python และ Node ที่ระบุใน [toolchain](docs/toolchain.md)
 
@@ -14,10 +14,10 @@ python3 -m venv .venv
 npm --prefix frontend ci
 ```
 
-ทดสอบโดยไม่ใช้เครดิต API เปิด backend ใน terminal แรก คำสั่งนี้อ่าน ZIP จริงและเก็บ snapshot ใน SQLite ชั่วคราว หน้าเลือกแสดงชื่อจีนพร้อมข้อจำกัดเรื่องคำแปล
+ทดสอบโดยไม่ใช้เครดิต API เปิด backend ใน terminal แรก โหมดนี้อ่าน ZIP จริง แสดงชื่อจีน และใช้ชุดคำถามทดสอบที่เตรียมไว้ เลือก “Custom orders are acceptable” แล้วกด **Continue** เพื่อดูคำถามรอบถัดไป ใช้ path เดิมเมื่อต้องการทดสอบกู้เคสหลัง restart หากไม่ระบุ `--database` จะใช้ฐานข้อมูลชั่วคราวเฉพาะการรันครั้งนั้น
 
 ```sh
-.venv/bin/python -m backend.tests.offline_server
+.venv/bin/python -m backend.tests.offline_server --database backend/.local/offline-demo.sqlite3
 ```
 
 เปิด frontend ในอีก terminal จาก root เดียวกัน
@@ -26,9 +26,9 @@ npm --prefix frontend ci
 npm --prefix frontend run dev
 ```
 
-เปิด [หน้าเลือกสินค้า](http://127.0.0.1:5173) อัปโหลด [raw ZIP](samples/raw-save/raw-save-redacted.zip) เลือก SKU 1–3 รายการตามลำดับ กรอกบริบทได้ถ้าต้องการ แล้วกดยืนยัน หน้าเว็บใช้ `POST /api/selections` ตรวจรหัสกับ snapshot ล่าสุด จุดส่งต่อของ Phase 1 คือรายการที่ยืนยันแล้ว
+เปิด [หน้าเลือกสินค้า](http://127.0.0.1:5173) อัปโหลด [raw ZIP](samples/raw-save/raw-save-redacted.zip) เลือก SKU 1–3 รายการตามลำดับ กรอกบริบทได้ถ้าต้องการ แล้วเริ่มรอบคำถาม เปิด URL เดิมอีกครั้งเพื่อดูเคสและคำตอบที่บันทึกไว้
 
-เมื่อต้องการรัน backend ปกติ ให้หยุด backend ทดสอบก่อนแล้วใช้คำสั่งด้านล่าง โดย SQLite ของแอปอยู่ใน `backend/.local/` การแปลจริงต้องได้รับอนุมัติค่าใช้จ่ายก่อน จึงตั้ง `OPENAI_LIVE_TRANSLATION=1` และ `OPENAI_API_KEY` ใน environment ของ backend ถ้ายังไม่ได้ตั้งค่า การนำเข้าจะแจ้งข้อผิดพลาด เก็บ key ไว้เฉพาะเครื่อง เช่นใน `backend/.env` ซึ่ง Git ข้าม ไฟล์นี้ต้องโหลดเข้า environment ของ process ที่จะใช้เอง
+เมื่อต้องการรัน backend ปกติ ให้หยุด backend ทดสอบก่อนแล้วใช้คำสั่งด้านล่าง โดย SQLite ของแอปอยู่ใน `backend/.local/` การเรียก API จริงมีค่าใช้จ่ายและต้องได้รับอนุมัติก่อน ตั้ง `OPENAI_API_KEY` ใน environment ของ backend แล้วเปิดเฉพาะขั้นที่ได้รับอนุมัติ (`OPENAI_LIVE_TRANSLATION=1` สำหรับแปล และ `OPENAI_LIVE_QUESTIONS=1` สำหรับคำถาม) เมื่อขั้นใดยังไม่เปิด แอปจะแจ้งข้อผิดพลาดที่ขั้นนั้น เก็บ key ไว้เฉพาะเครื่อง เช่นใน `backend/.env` ซึ่ง Git ข้าม ไฟล์นี้ต้องโหลดเข้า environment ของ process ที่จะใช้เอง
 
 ```sh
 .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1

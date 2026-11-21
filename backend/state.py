@@ -1,12 +1,15 @@
 from pathlib import Path
 import sqlite3
 
+from pydantic import ValidationError
+
+from .case_models import CaseRecord, OperationBinding
 from .contracts import ListingSnapshot
 from .intake import ImageData
 
 
 class Store:
-    """The SQLite owner for the active import and its verified image bytes."""
+    """The SQLite owner for the current snapshot, image bytes, and case."""
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -30,6 +33,23 @@ class Store:
                     source_id TEXT PRIMARY KEY,
                     digest TEXT NOT NULL REFERENCES image_blobs(digest)
                 );
+                CREATE TABLE IF NOT EXISTS active_case (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    case_id TEXT,
+                    revision INTEGER,
+                    operation_id TEXT,
+                    operation_status TEXT,
+                    data TEXT
+                );
+                INSERT OR IGNORE INTO active_case (singleton) VALUES (1);
+                CREATE TABLE IF NOT EXISTS operation_bindings (
+                    operation_id TEXT PRIMARY KEY,
+                    stage TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    result_operation_id TEXT NOT NULL
+                );
             """)
         except BaseException:
             connection.close()
@@ -40,18 +60,33 @@ class Store:
         self.connection.close()
 
     def begin_import(self) -> int:
+        generation = self._clear_workspace(None)
+        assert generation is not None
+        return generation
+
+    def reset(self, generation: int) -> bool:
+        return self._clear_workspace(generation) is not None
+
+    def _clear_workspace(self, expected_generation: int | None) -> int | None:
         with self.connection:
             cursor = self.connection.execute("""
                 UPDATE active_import
                 SET generation = generation + 1, snapshot_id = NULL, snapshot = NULL
-                WHERE singleton = 1
+                WHERE singleton = 1 AND (? IS NULL OR generation = ?)
                 RETURNING generation
-            """)
-            generation, = cursor.fetchone()
+            """, (expected_generation, expected_generation))
+            row = cursor.fetchone()
             cursor.close()
+            if row is None:
+                return None
+            self.connection.execute("""
+                UPDATE active_case SET case_id = NULL, revision = NULL, operation_id = NULL,
+                    operation_status = NULL, data = NULL WHERE singleton = 1
+            """)
+            self.connection.execute("DELETE FROM operation_bindings")
             self.connection.execute("DELETE FROM image_sources")
             self.connection.execute("DELETE FROM image_blobs")
-        return generation
+        return row[0]
 
     def is_current(self, generation: int) -> bool:
         current, = self.connection.execute("SELECT generation FROM active_import WHERE singleton = 1").fetchone()
@@ -79,7 +114,68 @@ class Store:
 
     def snapshot(self) -> ListingSnapshot | None:
         serialized, = self.connection.execute("SELECT snapshot FROM active_import WHERE singleton = 1").fetchone()
-        return ListingSnapshot.model_validate_json(serialized) if serialized is not None else None
+        try:
+            return ListingSnapshot.model_validate_json(serialized) if serialized is not None else None
+        except ValidationError:
+            raise sqlite3.DatabaseError("The saved snapshot could not be read.") from None
+
+    def workspace(self) -> tuple[int, ListingSnapshot | None, CaseRecord | None]:
+        generation, snapshot, case = self.connection.execute("""
+            SELECT active_import.generation, active_import.snapshot, active_case.data
+            FROM active_import JOIN active_case USING (singleton)
+            WHERE active_import.singleton = 1
+        """).fetchone()
+        try:
+            return (
+                generation,
+                ListingSnapshot.model_validate_json(snapshot) if snapshot is not None else None,
+                CaseRecord.model_validate_json(case) if case is not None else None,
+            )
+        except ValidationError:
+            raise sqlite3.DatabaseError("The saved workspace could not be read.") from None
+
+    def operation_binding(self, operation_id: str) -> OperationBinding | None:
+        row = self.connection.execute("""
+            SELECT operation_id, stage, fingerprint, case_id, revision, result_operation_id
+            FROM operation_bindings WHERE operation_id = ?
+        """, (operation_id,)).fetchone()
+        return OperationBinding(*row) if row is not None else None
+
+    def save_case(
+        self, generation: int, previous: CaseRecord | None, case: CaseRecord,
+        *, binding: OperationBinding | None = None,
+    ) -> bool:
+        prior = previous.view if previous is not None else None
+        next_case = case.view
+        operation = next_case.last_operation
+        with self.connection:
+            update = self.connection.execute("""
+                UPDATE active_case
+                SET case_id = ?, revision = ?, operation_id = ?, operation_status = ?, data = ?
+                WHERE singleton = 1 AND case_id IS ? AND revision IS ?
+                    AND operation_id IS ? AND operation_status IS ?
+                    AND EXISTS (
+                        SELECT 1 FROM active_import
+                        WHERE singleton = 1 AND generation = ? AND snapshot_id = ?
+                    )
+            """, (
+                next_case.case_id, next_case.revision, operation.operation_id, operation.status, case.model_dump_json(),
+                prior.case_id if prior is not None else None,
+                prior.revision if prior is not None else None,
+                prior.last_operation.operation_id if prior is not None else None,
+                prior.last_operation.status if prior is not None else None,
+                generation, next_case.snapshot_id,
+            ))
+            if update.rowcount != 1:
+                return False
+            if binding is not None:
+                self.connection.execute("""
+                    INSERT INTO operation_bindings VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    binding.operation_id, binding.stage, binding.fingerprint, binding.case_id, binding.revision,
+                    binding.result_operation_id,
+                ))
+        return True
 
     def image(self, snapshot_id: str, source_id: str) -> tuple[str, bytes] | None:
         return self.connection.execute("""

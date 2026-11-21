@@ -4,7 +4,7 @@
 
 **Blocked by:** None (ใช้ Interface ที่ยอมรับแล้ว ตรวจแยกด้วย trusted snapshot fixture ใน test harness ได้)
 
-**Status:** ready-for-agent; execution on competition day after selecting this Build task; implementation not started
+**Status:** Implemented for Phase 2 review on `phase-2/buyer-questions`. The [verification record](verification.md) covers browser, HTTP, SQLite restart, and provider checks. Final integrated acceptance stays open on issue #2.
 
 **ผู้ประสานหลัก:** A ทำหน้าสนทนาและกู้ UI, B เก็บ SQLite/ออกคำถามผ่าน HTTP และประกอบ ReviewInput, C ทำ prompt/schema/scope สำหรับคำถามหลายรอบ
 

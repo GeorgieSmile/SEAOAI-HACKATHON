@@ -15,8 +15,12 @@ from starlette.datastructures import UploadFile
 from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse, Response
 
-from .ai import TranslationConfigurationError, build_translation_client, translate_listing
+from .ai import (
+    TranslationConfigurationError, build_question_client, build_translation_client, generate_questions, translate_listing,
+)
 from .archive import IntakeError, MAX_ZIP_BYTES, MiB
+from .case_models import ContinueCase, ResetCase, RetryCase, ReviewCase, StartCase
+from .case_workflow import CaseCommandError, CaseWorkflow, QuestionGenerator
 from .contracts import ContractModel, IntakeFailed, IntakeReady, ListingSnapshot
 from .intake import ParsedListing, parse_listing
 from .state import Store
@@ -26,6 +30,7 @@ DEMO_ORIGIN = "http://127.0.0.1:5173"
 MAX_IMPORT_BODY = 21 * MiB
 DEFAULT_DATABASE = Path(__file__).resolve().parent / ".local" / "purchase.sqlite3"
 Translator = Callable[[ListingSnapshot], Awaitable[ListingSnapshot]]
+CASE_COMMANDS = frozenset({"/api/questions", "/api/questions/continue", "/api/reviews", "/api/case/retry", "/api/case/reset"})
 
 
 class SelectionRequest(ContractModel):
@@ -44,6 +49,14 @@ def _intake_failure(code: str, message: str, status: int = 200) -> JSONResponse:
 
 def _invalid_request(message: str, status: int) -> JSONResponse:
     return JSONResponse({"status": "failed", "code": "invalid_input", "message": message}, status_code=status)
+
+
+def _case_failure(error: CaseCommandError) -> JSONResponse:
+    case = error.case
+    return JSONResponse({
+        "status": "failed", "case_id": case.case_id if case is not None else None,
+        "revision": case.revision if case is not None else None, "code": error.code, "message": str(error),
+    }, status_code=error.status)
 
 
 def _obsolete_import() -> JSONResponse:
@@ -101,7 +114,10 @@ def _translation(original: ListingSnapshot, output: ListingSnapshot) -> ListingS
     return verified
 
 
-def create_app(db_path: Path | str | None = None, *, translator: Translator | None = None) -> FastAPI:
+def create_app(
+    db_path: Path | str | None = None, *, translator: Translator | None = None,
+    question_generator: QuestionGenerator | None = None,
+) -> FastAPI:
     database = Path(db_path if db_path is not None else os.environ.get("PURCHASE_DATABASE_PATH", DEFAULT_DATABASE))
 
     @asynccontextmanager
@@ -111,17 +127,23 @@ def create_app(db_path: Path | str | None = None, *, translator: Translator | No
         app.state.parser_lock = asyncio.Lock()
         app.state.parse_task = None
         client = None
+        question_client = None
         try:
             if translator is None:
                 client = build_translation_client()
             app.state.translate = translator if translator is not None else partial(translate_listing, client=client)
+            if question_generator is None:
+                question_client = build_question_client()
+            app.state.question_workflow = CaseWorkflow(
+                store, question_generator if question_generator is not None else partial(generate_questions, client=question_client),
+            )
+            app.state.question_workflow.recover_interrupted()
             yield
         finally:
             try:
                 if app.state.parse_task is not None:
                     await asyncio.gather(app.state.parse_task, return_exceptions=True)
-                if client is not None:
-                    await client.close()
+                await asyncio.gather(*(sdk.close() for sdk in (client, question_client) if sdk is not None))
             finally:
                 store.close()
 
@@ -139,12 +161,26 @@ def create_app(db_path: Path | str | None = None, *, translator: Translator | No
 
     @application.exception_handler(RequestValidationError)
     async def invalid_shape(request: Request, error: RequestValidationError):
+        if request.url.path in CASE_COMMANDS:
+            _, _, record = application.state.store.workspace()
+            return _case_failure(CaseCommandError(
+                "invalid_input", "Check the request fields and try again.",
+                record.view if record is not None else None, status=422,
+            ))
         return _invalid_request("Check the request fields and try again.", 422)
+
+    @application.exception_handler(CaseCommandError)
+    async def case_failure(request: Request, error: CaseCommandError):
+        return _case_failure(error)
 
     @application.exception_handler(sqlite3.Error)
     async def storage_failure(request: Request, error: sqlite3.Error):
         if request.url.path == "/api/imports":
             return _intake_failure("intake_failed", "The server could not save the import.", 500)
+        if request.url.path in CASE_COMMANDS or request.url.path == "/api/case":
+            return _case_failure(CaseCommandError(
+                "storage_failed", "The server could not read or save the current case.", status=500,
+            ))
         return JSONResponse(
             {"status": "failed", "code": "storage_failed", "message": "The server could not read the active import."},
             status_code=500,
@@ -216,9 +252,10 @@ def create_app(db_path: Path | str | None = None, *, translator: Translator | No
 
     @application.get("/api/case")
     async def active_case():
-        snapshot = application.state.store.snapshot()
+        _, snapshot, case = application.state.store.workspace()
         return JSONResponse(
-            {"snapshot": snapshot.model_dump() if snapshot is not None else None, "case": None},
+            {"snapshot": snapshot.model_dump() if snapshot is not None else None,
+             "case": case.view.model_dump() if case is not None else None},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -248,6 +285,27 @@ def create_app(db_path: Path | str | None = None, *, translator: Translator | No
                 "buyer_context": payload.buyer_context,
             },
         }
+
+    @application.post("/api/questions")
+    async def start_questions(command: StartCase):
+        return {"status": "ready", "case": await application.state.question_workflow.start(command)}
+
+    @application.post("/api/questions/continue")
+    async def continue_questions(command: ContinueCase):
+        return {"status": "ready", "case": await application.state.question_workflow.submit(command, "continue")}
+
+    @application.post("/api/reviews")
+    async def prepare_review(command: ReviewCase):
+        return {"status": "ready", "case": await application.state.question_workflow.submit(command, "review")}
+
+    @application.post("/api/case/retry")
+    async def retry_case(command: RetryCase):
+        return {"status": "ready", "case": await application.state.question_workflow.retry(command)}
+
+    @application.post("/api/case/reset")
+    async def reset_case(command: ResetCase):
+        application.state.question_workflow.reset(command)
+        return {"snapshot": None, "case": None}
 
     return application
 

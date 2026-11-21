@@ -39,12 +39,66 @@ export interface Selection {
   buyer_context: string;
 }
 
-export interface ConfirmSelection extends Selection {
-  operation_id: string;
-  previous_case: null;
+export interface CaseVersion {
+  case_id: string;
+  revision: number;
 }
 
-type SelectionResult = { status: "confirmed"; selection: Selection } | ApiFailure;
+export interface StartQuestions extends Selection {
+  operation_id: string;
+  previous_case: CaseVersion | null;
+}
+
+export interface Question {
+  question_id: string;
+  prompt: string;
+  why_ask: string;
+  option_ids: string[];
+  source_ids: string[];
+  choices: string[];
+}
+
+export interface Answer {
+  question_id: string;
+  answer_text: string | null;
+}
+
+export interface Submission {
+  round_id: string;
+  answers: Answer[];
+}
+
+export interface QuestionRound {
+  round_id: string;
+  round_number: number;
+  reason: string;
+  questions: Question[];
+  answers: Answer[] | null;
+}
+
+export type CaseStage = "start" | "continue" | "review";
+
+interface CaseOperation {
+  operation_id: string;
+  stage: CaseStage;
+  status: "running" | "ready" | "failed";
+  code: string | null;
+  message: string | null;
+}
+
+export interface CaseView extends Selection, CaseVersion {
+  rounds: QuestionRound[];
+  phase: "preparing_questions" | "awaiting_answers" | "ready_for_review" | "generating_review" | "reviewed" | "failed";
+  reason: string | null;
+  last_operation: CaseOperation | null;
+}
+
+interface SavedCase {
+  snapshot: ListingSnapshot | null;
+  case: CaseView | null;
+}
+
+type CaseResult = { status: "ready"; case: CaseView } | ApiFailure;
 
 async function request<T>(path: string, fallback: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init).catch(() => {
@@ -60,14 +114,14 @@ async function request<T>(path: string, fallback: string, init?: RequestInit): P
   return result as T;
 }
 
-export async function getCurrentSnapshot(signal: AbortSignal) {
-  const result = await request<{ snapshot: ListingSnapshot | null }>(
+export async function getCurrentCase(signal?: AbortSignal) {
+  const result = await request<SavedCase>(
     "/api/case", "Could not load the current listing.", { signal },
   );
-  if (result.snapshot === undefined) {
+  if (result.snapshot === undefined || result.case === undefined) {
     throw new Error("Could not load the current listing.");
   }
-  return result.snapshot;
+  return result;
 }
 
 export async function uploadListing(file: File) {
@@ -82,19 +136,54 @@ export async function uploadListing(file: File) {
   return result.snapshot;
 }
 
-export async function confirmSelection(payload: ConfirmSelection) {
-  const result = await request<SelectionResult>(
-    "/api/selections", "Could not confirm these options.",
+async function postCaseCommand(path: string, payload: object) {
+  const result = await request<CaseResult>(
+    path, "Could not save your progress. Try again.",
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     },
   );
-  if (result.status !== "confirmed" || !result.selection) {
-    throw new Error("Could not confirm these options.");
+  if (result.status !== "ready" || !result.case) {
+    throw new Error("Could not save your progress. Try again.");
   }
-  return result.selection;
+  return result.case;
+}
+
+export function caseVersion(view: CaseView | null): CaseVersion | null {
+  return view ? { case_id: view.case_id, revision: view.revision } : null;
+}
+
+export function startQuestions(payload: StartQuestions) {
+  return postCaseCommand("/api/questions", payload);
+}
+
+export function continueQuestions(view: CaseView, submission: Submission, operationId: string) {
+  return postCaseCommand("/api/questions/continue", {
+    ...caseVersion(view), operation_id: operationId, submission,
+  });
+}
+
+export function requestReview(view: CaseView, submission: Submission | null, operationId: string) {
+  return postCaseCommand("/api/reviews", {
+    ...caseVersion(view), operation_id: operationId, submission,
+  });
+}
+
+export function retryCase(view: CaseView, operationId: string) {
+  return postCaseCommand("/api/case/retry", {
+    ...caseVersion(view), operation_id: operationId,
+  });
+}
+
+export async function resetCase(snapshotId: string, previous: CaseVersion | null) {
+  const result = await request<SavedCase>("/api/case/reset", "Could not clear the saved listing.", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ snapshot_id: snapshotId, previous_case: previous }),
+  });
+  if (result.snapshot !== null || result.case !== null) throw new Error("Could not clear the saved listing.");
 }
 
 export function sourceImageUrl(snapshotId: string, sourceId: string) {
