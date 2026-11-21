@@ -1,10 +1,9 @@
-"""Single-worker Railway entry point. Each unlocked browser owns one durable workspace."""
+"""Single-worker Railway entry point. Each browser owns one durable workspace."""
 import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 import hashlib
-import hmac
 import logging
 import os
 from pathlib import Path
@@ -15,7 +14,6 @@ import time
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
-from pydantic import BaseModel, Field, ValidationError
 from starlette.responses import JSONResponse, Response
 from starlette.staticfiles import StaticFiles
 
@@ -35,11 +33,8 @@ LOG = logging.getLogger(__name__)
 class HostedSettings:
     data_dir: Path
     origin: str
-    demo_code: str
     static_dir: Path = Path("frontend/dist")
     report_concurrency: int = 2
-    attempt_budget: int = 0
-    session_attempt_budget: int = 0
     session_ttl_seconds: int = 48 * 3600
     max_sessions: int = 100
 
@@ -50,10 +45,8 @@ class HostedSettings:
             url.path or url.query or url.fragment
         ):
             raise ValueError("Set DEMO_ORIGIN to the exact HTTPS origin, or HTTP on localhost.")
-        if not self.demo_code.strip() or len(self.demo_code.encode()) > 256:
-            raise ValueError("Set a nonempty DEMO_ACCESS_CODE of up to 256 bytes.")
-        if not 1 <= self.report_concurrency <= 10 or min(self.attempt_budget, self.session_attempt_budget) < 0:
-            raise ValueError("Set report concurrency to 1–10 and nonnegative API attempt limits.")
+        if not 1 <= self.report_concurrency <= 10:
+            raise ValueError("Set report concurrency to 1–10.")
         if self.session_ttl_seconds < 1 or self.max_sessions < 1:
             raise ValueError("Session lifetime and capacity must be positive.")
 
@@ -64,13 +57,11 @@ class HostedSettings:
         if os.environ.get("RAILWAY_ENVIRONMENT_ID") and (
             not mount or not data_dir.resolve().is_relative_to(Path(mount).resolve())
         ):
-            raise ValueError("Mount a Railway volume at /data to persist demo cases and API limits.")
+            raise ValueError("Mount a Railway volume at /data to persist demo cases.")
         return cls(
             data_dir=data_dir,
-            origin=os.environ["DEMO_ORIGIN"], demo_code=os.environ["DEMO_ACCESS_CODE"],
+            origin=os.environ["DEMO_ORIGIN"],
             report_concurrency=int(os.environ.get("DEMO_REPORT_CONCURRENCY", "2")),
-            attempt_budget=int(os.environ.get("DEMO_API_ATTEMPTS", "0")),
-            session_attempt_budget=int(os.environ.get("DEMO_SESSION_API_ATTEMPTS", "0")),
             session_ttl_seconds=int(os.environ.get("DEMO_SESSION_TTL_HOURS", "48")) * 3600,
         )
 
@@ -83,10 +74,8 @@ class DemoRegistry:
         self.db = sqlite3.connect(settings.data_dir / "demo.sqlite3")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
-                id TEXT PRIMARY KEY, last_seen INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0
+                id TEXT PRIMARY KEY, last_seen INTEGER NOT NULL
             );
-            CREATE TABLE IF NOT EXISTS usage (id INTEGER PRIMARY KEY CHECK(id=1), attempts INTEGER NOT NULL);
-            INSERT OR IGNORE INTO usage VALUES (1,0);
         """)
 
     def new_session(self):
@@ -113,21 +102,6 @@ class DemoRegistry:
             with self.db:
                 self.db.execute("UPDATE sessions SET last_seen=? WHERE id=?", (now, key))
         return key
-
-    def reserve(self, key):
-        # One synchronous transaction per SDK attempt, including retries. Global spend
-        # remains charged when a browser expires or obtains a new cookie.
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
-            global_used, = self.db.execute("SELECT attempts FROM usage WHERE id=1").fetchone()
-            if global_used >= self.settings.attempt_budget:
-                return False
-            updated = self.db.execute("UPDATE sessions SET attempts=attempts+1 WHERE id=? AND attempts<?",
-                                      (key, self.settings.session_attempt_budget))
-            if not updated.rowcount:
-                return False
-            self.db.execute("UPDATE usage SET attempts=attempts+1 WHERE id=1")
-        return True
 
     def path(self, key):
         return self.directory / f"{key}.sqlite3"
@@ -159,18 +133,8 @@ class Workspaces:
             return self.opened[key]
 
     async def _create(self, key):
-        def metered(provider):
-            async def call(*args, **kwargs):
-                ctx = ai.reserve_provider_attempt.set(partial(self.registry.reserve, key))
-                try:
-                    return await provider(*args, **kwargs)
-                finally:
-                    ai.reserve_provider_attempt.reset(ctx)
-            return call
-
-        scoped = {name: metered(fn) for name, fn in self.providers.items() if fn is not None}
         child = create_app(self.registry.path(key), allowed_origin=self.settings.origin,
-                           review_queue=self.queue, **scoped)
+                           review_queue=self.queue, **self.providers)
         resources = AsyncExitStack()
         await resources.enter_async_context(child.router.lifespan_context(child))
         return Workspace(child, resources)
@@ -198,15 +162,6 @@ class Workspaces:
                 await self.clean()
             except (sqlite3.Error, OSError):
                 LOG.exception("Could not expire old demo workspaces")
-
-
-class Unlock(BaseModel):
-    code: str = Field(max_length=256)
-
-
-def locked():
-    return JSONResponse({"code": "demo_locked", "message": "Enter the demo code to open your workspace."},
-                        status_code=401, headers={"Cache-Control": "no-store"})
 
 
 def create_hosted_app(settings: HostedSettings, *, translator=None, question_generator=None, review_generator=None,
@@ -265,38 +220,12 @@ def create_hosted_app(settings: HostedSettings, *, translator=None, question_gen
 
     @app.get("/healthz")
     async def health():
-        app.state.workspaces.registry.db.execute("SELECT id FROM usage WHERE id=1").fetchone()
+        app.state.workspaces.registry.db.execute("SELECT id FROM sessions LIMIT 1").fetchone()
         return {"status": "ready"}
 
     def set_cookie(response, token):
         response.set_cookie(COOKIE, token, httponly=True, secure=settings.origin.startswith("https://"),
                             max_age=settings.session_ttl_seconds, samesite="strict", path="/")
-
-    @app.post("/api/demo/unlock")
-    async def unlock(request: Request):
-        origins = request.headers.getlist("origin")
-        if origins and origins != [settings.origin]:
-            return Response(status_code=403)
-        body = bytearray()
-        async for chunk in request.stream():
-            if len(body) + len(chunk) > 2048:
-                return Response(status_code=413)
-            body.extend(chunk)
-        try:
-            command = Unlock.model_validate_json(body)
-        except ValidationError:
-            return locked()
-        if not hmac.compare_digest(command.code.encode(), settings.demo_code.encode()):
-            return locked()
-        registry = app.state.workspaces.registry
-        token = request.cookies.get(COOKIE)
-        if registry.authenticate(token) is None:
-            token = registry.new_session()
-            if token is None:
-                return JSONResponse({"message": "All demo workspaces are in use. Try again later."}, status_code=503)
-        response = Response(status_code=204, headers={"Cache-Control": "no-store"})
-        set_cookie(response, token)
-        return response
 
     # Keep the full /api path when forwarding to the existing single-workspace routes.
     async def route_workspace(scope, receive, send):
@@ -305,8 +234,18 @@ def create_hosted_app(settings: HostedSettings, *, translator=None, question_gen
         token = request.cookies.get(COOKIE)
         key = registry.authenticate(token)
         if key is None:
-            await locked()(scope, receive, send)
-            return
+            # Only the initial case read creates a workspace. A stale write or copied
+            # image URL must never create a case or access another browser's data.
+            if request.method != "GET" or request.url.path != "/api/case":
+                await JSONResponse({"message": "Reload the page to open your workspace."},
+                                   status_code=401, headers={"Cache-Control": "no-store"})(scope, receive, send)
+                return
+            token = registry.new_session()
+            if token is None:
+                await JSONResponse({"message": "All demo workspaces are in use. Try again later."},
+                                   status_code=503, headers={"Cache-Control": "no-store"})(scope, receive, send)
+                return
+            key = registry.digest(token)
         try:
             workspace = await app.state.workspaces.open(key)
         except sqlite3.DatabaseError:

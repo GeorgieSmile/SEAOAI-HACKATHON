@@ -5,7 +5,6 @@ import math
 import os
 import re
 from collections.abc import Callable, Iterator
-from contextvars import ContextVar
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -25,10 +24,6 @@ from .contracts import (
 from .natural_answer import NaturalAnswerDecision, validate_natural_proposal
 from .supplier_targets import OrderTarget
 from .requirements import validate_requirement_plan
-
-
-# A hosted workspace supplies its own persistent attempt allowance.
-reserve_provider_attempt: ContextVar[Callable[[], bool] | None] = ContextVar("reserve_provider_attempt", default=None)
 
 
 TRANSLATION_MODEL = "gpt-6.1-terra"
@@ -259,9 +254,6 @@ async def _request_structured(
                 if remaining <= 0:
                     break
                 started = loop.time()
-                reserve = reserve_provider_attempt.get()
-                if reserve is not None and not reserve():
-                    raise _ProviderFailure("The demo API allowance has been reached.", retryable=False)
                 try:
                     response = await client.responses.create(
                         model=TRANSLATION_MODEL,

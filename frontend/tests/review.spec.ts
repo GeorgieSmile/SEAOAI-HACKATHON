@@ -684,7 +684,7 @@ test("retains saved answers on review failure, retries the same operation, and r
     ++writes;
     const operation = {
       operation_id, stage: "review" as const, status: writes === 1 ? "failed" as const : "ready" as const,
-      code: writes === 1 ? "invalid_review" : null, message: writes === 1 ? "The review could not be validated." : null,
+      code: writes === 1 ? "invalid_review" : null, message: writes === 1 ? "Use unreadable for missing or unreadable sources, or for an attached image that is illegible." : null,
     };
     const updatedReport = {
       ...skipReport, revision, supplier_draft: "Draft for the changed answers.",
@@ -709,7 +709,7 @@ test("retains saved answers on review failure, retries the same operation, and r
   await page.getByRole("button", { name: "Review buying brief", exact: true }).click();
   await confirmBrief(page).click();
   const failedOperationId = (await request).postDataJSON().operation_id;
-  await expect(page.getByRole("alert")).toHaveText("The review could not be validated.");
+  await expect(page.getByRole("alert")).toHaveText("We couldn’t verify the report against the listing evidence. Your answers are saved. Retry the purchase review.");
   await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toHaveCount(0);
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);

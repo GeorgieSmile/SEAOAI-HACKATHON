@@ -224,6 +224,10 @@ export function Interview({
   const showReport = Boolean(report && !hidden && !activeRound && !locked && !reopenBrief);
   const reviewPrepared = view?.phase === "ready_for_review";
   const reviewFailed = failed && view?.last_operation?.stage === "review";
+  const savedFailure = view?.last_operation?.message;
+  const failureMessage = reviewFailed && view.last_operation?.code === "invalid_review" && (!error || error === savedFailure)
+    ? "We couldn’t verify the report against the listing evidence. Your answers are saved. Retry the purchase review."
+    : error || savedFailure || "Could not prepare the next step.";
   const needsRegeneration = reviewFailed && view.confirmed_revision !== view.revision;
   const reportWaiting = Boolean(reviewStatus || (reviewFailed && !needsRegeneration));
   const briefScreen = Boolean((reviewPrepared || reopenBrief) && !edited && !reportWaiting);
@@ -384,7 +388,7 @@ export function Interview({
             {notice && !busy && <p className="interview-status" role="status">{notice}</p>}
             {(error || (failed && !busy)) && (
               <p className="interview-error" role="alert" tabIndex={-1} ref={errorAlert}>
-                {error || view?.last_operation?.message || "Could not prepare the next step."}
+                {failureMessage}
               </p>
             )}
             {reportInvalid && !busy && !error && (

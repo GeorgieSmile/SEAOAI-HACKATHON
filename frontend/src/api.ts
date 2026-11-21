@@ -271,17 +271,10 @@ export class AnswerClarificationRequired extends Error {
   }
 }
 
-export class DemoLocked extends Error {
-  constructor() {
-    super("Reload the page and enter the demo code to reopen your workspace.");
-  }
-}
-
 async function request<T>(path: string, fallback: string, init?: RequestInit): Promise<T> {
   const response = await fetchResponse(path, init);
   const result = await response.json().catch(() => null);
 
-  if (response.status === 401 && result?.code === "demo_locked") throw new DemoLocked();
   if (response.status === 422 && result?.code === "answer_clarification_required"
     && typeof result.question_id === "string" && typeof result.message === "string") {
     throw new AnswerClarificationRequired(result.question_id, result.message);
@@ -298,18 +291,6 @@ function fetchResponse(path: string, init?: RequestInit) {
   return fetch(path, init).catch(() => {
     throw new Error("The server could not be reached. Try again.");
   });
-}
-
-export async function unlockDemo(code: string) {
-  const response = await fetchResponse("/api/demo/unlock", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ code }),
-  });
-  if (response.status === 204) return;
-  if (response.status === 401) throw new Error("That demo code was not accepted. Check it and try again.");
-  const result = await response.json().catch(() => null);
-  throw new Error(typeof result?.message === "string" && result.message ? result.message : "Could not unlock the demo. Try again.");
 }
 
 export async function getCurrentCase(signal?: AbortSignal) {

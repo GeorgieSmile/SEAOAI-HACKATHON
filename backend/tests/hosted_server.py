@@ -18,10 +18,7 @@ def run(args: argparse.Namespace, data_dir: Path) -> None:
     settings = HostedSettings(
         data_dir=data_dir,
         origin=f"http://127.0.0.1:{args.port}",
-        demo_code=args.demo_code,
         report_concurrency=args.report_concurrency,
-        attempt_budget=500,
-        session_attempt_budget=50,
         static_dir=args.static_dir,
     )
 
@@ -71,7 +68,6 @@ def run(args: argparse.Namespace, data_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=18187)
-    parser.add_argument("--demo-code", default="test-demo")
     parser.add_argument("--data-dir", type=Path, help="Reuse this directory across test restarts.")
     parser.add_argument("--static-dir", type=Path, default=Path("frontend/dist"))
     parser.add_argument("--report-concurrency", type=int, default=3)

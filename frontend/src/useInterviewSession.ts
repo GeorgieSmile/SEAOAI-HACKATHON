@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  AnswerClarificationRequired, caseVersion, continueQuestions, DemoLocked, getCurrentCase, pendingReview, prepareBrief, requestReview, resumeQuestions,
+  AnswerClarificationRequired, caseVersion, continueQuestions, getCurrentCase, pendingReview, prepareBrief, requestReview, resumeQuestions,
   retryCase, saveBriefEdit, startQuestions,
 } from "./api";
 import type { BriefEdit, CaseStage, CaseVersion, CaseView, OrderClarification, Selection, Submission } from "./api";
@@ -86,12 +86,8 @@ export function useInterviewSession(pollReview: boolean) {
           return;
         }
         timeout = window.setTimeout(() => void checkReport(), 1_500);
-      } catch (failure) {
+      } catch {
         if (!isCurrent()) return;
-        if (failure instanceof DemoLocked) {
-          requireReload("Your demo access changed. Reload saved progress to unlock the demo.");
-          return;
-        }
         setReportConnectionLost(true);
         timeout = window.setTimeout(() => void checkReport(), 3_000);
       }

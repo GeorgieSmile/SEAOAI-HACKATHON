@@ -20,12 +20,11 @@ def settings(tmp_path, **kwargs):
     static = tmp_path / "static"
     static.mkdir(exist_ok=True)
     (static / "index.html").write_text("DiliDoo")
-    return HostedSettings(tmp_path / "data", ORIGIN, "shared demo code", static_dir=static, **kwargs)
+    return HostedSettings(tmp_path / "data", ORIGIN, static_dir=static, **kwargs)
 
 
-def unlock(client):
-    result = client.post("/api/demo/unlock", json={"code": "shared demo code"}, headers={"origin": ORIGIN})
-    assert result.status_code == 204
+def open_workspace(client):
+    client.get("/api/case").raise_for_status()
     return client.cookies.get(COOKIE)
 
 
@@ -33,79 +32,77 @@ def upload(client):
     return client.post("/api/imports", files={"file": ("cups.zip", SAMPLE.read_bytes(), "application/zip")}).json()
 
 
-def test_only_unlocked_browser_can_use_case_endpoints(tmp_path):
-    config = settings(tmp_path)
-    with TestClient(create_hosted_app(config), base_url=ORIGIN) as client:
+def test_public_link_opens_a_private_workspace(tmp_path):
+    with TestClient(create_hosted_app(settings(tmp_path)), base_url=ORIGIN) as client:
         assert client.get("/").text == "DiliDoo"
         assert client.get("/healthz").status_code == 200
-        assert client.get("/api/case").status_code == 401
         assert client.post("/api/imports").status_code == 401
-        assert client.post("/api/demo/unlock", json={"code": "wrong"}).status_code == 401
-        assert client.post("/api/demo/unlock", json={"code": config.demo_code},
-                           headers={"origin": "https://other.test"}).status_code == 403
-        token = unlock(client)
+        assert COOKIE not in client.cookies
         saved = client.get("/api/case")
         assert saved.json() == {"snapshot": None, "case": None}
         assert all(flag in saved.headers["set-cookie"] for flag in ("HttpOnly", "Secure", "SameSite=strict"))
         assert saved.headers["cache-control"] == "private, no-store"
+        token = client.cookies.get(COOKIE)
+        assert open_workspace(client) == token
         assert client.post("/api/imports", headers={"origin": "https://other.test"}).status_code == 403
-        assert unlock(client) == token
+        client.cookies.clear()
+        assert open_workspace(client) != token
 
 
-@pytest.mark.parametrize("restart", [False, True])
-def test_global_and_browser_attempt_limits_cover_sdk_retries_and_new_cookies(tmp_path, restart):
-    sent = []
+def test_existing_browser_and_exhausted_legacy_counters_survive_upgrade(tmp_path):
+    config = settings(tmp_path)
+    config.data_dir.mkdir()
+    old_token = "A" * 43
+    with sqlite3.connect(config.data_dir / "demo.sqlite3") as db:
+        db.executescript("""
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, last_seen INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE usage (id INTEGER PRIMARY KEY, attempts INTEGER NOT NULL);
+            INSERT INTO usage VALUES (1,100);
+        """)
+        db.execute("INSERT INTO sessions VALUES (?,unixepoch(),10)", (DemoRegistry.digest(old_token),))
+    replies = []
     def provider(request):
-        sent.append(request)
-        if len(sent) == 1:
+        replies.append(request)
+        if len(replies) == 1:
             return httpx2.Response(429, json={"error": {"code": "rate_limit_exceeded"}}, request=request)
         return response(request, translations_for(request))
 
-    config = settings(tmp_path, attempt_budget=2, session_attempt_budget=1)
     async def translate(snapshot):
         async with mock_openai(provider) as sdk:
             return await ai.translate_listing(snapshot, client=sdk)
 
-    app = create_hosted_app(config, translator=translate)
-    def check_second_session(client):
+    with TestClient(create_hosted_app(config, translator=translate), base_url=ORIGIN) as client:
+        client.cookies.set(COOKIE, old_token, domain="dilidoo.test", path="/")
+        assert open_workspace(client) == old_token
+        imported = upload(client)
+        assert imported["status"] == "ready"
+        assert len(replies) == 2
         client.cookies.clear()
-        unlock(client)
+        assert open_workspace(client) != old_token
+        assert client.get("/api/case").json()["snapshot"] is None
         assert upload(client)["status"] == "ready"
-        client.cookies.clear()
-        unlock(client)
-        assert "allowance" in upload(client)["message"]
-        assert len(sent) == 2
-
-    with TestClient(app, base_url=ORIGIN) as client:
-        unlock(client)
-        assert "allowance" in upload(client)["message"]
-        assert len(sent) == 1
-        if not restart:
-            check_second_session(client)
-    if restart:
-        with TestClient(create_hosted_app(config, translator=translate), base_url=ORIGIN) as restarted:
-            check_second_session(restarted)
+    with TestClient(create_hosted_app(config, translator=translate), base_url=ORIGIN) as restarted:
+        restored = restarted.get("/api/case", headers={"cookie": f"{COOKIE}={old_token}"}).json()
+        assert restored["snapshot"] == imported["snapshot"]
 
 
-def test_expired_browser_cannot_recover_case_and_startup_reclaims_capacity(tmp_path, monkeypatch):
+def test_expired_browser_starts_with_empty_case_after_restart(tmp_path, monkeypatch):
     config = settings(tmp_path, session_ttl_seconds=30, max_sessions=1)
     clock = [1000]
     monkeypatch.setattr("backend.hosted.time", type("Clock", (), {"time": lambda: clock[0]}))
     with TestClient(create_hosted_app(config), base_url=ORIGIN) as client:
-        old_token = unlock(client)
-        assert client.get("/api/case").status_code == 200
+        old_token = open_workspace(client)
         clock[0] += 31
-        assert client.get("/api/case").status_code == 401
+        assert client.post("/api/imports").status_code == 401
     with TestClient(create_hosted_app(config), base_url=ORIGIN) as client:
-        assert client.get("/api/case", headers={"cookie": f"{COOKIE}={old_token}"}).status_code == 401
-        assert unlock(client) != old_token
-        assert client.get("/api/case").json() == {"snapshot": None, "case": None}
+        saved = client.get("/api/case", headers={"cookie": f"{COOKIE}={old_token}"})
+        assert saved.json() == {"snapshot": None, "case": None}
+        assert client.cookies.get(COOKIE) != old_token
 
 
 def test_railway_requires_case_data_on_attached_volume(monkeypatch, tmp_path):
     monkeypatch.setenv("RAILWAY_ENVIRONMENT_ID", "demo")
     monkeypatch.setenv("DEMO_ORIGIN", ORIGIN)
-    monkeypatch.setenv("DEMO_ACCESS_CODE", "demo")
     monkeypatch.delenv("RAILWAY_VOLUME_MOUNT_PATH", raising=False)
     monkeypatch.delenv("DEMO_DATA_DIR", raising=False)
     with pytest.raises(ValueError, match="volume"):
@@ -120,10 +117,10 @@ def test_railway_requires_case_data_on_attached_volume(monkeypatch, tmp_path):
 def test_hosted_boot_recovers_interrupted_image_write_and_isolates_corrupt_case(tmp_path):
     config = settings(tmp_path)
     with TestClient(create_hosted_app(config), base_url=ORIGIN) as client:
-        healthy = unlock(client)
+        healthy = open_workspace(client)
         client.get("/api/case").raise_for_status()
         client.cookies.clear()
-        broken = unlock(client)
+        broken = open_workspace(client)
         client.get("/api/case").raise_for_status()
     files = config.data_dir / "cases"
     path = files / f"{DemoRegistry.digest(healthy)}.sqlite3"

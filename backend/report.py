@@ -62,7 +62,7 @@ from .supplier_targets import (
 )
 
 
-REVIEW_PROMPT_VERSION = "purchase-review-v6"
+REVIEW_PROMPT_VERSION = "purchase-review-v7"
 REVIEW_PROMPT = (PROMPT_DIRECTORY / f"{REVIEW_PROMPT_VERSION}.txt").read_text(encoding="utf-8")
 LEGACY_REVIEW_PROMPT = (PROMPT_DIRECTORY / "purchase-review-v4.txt").read_text(encoding="utf-8")
 REVIEW_DEADLINE_SECONDS = 90
@@ -300,6 +300,16 @@ def _open_skipped_questions(request: ReviewInput) -> Iterable[tuple[AnsweredQues
             yield answer, option_ids
 
 
+def _unknown_reasons(source: Source, attached_ids: set[str]) -> list[str]:
+    if source.availability != "available":
+        return ["unreadable"]
+    if source.kind != "listing_image":
+        return ["not_found"]
+    if source.source_id in attached_ids:
+        return ["not_found", "unreadable"]
+    return ["not_reviewed"]
+
+
 def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, bytes]]) -> ReviewEvidence:
     selected = set(request.selected_option_ids)
     image_inventory = [source for source in request.snapshot.sources if source.kind == "listing_image"]
@@ -325,13 +335,15 @@ def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, byte
                 "option_ids": [option_id for option_id in source.option_ids if option_id in selected],
                 "claim_scope": "shared" if _is_shared_source(source) else "sku",
                 "availability": source.availability,
+                "allowed_unknown_reasons": _unknown_reasons(source, attached_ids),
                 "original_text": source.original_text,
                 "text_en": source.text_en,
             }
             for source in _relevant_text_sources(request)
         ],
         "image_inventory": [
-            source.model_dump(include={"source_id", "label", "option_ids", "availability"})
+            {**source.model_dump(include={"source_id", "label", "option_ids", "availability"}),
+             "allowed_unknown_reasons": _unknown_reasons(source, attached_ids)}
             for source in image_inventory
         ],
         "attached_image_ids": sent.attached_image_ids,
@@ -574,11 +586,14 @@ def _render_unknown(
             raise ValueError("Use not_reviewed only for available sources whose content was not sent.")
         text = f"The referenced source was not included when reviewing {topic}."
     else:
-        if not scoped or any(
-            source.availability == "available" and (source.kind != "listing_image" or source.source_id not in sent)
-            for source in scoped
-        ):
-            raise ValueError("Use unreadable for missing or unreadable sources, or for an attached image that is illegible.")
+        if not scoped:
+            raise ValueError(f"Finding {finding.finding_id}: unreadable requires an identified source. "
+                             "If the reviewed material does not answer the question, use not_found.")
+        for source in scoped:
+            if source.availability == "available" and (source.kind != "listing_image" or source.source_id not in sent):
+                raise ValueError(f"Finding {finding.finding_id}: {source.source_id} cannot be marked unreadable. "
+                                 "Check its allowed_unknown_reasons. Cite readable evidence if it answers the question, "
+                                 "or use the permitted reason for the gap. Separate sources with different reasons.")
         if any((source.source_id, finding.topic) in observed_image_topics for source in scoped):
             raise ValueError("Do not report both a readable observation and unreadable evidence for the same thumbnail and topic.")
         if all(source.availability == "missing" for source in scoped):
@@ -1604,7 +1619,26 @@ async def generate_review(
         REVIEW_PROMPT_VERSION, sent.text_ids, sent.attached_image_ids, evidence.metadata_only_image_ids,
     )
 
+    # The attachment manifest is authoritative when the model calls an unsent image illegible.
+    omitted_available = {
+        source.source_id for source in request.snapshot.sources
+        if source.kind == "listing_image" and source.availability == "available"
+        and source.source_id not in sent.attached_image_ids
+    }
+
     def validate(selection: ReviewSelection) -> ReviewReady:
+        for finding in selection.findings:
+            unknowns = []
+            for unknown in finding.unknowns:
+                omitted = [key for key in unknown.source_ids if key in omitted_available]
+                if unknown.reason != "unreadable" or not omitted:
+                    unknowns.append(unknown)
+                    continue
+                remaining = [key for key in unknown.source_ids if key not in omitted_available]
+                if remaining:
+                    unknowns.append(UnknownSelection(reason="unreadable", source_ids=remaining))
+                unknowns.append(UnknownSelection(reason="not_reviewed", source_ids=omitted))
+            finding.unknowns = unknowns
         return ReviewReady(content=selection, sent_evidence=sent, report=assemble_review(request, selection, sent_evidence=sent))
 
     legacy = request.requirements is None
@@ -1620,7 +1654,9 @@ async def generate_review(
             max_output_tokens=REVIEW_MAX_OUTPUT_TOKENS,
         )
     except _InvalidStructuredOutput as error:
-        LOGGER.info("Review prompt %s produced an invalid report", REVIEW_PROMPT_VERSION)
-        return ReviewFailed(**binding, code="invalid_review", message=str(error))
+        LOGGER.info("Review prompt %s produced an invalid report (%s)", REVIEW_PROMPT_VERSION, type(error).__name__)
+        return ReviewFailed(**binding, code="invalid_review",
+                            message="We couldn’t verify the report against the listing evidence. "
+                                    "Your answers are saved. Retry the purchase review.")
     except _ProviderFailure as error:
         return ReviewFailed(**binding, code="analysis_failed", message=str(error))

@@ -972,3 +972,57 @@ def test_answer_without_issued_option_scope_cannot_anchor_a_requirement(example)
     content = populated_content(request)
     with pytest.raises(ValueError, match="issued option scope"):
         assemble(request, images, content)
+
+
+def test_review_separates_unattached_and_illegible_thumbnail_sources(example):
+    request, images = example
+    request = request.model_copy(update={"requirements": []})
+    first, second = request.selected_option_ids[:2]
+    attached, omitted = f"image-{first}", f"image-{second}"
+    del images[omitted]
+    content = minimal_content(request)
+    content["findings"] = [finding_selection([first, second], unknowns=[
+        {"reason": "unreadable", "source_ids": [attached, omitted]},
+    ])]
+
+    result = run_review(request, images, lambda req: response(req, canonical_content(request, payload=content)))
+    assert isinstance(result, ReviewReady)
+    unknowns = result.report.findings[0].unknowns
+    assert [(u.reason, u.source_ids) for u in unknowns] == [
+        ("unreadable", [attached]), ("not_reviewed", [omitted]),
+    ]
+    assert assemble(request, images, result.content.model_dump()) == result.report
+
+
+@pytest.mark.parametrize("corrected", [True, False])
+def test_readable_text_mislabeled_unreadable_gets_specific_correction_or_retry_message(example, corrected):
+    request, images = example
+    request = request.model_copy(update={"requirements": []})
+    bodies = []
+
+    def serve(req):
+        body = json.loads(req.content)
+        bodies.append(body)
+        data = json.loads(body["input"][0]["content"][0]["text"])
+        selector = next(row for row in data["text_sources"] if row["source_id"] == "capacity-selector")
+        assert selector["allowed_unknown_reasons"] == ["not_found"]
+        content = minimal_content(request)
+        if len(bodies) == 2 and corrected:
+            content["claims"] = [text_claim("shared-capacity", "capacity-selector", "720ml")]
+            content["comparisons"][0]["shared_claim_ids"] = ["shared-capacity"]
+        else:
+            content["findings"] = [finding_selection(request.selected_option_ids, unknowns=[
+                {"reason": "unreadable", "source_ids": ["capacity-selector"]},
+            ])]
+        return response(req, canonical_content(request, payload=content))
+
+    result = run_review(request, images, serve)
+    assert len(bodies) == 2
+    assert "capacity-selector cannot be marked unreadable" in bodies[1]["instructions"]
+    if corrected:
+        assert isinstance(result, ReviewReady)
+        assert result.report.claims[0].quote == "720ml"
+    else:
+        assert isinstance(result, ReviewFailed)
+        assert result.code == "invalid_review"
+        assert "Your answers are saved. Retry the purchase review." in result.message

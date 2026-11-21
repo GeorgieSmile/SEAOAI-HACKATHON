@@ -8,22 +8,20 @@
 
 ## Hosted Railway demo
 
-One HTTPS link serves the React build and the API. Visitors enter the shared demo code once per browser profile. Each receives a private case, SKU images, answers and report. Tabs in the same profile share progress. Clearing cookies or switching browsers starts another workspace. Cases expire after 48 hours of inactivity by default.
+One HTTPS link serves the React build and the API. Opening the link gives each browser profile a private case, SKU images, answers and report. Tabs in the same profile share progress. Clearing cookies or switching browsers starts another workspace. Cases expire after 48 hours of inactivity by default.
 
 Deploy the repository root using its Dockerfile and `railway.toml`. Attach one Railway volume at `/data`, use one replica and one Uvicorn worker, and generate one HTTPS domain. The healthcheck at `/healthz` opens the volume-backed registry and uses no provider requests. Start from an empty volume; the local demo database and `.env` stay on the developer machine. [Railway volumes](https://docs.railway.com/volumes)
 
 | Backend variable | Hosted setting |
 |---|---|
 | `DEMO_ORIGIN` | Exact HTTPS origin, including the scheme, without a trailing slash |
-| `DEMO_ACCESS_CODE` | A randomly generated, private demo code to share with participants |
 | `DEMO_REPORT_CONCURRENCY` | 1–10 workers for report generation inside the single process. Default 2. Choose the live setting after checking the OpenAI project's limits. |
-| `DEMO_API_ATTEMPTS` and `DEMO_SESSION_API_ATTEMPTS` | Global and per-browser lifetime ceilings on **actual outbound provider requests**, including retries, for all AI stages. Both default to 0. The global tally persists on the volume across restarts and cookie changes. These are request caps; cost per request varies. |
 | `OPENAI_API_KEY` and `OPENAI_LIVE_TRANSLATION`, `OPENAI_LIVE_QUESTIONS`, `OPENAI_LIVE_REVIEW` | Set the key as a service secret and set approved stages to 1 when live use is authorized. Keep disabled for infrastructure checks. |
 | `DEMO_SESSION_TTL_HOURS` | Inactive case lifetime. Default 48 hours, with at most 100 stored browser workspaces. |
 
-Confirming a brief saves its report request. The browser can refresh while waiting or generating. Following a service restart, waiting reports resume in order, completed reports reopen, and an interrupted generation offers an explicit retry. An interrupted provider request may already have incurred a charge. Back up the volume before release changes. To suspend spending, set the global request ceiling to 0 and restart. To roll back, redeploy the last known-good **hosted** image using the same volume.
+Confirming a brief saves its report request. The browser can refresh while waiting or generating. Following a service restart, waiting reports resume in order, completed reports reopen, and an interrupted generation offers an explicit retry. An interrupted provider request may already have incurred a charge. Back up the volume before release changes. Paid stages have no application-level request cap. To suspend paid use, disable the three live AI stages and restart. To roll back, redeploy the last known-good **hosted** image using the same volume.
 
-For a local rehearsal with scripted providers, run these commands from the repository root after installing the dependencies below. The test server binds to loopback. Enter `test-demo` in the browser at `http://127.0.0.1:18187`. Reuse the data directory when rehearsing a restart.
+For a local rehearsal with scripted providers, run these commands from the repository root after installing the dependencies below. The test server binds to loopback. Open `http://127.0.0.1:18187`. Reuse the data directory when rehearsing a restart.
 
 ```sh
 npm --prefix frontend run build

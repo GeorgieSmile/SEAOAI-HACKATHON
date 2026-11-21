@@ -24,7 +24,6 @@ from backend.tests.test_cases import confirm_command, reference, round_request
 from backend.tests.test_imports import RAW, _image_url, _upload
 
 
-DEMO_CODE = "test-demo"
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -76,7 +75,7 @@ class HostedServer:
         with self.server_log.open("ab") as log:
             process = subprocess.Popen([
                 sys.executable, "-m", "backend.tests.hosted_server",
-                "--port", str(self.port), "--demo-code", DEMO_CODE,
+                "--port", str(self.port),
                 "--data-dir", str(self.data_dir), "--static-dir", str(self.static_dir),
                 "--report-concurrency", str(concurrency), "--report-delay", "0.06",
                 "--report-gate", str(self.gate), "--provider-log", str(self.provider_log),
@@ -129,7 +128,6 @@ def case_result(response, status=200):
 
 
 async def prepare(client, zip_bytes, source_images, index):
-    assert (await client.post("/api/demo/unlock", json={"code": DEMO_CODE})).status_code == 204
     assert await current(client) == {"case": None, "snapshot": None}
     response = await _upload(client, zip_bytes)
     assert response.status_code == 200, response.text
@@ -235,7 +233,7 @@ def test_ten_hosted_workspaces_keep_cases_and_report_evidence_isolated_after_res
                     copied = next(iter(images))
                     assert (await outsider.get(copied)).status_code == 404
                     assert (await guest.get(copied)).status_code in {401, 404}
-                assert (await guest.get("/api/case")).status_code == 401
+                assert await current(guest) == {"case": None, "snapshot": None}
                 assert all(event["stage"] != "review" for event in server.events())
                 commands = [confirm_command(item[1]) for item in prepared]
 
