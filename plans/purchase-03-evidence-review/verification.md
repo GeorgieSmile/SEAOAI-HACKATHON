@@ -92,6 +92,8 @@ A fresh Astra 6.2 high review of `e240ce2` confirmed all three original cases, t
 
 Both follow-ups were exercised through the report endpoint with the original ZIP and a mocked provider. The mixed-SKU and false-negative claims returned `invalid_review`, while a correct multi-term claim, a true negative, and a question about the UPC returned `reviewed`. The same two invalid and three valid results were verified on databases written by `6f38c3c`, without any provider call on restore. The original-ZIP Chrome edit/restart walkthrough passed again with both sets of fixes. All 240 backend tests passed, including the unchanged Phase 2 question suite.
 
+Astra’s review of `f6b438c` found a mixed list starting with `316` could hide a wrong-SKU term, and a correct sentence switching from A to B could be rejected. The regression tests cover numeric and English list items and positive and negative claims about another named option. With the original ZIP, the report endpoint rejected both incorrect cases and accepted both correct controls. Opening four databases saved on `6f38c3c` gave the same results with zero provider requests. All 255 offline backend tests passed. The original-ZIP Chrome edit/restart check again restored revision 3, the scoped supplier draft and matching SKU images.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

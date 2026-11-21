@@ -49,12 +49,21 @@ NAME_COORDINATED_PREDICATE = re.compile(
 HAN_CHARACTER = re.compile(r"[\u3400-\u9fff\U00020000-\U000323af]")
 NAME_TERM_AFTER = re.compile(
     r"^\s*(?:(?P<modifier>not|no|neither|both|rather)\s+)?"
-    r"(?:(?:the\s+)?(?:(?:Chinese|original)\s+)?(?:characters?|phrases?|terms?|words?|wording|text)\s+)?"
-    r"[\"“'‘`]*\s*(?P<term>[\w-]+)",
+    r"(?:(?:the|a|an)\s+)?(?:(?:Chinese|original)\s+)?(?:\b(?:characters?|phrases?|terms?|words?|wording|text)\s+)?"
+    r"[\"“'‘`]*\s*(?P<term>[\w-]+|[A-Za-z0-9][A-Za-z0-9 .’'\t-]*)[\"”'’`]*"
+    r"(?:\s+(?:wording|term|text|label))?(?:\s+(?:in|on|as)\s+[A-Za-z0-9 ’'\t-]+)?"
+    r"\s*(?:\([^()]*\)\s*)*[.!?;:]*\s*",
     re.IGNORECASE,
 )
 NAME_TERM_BEFORE = re.compile(
     r"(?P<term>[\w-]+)[\"”'’`]*\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+(?:for|of)\s*$",
+    re.IGNORECASE,
+)
+NAME_TERM_IN_NAME = re.compile(
+    r"(?P<term>[\w-]+)[\"”'’`]*\s+"
+    r"(?P<predicate>(?:(?:do(?:es)?(?:n['’]t|\s+not)\s+)?(?:appears?|occurs?)|is|are)"
+    r"(?:\s+(?:not|never|only))?)\s+in\s+"
+    r"(?:(?:the\s+)?(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+(?:for|of)\s+)?$",
     re.IGNORECASE,
 )
 PRIVATE_BUSINESS_DETAILS = re.compile(
@@ -356,9 +365,10 @@ def _name_predicate_terms(tail: str, predicate: re.Match[str]) -> Iterable[tuple
         if continuation is not None:
             predicate_negative = bool(NAME_NEGATION.search(continuation[0]))
             phrase = phrase[continuation.end():]
-        operand = NAME_TERM_AFTER.match(phrase)
-        term = _original_term(operand)
-        if not term:
+        # A complete list object can be a neutral token such as 316. A term followed
+        # by its own predicate is a different assertion, not an object of this verb.
+        operand = NAME_TERM_AFTER.fullmatch(phrase)
+        if operand is None:
             break
         modifier = (operand["modifier"] or "").casefold()
         if modifier in {"no", "neither"}:
@@ -366,7 +376,9 @@ def _name_predicate_terms(tail: str, predicate: re.Match[str]) -> Iterable[tuple
         if modifier == "rather":
             predicate_negative = False
         absent = predicate_negative or modifier == "not" or separator.casefold().endswith("nor")
-        yield term, absent
+        term = _original_term(operand)
+        if term:
+            yield term, absent
 
 
 def _validate_name_claims(
@@ -380,9 +392,12 @@ def _validate_name_claims(
             continue
         predicate = NAME_PREDICATE.search(tail)
         term = _original_term(NAME_TERM_BEFORE.search(before))
-        if predicate is None and not term:
-            continue
         terms = [(term, False)] if term else []
+        term_in_name = NAME_TERM_IN_NAME.search(before)
+        if term_in_name is not None and (subject := _original_term(term_in_name)):
+            terms.append((subject, bool(NAME_NEGATION.search(term_in_name["predicate"]))))
+        if predicate is None and not terms:
+            continue
         if predicate is not None:
             terms.extend(_name_predicate_terms(tail, predicate))
 

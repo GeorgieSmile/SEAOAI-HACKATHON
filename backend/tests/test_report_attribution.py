@@ -102,11 +102,18 @@ def test_comparison_row_can_describe_its_own_cited_sku_name(joint_finding):
 
 @pytest.mark.parametrize(("statement", "error"), [
     ("Option A’s name includes 字母 and 贴画.", "original term"),
+    ("Option A’s name includes 316 and 贴画.", "original term"),
+    ("Option A’s name includes 316, lettering, and 贴画.", "original term"),
+    ("Option A’s name includes 316, letter design, and 贴画.", "original term"),
+    ("Option A’s name includes 贴画 in the listing.", "original term"),
+    ("Option A’s name does not include 318 or 字母.", "absent"),
     ("Option A’s name does not include 字母.", "absent"),
     ("Option A's name includes 字母 but not 粉蓝.", "absent"),
     ("Option A's name includes 字母, but does not include 粉蓝.", "absent"),
     ("Option A's name does not include 贴画 but includes 字母 and 贴画.", "original term"),
     ("Option A's name includes 字母 and 粉蓝, while Option B's name does not include 贴画.", "absent"),
+    ("Option A’s name includes 字母, and 字母 appears only in Option B’s name.", "original term"),
+    ("Option A’s name includes 字母, and 贴画 does not appear in Option B’s name.", "absent"),
 ])
 def test_all_name_terms_must_match_their_option_and_polarity(joint_finding, statement, error):
     request, content, finding = joint_finding
@@ -124,11 +131,19 @@ def test_all_name_terms_must_match_their_option_and_polarity(joint_finding, stat
 
 @pytest.mark.parametrize("statement", [
     "Option A’s name includes the Chinese words 字母 and 粉蓝.",
+    "Option A’s name includes 316 and 字母.",
+    "Option A’s name includes 316, lettering, and 粉蓝.",
+    "Option A’s name includes letter design and 粉蓝.",
+    "Option A’s name does not include 318 or 贴画.",
     "Option A's name does not include 贴画 or 黑白.",
     "Option A's name includes 字母 and 粉蓝, but not 贴画.",
     "Option A's name includes 字母, but does not include 贴画.",
     "Option A's name does not include 贴画 but includes 字母 and 粉蓝.",
     "Option A's name includes 字母 and 粉蓝, while Option B's name includes 贴画 but not 字母.",
+    "Option A’s name includes 字母, and 贴画 appears only in Option B’s name.",
+    "Option A’s name includes 字母, and 贴画 may be available as a custom finish.",
+    "Option A’s name includes 字母, and 字母 does not appear in Option B’s name.",
+    "Could you confirm whether 贴画 appears in Option A’s name?",
     "Could you confirm whether Option A's name includes 字母 and 贴画?",
 ])
 def test_grounded_name_clauses_and_questions_still_pass(joint_finding, statement):
