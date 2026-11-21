@@ -27,10 +27,11 @@ def example():
         "question_id": "q-open", "question_text": "Would you accept another option?", "answer_text": None,
     })
     request = ReviewInput.model_validate(data["input"])
-    expected = data["expected_result"]["report"]
-    content = {name: expected[name] for name in ReviewContent.model_fields}
-    sent_sources = {source.source_id for source in request.snapshot.sources if source.availability == "available"}
-    return request, content, sent_sources
+    images = {
+        source.source_id: ("image/png", b"mapped-thumbnail")
+        for source in request.snapshot.sources if source.kind == "listing_image"
+    }
+    return request, images
 
 
 @pytest.fixture(scope="module")
@@ -74,57 +75,51 @@ def run_review(review_input, images, handler):
     return asyncio.run(run())
 
 
-def minimal_content(review_input):
+def minimal_content(request, topic="capacity"):
     return {
-        "buyer_requirements": [], "open_preferences": [], "findings": [], "limitations": [],
+        "contract_version": 2, "claims": [], "buyer_requirements": [], "open_preferences": [], "findings": [],
         "comparisons": [{
-            "label": "Saved listing coverage",
-            "values": [{"option_id": option_id, "summary": "Saved option name available.", "source_ids": []}
-                       for option_id in review_input.selected_option_ids],
+            "topic": topic, "shared_claim_ids": [],
+            "values": [{"option_id": option_id, "claim_ids": []} for option_id in request.selected_option_ids],
         }],
         "coverage": [
-            {"group": "product_match", "status": "limited", "finding_ids": [], "note": "Only the listing is available."},
-            {"group": "intended_use", "status": "not_assessed", "finding_ids": [], "note": "Use details need verification."},
-            {"group": "supporting_evidence", "status": "limited", "finding_ids": [], "note": "No product sample was included."},
+            {"group": "product_match", "status": "limited", "finding_ids": []},
+            {"group": "intended_use", "status": "not_assessed", "finding_ids": []},
+            {"group": "supporting_evidence", "status": "limited", "finding_ids": []},
         ],
     }
 
 
-@pytest.mark.parametrize(("label", "summary", "valid"), [
-    ("Listing details", "The SKU name includes 贴画.", False),
-    ("Listing details", "The name of this SKU includes 贴画.", False),
-    ("Listing details", "Its name includes 字母.", True),
-    ("Listing details", "贴画 appears only in the SKU name.", False),
-    ("Listing details", "The name does not include 字母.", False),
-    ("Listing details", "SKU name includes 字母 and 粉蓝.", True),
-    ("Listing details", "Could you confirm whether the SKU name includes 贴画?", True),
-    ("Listing option name", "Includes 贴画.", False),
-    ("Listing option name", "贴画", False),
-    ("Listing option name", "字母", True),
-    ("Image observations", "Includes 贴画.", True),
-    ("Image observations", "The SKU name is unreadable in the thumbnail.", True),
-    ("Image observations", "The SKU name is 贴画.", False),
-    ("Name and thumbnail", "The SKU name includes 316, but 750 ml appears on the thumbnail.", True),
-    ("Name and thumbnail", "The SKU name includes 316 and 750 ml.", False),
-])
-def test_comparison_uses_its_own_option_for_an_unqualified_sku_name(example, label, summary, valid):
-    request, _, sources = example
-    content = minimal_content(request)
-    comparison = content["comparisons"][0]
-    comparison["label"] = label
-    value = next(row for row in comparison["values"] if row["option_id"] == "v6")
-    source_ids = {"Image observations": ["image-v6"], "Name and thumbnail": ["name-v6", "image-v6"]}
-    value.update(summary=summary, source_ids=source_ids.get(label, ["name-v6"]))
-    if valid:
-        result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
-        assert next(row.summary for row in result.comparisons[0].values if row.option_id == "v6") == summary
-    else:
-        with pytest.raises(ValueError, match="original term|absent|cited SKU name"):
-            report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
+def text_claim(claim_id, source_id, quote, option_id=None):
+    return {
+        "claim_id": claim_id, "kind": "text_excerpt", "option_ids": [option_id] if option_id else [],
+        "source_id": source_id, "quote": quote,
+    }
+
+
+def image_claim(claim_id, option_id, source_id, value=750, unit="ml"):
+    return {
+        "claim_id": claim_id, "kind": "image_measurement", "option_ids": [option_id],
+        "source_id": source_id, "value": value, "unit": unit,
+    }
+
+
+def finding_selection(option_ids, **overrides):
+    return {
+        "finding_id": "capacity-check", "topic": "capacity", "option_ids": option_ids,
+        "kind": "clarification_needed", "action_type": "ask_supplier", "requirement_ids": [],
+        "claim_ids": [], "unknowns": [], "supplier_action": "confirm_specification", **overrides,
+    }
+
+
+def assemble(request, images, payload):
+    return report.assemble_review(
+        request, ReviewContent.model_validate(payload), sent_evidence=report.review_sent_evidence(request, images),
+    )
 
 
 def test_live_client_requires_report_opt_in(example, monkeypatch):
-    request, _, _ = example
+    request, _ = example
     client = Mock()
     monkeypatch.setattr(ai, "AsyncOpenAI", client)
     monkeypatch.setenv("OPENAI_API_KEY", "placeholder")
@@ -149,7 +144,8 @@ def test_request_is_bound_to_real_selected_evidence(parser_case, caplog):
         requests.append(json.loads(request.content))
         content = minimal_content(review_input)
         image_id = f"{review_input.selected_option_ids[0]}-image"
-        content["comparisons"][0]["values"][0]["source_ids"] = [image_id]
+        content["claims"] = [image_claim("first-label", review_input.selected_option_ids[0], image_id)]
+        content["comparisons"][0]["values"][0]["claim_ids"] = ["first-label"]
         return response(request, content)
 
     with caplog.at_level("INFO"):
@@ -219,166 +215,13 @@ def test_shared_image_is_attached_once_with_both_source_ids(parser_case):
         assert len(parts) == 3
         assert parts[1]["text"] == f"Attached image source IDs: {first}, {second}"
         content = minimal_content(review_input)
-        content["comparisons"][0]["values"][1]["source_ids"] = [second]
+        content["claims"] = [image_claim("second-label", review_input.selected_option_ids[1], second)]
+        content["comparisons"][0]["values"][1]["claim_ids"] = ["second-label"]
         return response(request, content)
 
     result = run_review(review_input, images, serve)
     assert isinstance(result, ReviewReady)
     assert "The saved image for Option C was not attached for review." in result.report.limitations
-
-
-def test_draft_uses_selection_order_and_numbers_questions_after_nulls(example):
-    request, content, sent_sources = example
-    request = request.model_copy(update={"selected_option_ids": ["v6", "v0", "v1"]})
-    questions = ["Can you send a close-up?", None, "Please identify drink-contact materials."]
-    for row, question in zip(content["findings"], questions):
-        row["supplier_question"] = question
-    mark_buyer_decision(content, content["findings"][1])
-    report_value = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    names = {option.option_id: option.name_original for option in request.snapshot.options}
-    assert report_value.supplier_draft.splitlines()[1:4] == [f"A. {names['v6']}", f"B. {names['v0']}", f"C. {names['v1']}"]
-    assert report_value.supplier_draft.splitlines()[7:] == [
-        f"1. [Options A, B, C] {questions[0]}", "", f"2. [Options A, B, C] {questions[2]}",
-    ]
-    assert "40%" not in report_value.supplier_draft
-    assert [row.option_id for row in report_value.comparisons[0].values] == ["v6", "v0", "v1"]
-    assert [row.finding_id for row in report_value.findings] == [row["finding_id"] for row in content["findings"]]
-
-
-def test_supplier_draft_labels_each_question_with_its_own_skus(example):
-    request, content, sent_sources = example
-    request = request.model_copy(update={"selected_option_ids": ["v6", "v0", "v1"]})
-    findings = content["findings"]
-    scopes = [["v1", "v6"], ["v0"], ["v6"]]
-    for finding, scope in zip(findings, scopes, strict=True):
-        finding.update(
-            option_ids=scope, title="Decoration check", citations=[], unknowns=[],
-            interpretation="The decoration needs confirmation.",
-            impact="The finish affects this purchase.", priority_reason="Confirm before ordering.",
-            requested_evidence="A sample.", evidence_limits="The sample covers one unit.",
-            supplier_question="Could you confirm the decoration for this option?",
-        )
-    mark_buyer_decision(content, findings[1])
-    result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    assert result.supplier_draft.splitlines()[7:] == [
-        "1. [Options A, C] Could you confirm the decoration for this option?",
-        "",
-        "2. [Option A] Could you confirm the decoration for this option?",
-    ]
-
-
-def mark_buyer_decision(content, finding):
-    finding.update(action_type="decide_preference", supplier_question=None)
-    content["open_preferences"].append({
-        "preference_id": "buyer-decision", "text": "The buyer needs to choose a preference.",
-        "input_refs": [], "finding_ids": [finding["finding_id"]],
-    })
-
-
-def test_buyer_decision_without_a_supplier_question_has_no_draft(example):
-    request, example_content, sent_sources = example
-    content = minimal_content(request)
-    finding = example_content["findings"][0]
-    finding["requirement_ids"] = []
-    content["findings"] = [finding]
-    mark_buyer_decision(content, finding)
-
-    result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-
-    assert result.findings[0].supplier_question is None
-    assert result.supplier_draft == ""
-
-
-@pytest.mark.parametrize(("path", "replacement", "message"), [
-    (("findings", 0, "citations", 0, "source_id"), "invented", "source"),
-    (("findings", 0, "citations", 0, "quote"), "An unsupported quote", "exact quote"),
-    (("findings", 0, "citations", 0, "image_observation"), "A text image", "exact quote"),
-    (("findings", 0, "option_ids"), ["unknown-option"], "finding options"),
-    (("findings", 0, "option_ids"), ["v0", "v0"], "finding options"),
-    (("findings", 0, "requirement_ids"), ["invented"], "finding requirements"),
-    (("findings", 0, "unknowns", 0, "source_ids"), ["invented"], "source"),
-    (("findings", 0, "action_type"), "decide_preference", "open preference"),
-    (("buyer_requirements", 0, "quote"), "made up", "verbatim quote"),
-    (("buyer_requirements", 0, "input_ref"), "answer:q-open", "non-null buyer input"),
-    (("buyer_requirements", 0, "input_ref"), "answer:old-round", "non-null buyer input"),
-    (("open_preferences",), [{"preference_id": "p-invented", "text": "Open", "input_refs": ["answer:old-round"], "finding_ids": []}], "preference input"),
-    (("comparisons", 0, "values", 0, "source_ids"), ["name-v1"], "source"),
-    (("comparisons", 0, "values", 0, "option_id"), "v1", "comparison values"),
-    (("comparisons", 0, "values", 0, "summary"), "Option B shows applied-picture wording.", "option letters"),
-    (("coverage", 0, "group"), "intended_use", "coverage groups"),
-    (("coverage", 0, "finding_ids"), ["invented"], "coverage findings"),
-    (("findings", 0, "supplier_question"), "Could you confirm our profit margin?", "private business details"),
-    (("findings", 0, "supplier_question"), "Does this work at 40%?", "private business details"),
-])
-def test_cross_reference_validation_rejects_bad_content(example, path, replacement, message):
-    request, content, sent_sources = example
-    target = content
-    for part in path[:-1]:
-        target = target[part]
-    target[path[-1]] = replacement
-    with pytest.raises(ValueError, match=message):
-        report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-
-
-def test_wrong_named_option_in_supplier_question_is_rejected(example):
-    request, _, sent_sources = example
-    content = minimal_content(request)
-    content["findings"].append({
-        "finding_id": "source-gap", "title": "Exact specification missing", "option_ids": ["v1"],
-        "kind": "evidence_gap", "action_type": "ask_supplier", "requirement_ids": [], "citations": [],
-        "interpretation": "The exact specification is unconfirmed.", "impact": "Specifications could vary.",
-        "priority_reason": "Clarify before choosing an option.", "unknowns": [],
-        "requested_evidence": "Written specification", "evidence_limits": "Seller statement only.",
-        "supplier_question": "Could you share the exact specification for Option A?",
-    })
-    with pytest.raises(ValueError, match="option letters"):
-        report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-
-
-def test_null_answer_can_support_a_preference_but_not_a_requirement(example):
-    request, content, sent_sources = example
-    finding = content["findings"][0]
-    finding["action_type"] = "decide_preference"
-    finding["supplier_question"] = None
-    content["open_preferences"] = [{
-        "preference_id": "p-open", "text": "Accepting another option is still an open preference.",
-        "input_refs": ["context", "answer:q-open"], "finding_ids": [finding["finding_id"]],
-    }]
-    result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    assert result.open_preferences[0].input_refs == ["context", "answer:q-open"]
-    assert all(requirement.input_ref != "answer:q-open" for requirement in result.buyer_requirements)
-
-
-@pytest.mark.parametrize("availability", ["available", "missing", "unreadable"])
-def test_omitted_image_is_only_usable_as_unknown_metadata(example, availability):
-    request, content, sent_sources = example
-    image_id = "image-v0"
-    request_data = request.model_dump()
-    source = next(source for source in request_data["snapshot"]["sources"] if source["source_id"] == image_id)
-    source["availability"] = availability
-    if availability != "available":
-        source["image_file"] = None
-    request = ReviewInput.model_validate(request_data)
-    sent_sources.remove(image_id)
-
-    with pytest.raises(ValueError, match="comparison sources"):
-        report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    for comparison in content["comparisons"]:
-        for value in comparison["values"]:
-            value["source_ids"] = [source_id for source_id in value["source_ids"] if source_id != image_id]
-    with pytest.raises(ValueError, match="Citations require available sources"):
-        report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    for finding in content["findings"]:
-        finding["citations"] = [cite for cite in finding["citations"] if cite["source_id"] != image_id]
-    with pytest.raises(ValueError, match="not_found only"):
-        report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    for finding in content["findings"]:
-        for unknown in finding["unknowns"]:
-            unknown["source_ids"] = [source_id for source_id in unknown["source_ids"] if source_id != image_id]
-    reason = "not_reviewed" if availability == "available" else "unreadable"
-    content["findings"][0]["unknowns"].append({"text": "No image observation available.", "reason": reason, "source_ids": [image_id]})
-    result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
-    assert result.findings[0].unknowns[-1].reason == reason
 
 
 def test_invalid_report_gets_one_repair_using_identical_input(parser_case):
@@ -396,50 +239,6 @@ def test_invalid_report_gets_one_repair_using_identical_input(parser_case):
     first, second = bodies
     assert first["input"] == second["input"]
     assert "Each comparison must contain every selected option once." in second["instructions"]
-
-
-@pytest.mark.parametrize("action_type", ["ask_supplier", "request_evidence"])
-@pytest.mark.parametrize("corrected", [False, True])
-def test_supplier_action_without_a_question_gets_one_correction(parser_case, action_type, corrected):
-    review_input, images = parser_case
-    malformed = minimal_content(review_input)
-    finding = {
-        "finding_id": "confirm-sample", "title": "Sample details need confirmation",
-        "option_ids": review_input.selected_option_ids, "kind": "clarification_needed", "action_type": action_type,
-        "requirement_ids": [], "citations": [], "interpretation": "The listing does not identify sample availability.",
-        "impact": "A sample can help confirm the finish.", "priority_reason": "Check the finish before buying.",
-        "unknowns": [], "requested_evidence": "A verified sample of each selected option.",
-        "evidence_limits": "One sample covers one unit.", "supplier_question": None,
-    }
-    malformed["findings"].append(finding)
-    if action_type == "request_evidence":
-        malformed["findings"].append({
-            **finding, "finding_id": "confirm-photo", "action_type": "ask_supplier",
-            "supplier_question": "Can you send a close-up photo?",
-        })
-    repaired = deepcopy(malformed)
-    question = "Can you send a sample of each selected option?"
-    repaired["findings"][0]["supplier_question"] = question
-    bodies = []
-
-    def serve(request):
-        bodies.append(json.loads(request.content))
-        return response(request, repaired if corrected and len(bodies) == 2 else malformed)
-
-    result = run_review(review_input, images, serve)
-
-    assert len(bodies) == 2
-    first, second = bodies
-    assert first["input"] == second["input"]
-    assert "must include a supplier_question" in second["instructions"]
-    if corrected:
-        assert isinstance(result, ReviewReady)
-        assert f"1. [Options A, B, C] {question}" in result.report.supplier_draft
-        if action_type == "request_evidence":
-            assert "2. [Options A, B, C] Can you send a close-up photo?" in result.report.supplier_draft
-    else:
-        assert isinstance(result, ReviewFailed)
-        assert result.code == "invalid_review"
 
 
 @pytest.mark.parametrize(("failure", "attempts", "code"), [
@@ -480,3 +279,147 @@ def test_invalid_selection_is_rejected_before_provider_call(parser_case):
     result = run_review(invalid, images, lambda _: pytest.fail("unexpected provider call"))
     assert isinstance(result, ReviewFailed)
     assert result.code == "invalid_input"
+
+
+def populated_content(request):
+    payload = minimal_content(request)
+    payload["claims"] = [
+        text_claim("selector", "capacity-selector", "720ml"),
+        image_claim("first-label", "v0", "image-v0"),
+    ]
+    payload["comparisons"][0]["shared_claim_ids"] = ["selector"]
+    next(cell for cell in payload["comparisons"][0]["values"] if cell["option_id"] == "v0")["claim_ids"] = ["first-label"]
+    payload["buyer_requirements"] = [{
+        "requirement_id": "req-capacity", "topic": "capacity",
+        "input_ref": "answer:q-capacity", "quote": "720 ml is required.",
+    }]
+    payload["findings"] = [finding_selection(
+        ["v0"], kind="listing_conflict", claim_ids=["selector", "first-label"],
+        requirement_ids=["req-capacity"], supplier_action="reconcile_sources",
+        unknowns=[{"reason": "not_found", "source_ids": ["capacity-selector"]}],
+    )]
+    payload["coverage"][0]["finding_ids"] = ["capacity-check"]
+    return payload
+
+
+@pytest.mark.parametrize(("path", "replacement", "message"), [
+    (("claims", 0, "source_id"), "invented", "actually sent"),
+    (("claims", 0, "quote"), "1510 ml", "exact quote"),
+    (("claims", 0, "option_ids"), ["v0"], "empty scope for shared"),
+    (("claims", 1, "unit"), "kg", "matching topic"),
+    (("findings", 0, "option_ids"), ["unknown-option"], "finding options"),
+    (("findings", 0, "option_ids"), ["v0", "v0"], "finding options"),
+    (("findings", 0, "requirement_ids"), ["invented"], "finding requirements"),
+    (("findings", 0, "claim_ids"), ["invented"], "finding claims"),
+    (("findings", 0, "unknowns", 0, "source_ids"), ["invented"], "unknown sources"),
+    (("findings", 0, "supplier_action"), None, "reconcile_sources"),
+    (("buyer_requirements", 0, "quote"), "made up", "verbatim quote"),
+    (("buyer_requirements", 0, "input_ref"), "answer:q-open", "non-null buyer input"),
+    (("buyer_requirements", 0, "input_ref"), "answer:old-round", "non-null buyer input"),
+    (("open_preferences",), [
+        {"preference_id": "p-old", "topic": "finish", "input_refs": ["answer:old-round"], "finding_ids": []},
+    ], "preference input"),
+    (("comparisons", 0, "values", 0, "claim_ids"), ["invented"], "comparison claims"),
+    (("comparisons", 0, "values", 0, "option_id"), "v1", "comparison values"),
+    (("comparisons", 0, "shared_claim_ids"), ["first-label"], "shared comparison claim"),
+    (("coverage", 0, "group"), "intended_use", "coverage groups"),
+    (("coverage", 0, "finding_ids"), ["invented"], "coverage findings"),
+])
+def test_cross_reference_validation_rejects_bad_content(example, path, replacement, message):
+    request, images = example
+    content = populated_content(request)
+    target = content
+    for step in path[:-1]:
+        target = target[step]
+    target[path[-1]] = replacement
+    with pytest.raises(ValueError, match=message):
+        assemble(request, images, content)
+
+
+def test_draft_uses_selection_order_and_numbers_only_supplier_actions(example):
+    request, images = example
+    request = request.model_copy(update={"selected_option_ids": ["v6", "v0", "v1"]})
+    content = minimal_content(request)
+    content["comparisons"][0]["values"].reverse()
+    content["findings"] = [
+        finding_selection(["v1", "v6"], finding_id="photo", supplier_action="request_close_up"),
+        finding_selection(["v0"], finding_id="decide", topic="finish", action_type="decide_preference", supplier_action=None),
+        finding_selection(["v6"], finding_id="materials", topic="materials"),
+    ]
+    content["open_preferences"] = [{
+        "preference_id": "p-open", "topic": "finish", "input_refs": ["context", "answer:q-open"], "finding_ids": ["decide"],
+    }]
+    rendered = assemble(request, images, content)
+
+    names = {option.option_id: option.name_original for option in request.snapshot.options}
+    assert rendered.supplier_draft.splitlines()[1:4] == [f"A. {names['v6']}", f"B. {names['v0']}", f"C. {names['v1']}"]
+    first, second = rendered.supplier_draft.splitlines()[7::2]
+    assert first.startswith("1. [Options A, C] Could you send a close-up photo")
+    assert second.startswith("2. [Option A] Please confirm the materials")
+    assert "40%" not in rendered.supplier_draft
+    assert [value.option_id for value in rendered.comparisons[0].values] == ["v6", "v0", "v1"]
+    assert [finding.finding_id for finding in rendered.findings] == ["photo", "decide", "materials"]
+    assert rendered.open_preferences[0].input_refs == ["context", "answer:q-open"]
+
+    content["findings"] = content["findings"][1:2]
+    rendered = assemble(request, images, content)
+    assert rendered.findings[0].supplier_question is None
+    assert rendered.supplier_draft == ""
+
+    content["open_preferences"] = []
+    with pytest.raises(ValueError, match="open preference"):
+        assemble(request, images, content)
+
+
+@pytest.mark.parametrize("availability", ["available", "missing", "unreadable"])
+def test_omitted_image_is_only_usable_as_unknown_metadata(example, availability):
+    request, images = example
+    image_id = "image-v0"
+    del images[image_id]
+    data = request.model_dump()
+    source = next(source for source in data["snapshot"]["sources"] if source["source_id"] == image_id)
+    source["availability"] = availability
+    if availability != "available":
+        source["image_file"] = None
+    request = ReviewInput.model_validate(data)
+    content = populated_content(request)
+    with pytest.raises(ValueError, match="actually sent"):
+        assemble(request, images, content)
+
+    content = minimal_content(request)
+    finding = finding_selection(["v0"], unknowns=[{"reason": "not_found", "source_ids": [image_id]}])
+    content["findings"] = [finding]
+    with pytest.raises(ValueError, match="not_found only"):
+        assemble(request, images, content)
+    reason = "not_reviewed" if availability == "available" else "unreadable"
+    finding["unknowns"][0]["reason"] = reason
+    rendered = assemble(request, images, content)
+    assert rendered.findings[0].unknowns[0].reason == reason
+    assert rendered.findings[0].unknowns[0].source_ids == [image_id]
+
+
+@pytest.mark.parametrize("action_type", ["ask_supplier", "request_evidence"])
+@pytest.mark.parametrize("corrected", [False, True])
+def test_supplier_finding_without_a_selected_action_gets_one_correction(parser_case, action_type, corrected):
+    request, images = parser_case
+    malformed = minimal_content(request)
+    malformed["findings"] = [finding_selection(request.selected_option_ids, action_type=action_type, supplier_action=None)]
+    repaired = deepcopy(malformed)
+    repaired["findings"][0]["supplier_action"] = "request_sample"
+    bodies = []
+
+    def serve(http_request):
+        bodies.append(json.loads(http_request.content))
+        return response(http_request, repaired if corrected and len(bodies) == 2 else malformed)
+
+    result = run_review(request, images, serve)
+
+    first, second = bodies
+    assert first["input"] == second["input"]
+    assert "must select a supplier action" in second["instructions"]
+    if corrected:
+        assert isinstance(result, ReviewReady)
+        assert "1. [Options A, B, C] Could you send a sample" in result.report.supplier_draft
+    else:
+        assert isinstance(result, ReviewFailed)
+        assert result.code == "invalid_review"

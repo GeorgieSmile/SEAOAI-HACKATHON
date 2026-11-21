@@ -562,18 +562,133 @@
     "expected_result": {
       "status": "ready",
       "report": {
-        "case_id": "prepare-skipped",
-        "snapshot_id": "example-snapshot-1",
-        "selected_option_ids": [
-          "v0",
-          "v1",
-          "v6"
+        "contract_version": 2,
+        "claims": [
+          {
+            "claim_id": "claim-name-v0",
+            "option_ids": [
+              "v0"
+            ],
+            "source_id": "name-v0",
+            "kind": "text_excerpt",
+            "quote": "暮色316-贴画粉蓝",
+            "display_text": "SKU wording (source translation): 暮色316 · applied-picture design · pink/blue"
+          },
+          {
+            "claim_id": "claim-name-v1",
+            "option_ids": [
+              "v1"
+            ],
+            "source_id": "name-v1",
+            "kind": "text_excerpt",
+            "quote": "暮色316-贴画黑白",
+            "display_text": "SKU wording (source translation): 暮色316 · applied-picture design · black/white"
+          },
+          {
+            "claim_id": "claim-name-v6",
+            "option_ids": [
+              "v6"
+            ],
+            "source_id": "name-v6",
+            "kind": "text_excerpt",
+            "quote": "暮色316-字母粉蓝",
+            "display_text": "SKU wording (source translation): 暮色316 · letter design · pink/blue"
+          },
+          {
+            "claim_id": "claim-customization-menu",
+            "option_ids": [],
+            "source_id": "customization-menu",
+            "kind": "text_excerpt",
+            "quote": "定制工艺选择: 热转印,丝印,3D打印,内喷陶瓷",
+            "display_text": "Shared listing text (source translation): Customization methods offered: heat transfer, screen printing, 3D printing, internal ceramic coating."
+          },
+          {
+            "claim_id": "claim-capacity-selector",
+            "option_ids": [],
+            "source_id": "capacity-selector",
+            "kind": "text_excerpt",
+            "quote": "720ml",
+            "display_text": "Shared selector (source translation): 720 ml"
+          },
+          {
+            "claim_id": "claim-image-v0",
+            "option_ids": [
+              "v0"
+            ],
+            "source_id": "image-v0",
+            "kind": "image_measurement",
+            "value": 750.0,
+            "unit": "ml",
+            "display_text": "Thumbnail label: 750 ml"
+          },
+          {
+            "claim_id": "claim-image-v1",
+            "option_ids": [
+              "v1"
+            ],
+            "source_id": "image-v1",
+            "kind": "image_measurement",
+            "value": 750.0,
+            "unit": "ml",
+            "display_text": "Thumbnail label: 750 ml"
+          },
+          {
+            "claim_id": "claim-image-v6",
+            "option_ids": [
+              "v6"
+            ],
+            "source_id": "image-v6",
+            "kind": "image_measurement",
+            "value": 750.0,
+            "unit": "ml",
+            "display_text": "Thumbnail label: 750 ml"
+          },
+          {
+            "claim_id": "claim-interior",
+            "option_ids": [],
+            "source_id": "interior",
+            "kind": "text_excerpt",
+            "quote": "内胆材质: 316不锈钢",
+            "display_text": "Shared listing text (source translation): Interior material: 316 stainless steel."
+          },
+          {
+            "claim_id": "claim-exterior",
+            "option_ids": [],
+            "source_id": "exterior",
+            "kind": "text_excerpt",
+            "quote": "外壳材质: 304不锈钢",
+            "display_text": "Shared listing text (source translation): Exterior material: 304 stainless steel."
+          },
+          {
+            "claim_id": "claim-lid",
+            "option_ids": [],
+            "source_id": "lid",
+            "kind": "text_excerpt",
+            "quote": "杯盖材质: PP",
+            "display_text": "Shared listing text (source translation): Lid material: polypropylene (PP)."
+          },
+          {
+            "claim_id": "claim-report-availability",
+            "option_ids": [],
+            "source_id": "report-availability",
+            "kind": "text_excerpt",
+            "quote": "是否有第三方检测报告: 没有",
+            "display_text": "Shared listing text (source translation): Is a third-party test report available? No."
+          },
+          {
+            "claim_id": "claim-dmsc-food-contact",
+            "option_ids": [],
+            "source_id": "dmsc-food-contact",
+            "kind": "text_excerpt",
+            "quote": "ความเสี่ยงขึ้นอยู่กับชนิดของวัสดุ คุณภาพและมาตรฐานของผลิตภัณฑ์ ประเภทอาหาร อุณหภูมิ ระยะเวลาที่สัมผัสอาหาร และวิธีการใช้งาน",
+            "display_text": "Official guidance (source translation): Risk depends on the material type, product quality and standards, food type, temperature, food-contact duration and method of use."
+          }
         ],
         "buyer_requirements": [],
         "open_preferences": [
           {
             "preference_id": "p-finish",
-            "text": "Acceptable decoration methods remain unknown.",
+            "text": "Your preference for decoration and finish is still open.",
             "input_refs": [
               "answer:q-finish"
             ],
@@ -583,7 +698,7 @@
           },
           {
             "preference_id": "p-capacity",
-            "text": "An exact capacity requirement was not supplied.",
+            "text": "Your preference for capacity is still open.",
             "input_refs": [
               "answer:q-capacity"
             ],
@@ -593,7 +708,7 @@
           },
           {
             "preference_id": "p-use",
-            "text": "Drink conditions were not supplied.",
+            "text": "Your preference for temperature and use is still open.",
             "input_refs": [
               "answer:q-use"
             ],
@@ -604,65 +719,84 @@
         ],
         "comparisons": [
           {
-            "label": "Decoration",
+            "label": "Decoration and finish",
             "values": [
               {
                 "option_id": "v0",
-                "summary": "Applied-picture / decal wording; exact process unconfirmed.",
+                "claim_ids": [
+                  "claim-name-v0"
+                ],
+                "summary": "SKU wording (source translation): 暮色316 · applied-picture design · pink/blue",
                 "source_ids": [
                   "name-v0"
                 ]
               },
               {
                 "option_id": "v1",
-                "summary": "Applied-picture / decal wording; exact process unconfirmed.",
+                "claim_ids": [
+                  "claim-name-v1"
+                ],
+                "summary": "SKU wording (source translation): 暮色316 · applied-picture design · black/white",
                 "source_ids": [
                   "name-v1"
                 ]
               },
               {
                 "option_id": "v6",
-                "summary": "Letter design; screen printing not confirmed.",
+                "claim_ids": [
+                  "claim-name-v6"
+                ],
+                "summary": "SKU wording (source translation): 暮色316 · letter design · pink/blue",
                 "source_ids": [
                   "name-v6"
                 ]
               }
-            ]
+            ],
+            "shared_claim_ids": []
           },
           {
             "label": "Capacity",
             "values": [
               {
                 "option_id": "v0",
-                "summary": "Selector: 720 ml. Option image: 750 ml, manually read by the team. Delivered capacity unconfirmed.",
+                "claim_ids": [
+                  "claim-image-v0"
+                ],
+                "summary": "Thumbnail label: 750 ml",
                 "source_ids": [
-                  "capacity-selector",
                   "image-v0"
                 ]
               },
               {
                 "option_id": "v1",
-                "summary": "Selector: 720 ml. Option image: 750 ml, manually read by the team. Delivered capacity unconfirmed.",
+                "claim_ids": [
+                  "claim-image-v1"
+                ],
+                "summary": "Thumbnail label: 750 ml",
                 "source_ids": [
-                  "capacity-selector",
                   "image-v1"
                 ]
               },
               {
                 "option_id": "v6",
-                "summary": "Selector: 720 ml. Option image: 750 ml, manually read by the team. Delivered capacity unconfirmed.",
+                "claim_ids": [
+                  "claim-image-v6"
+                ],
+                "summary": "Thumbnail label: 750 ml",
                 "source_ids": [
-                  "capacity-selector",
                   "image-v6"
                 ]
               }
+            ],
+            "shared_claim_ids": [
+              "claim-capacity-selector"
             ]
           }
         ],
         "findings": [
           {
             "finding_id": "f-artwork",
-            "title": "Applied-picture wording may change what you expect.",
+            "title": "Decide what you need for decoration and finish",
             "option_ids": [
               "v0",
               "v1",
@@ -671,6 +805,12 @@
             "kind": "clarification_needed",
             "action_type": "decide_preference",
             "requirement_ids": [],
+            "claim_ids": [
+              "claim-name-v0",
+              "claim-name-v1",
+              "claim-name-v6",
+              "claim-customization-menu"
+            ],
             "citations": [
               {
                 "source_id": "name-v0",
@@ -693,28 +833,28 @@
                 "image_observation": null
               }
             ],
-            "interpretation": "Names for v0 and v1 use 贴画, wording associated with applied pictures or decals. The v6 name uses 字母, meaning letters. These names do not establish the exact process. The customization menu offers screen printing but does not identify the ready-made options as screen-printed.",
-            "impact": "Your acceptable finish is unknown. The app has not assumed that you require screen printing.",
-            "priority_reason": "This unasked discovery may change which options you would accept.",
+            "interpretation": "Confirm the specification with the supplier for the named options.",
+            "impact": "Knowing decoration and finish helps compare what you would receive.",
+            "priority_reason": "Checking this before ordering can resolve an open detail about the exact item.",
             "unknowns": [
               {
-                "text": "The exact decoration process for each selected option.",
                 "reason": "not_found",
                 "source_ids": [
                   "name-v0",
                   "name-v1",
                   "name-v6",
                   "customization-menu"
-                ]
+                ],
+                "text": "The reviewed material did not establish the answer for decoration and finish."
               }
             ],
-            "requested_evidence": "Decide which finishes are acceptable after learning the process for each option. Request close-up photos or a sample and care instructions.",
-            "evidence_limits": "A supplier reply or photo alone does not verify the production process or durability of delivered units.",
-            "supplier_question": "My decoration requirement is not yet set. Please name the process for each exact option, explain the 贴画 wording for A and B, and provide close-up photos or a sample and care instructions."
+            "requested_evidence": "Choose what matters for this purchase before asking the supplier.",
+            "evidence_limits": "This decision describes the buying criteria.",
+            "supplier_question": null
           },
           {
             "finding_id": "f-capacity",
-            "title": "The selector says 720 ml while the checked images say 750 ml.",
+            "title": "Confirm capacity with the supplier",
             "option_ids": [
               "v0",
               "v1",
@@ -723,6 +863,12 @@
             "kind": "listing_conflict",
             "action_type": "ask_supplier",
             "requirement_ids": [],
+            "claim_ids": [
+              "claim-capacity-selector",
+              "claim-image-v0",
+              "claim-image-v1",
+              "claim-image-v6"
+            ],
             "citations": [
               {
                 "source_id": "capacity-selector",
@@ -732,41 +878,41 @@
               {
                 "source_id": "image-v0",
                 "quote": null,
-                "image_observation": "The option image displays 750ml near the top. This example uses a manual reading by the team, not a model-verified measurement."
+                "image_observation": "Thumbnail label: 750 ml"
               },
               {
                 "source_id": "image-v1",
                 "quote": null,
-                "image_observation": "The option image displays 750ml near the top. This example uses a manual reading by the team, not a model-verified measurement."
+                "image_observation": "Thumbnail label: 750 ml"
               },
               {
                 "source_id": "image-v6",
                 "quote": null,
-                "image_observation": "The option image displays 750ml near the top. This example uses a manual reading by the team, not a model-verified measurement."
+                "image_observation": "Thumbnail label: 750 ml"
               }
             ],
-            "interpretation": "Two parts of the saved listing give different capacities for this selection. Neither establishes the delivered volume.",
-            "impact": "Your capacity requirement is unknown; the delivered capacity still needs clarification for an agreed product description.",
-            "priority_reason": "The listing gives two different capacity figures.",
+            "interpretation": "Compare the cited seller readings and verify the delivered specification and measurement method.",
+            "impact": "Knowing capacity helps compare what you would receive.",
+            "priority_reason": "Checking this before ordering can resolve an open detail about the exact item.",
             "unknowns": [
               {
-                "text": "A reconciliation of the two figures and the delivered capacity for each option.",
                 "reason": "not_found",
                 "source_ids": [
                   "capacity-selector",
                   "image-v0",
                   "image-v1",
                   "image-v6"
-                ]
+                ],
+                "text": "The reviewed material did not establish the answer for capacity."
               }
             ],
-            "requested_evidence": "Request the delivered capacity and measurement method for each exact option. If the volume is important, compare a sample using the agreed method.",
-            "evidence_limits": "A written capacity is a supplier claim. The image is not a measurement of delivered stock.",
-            "supplier_question": "The selector says 720 ml, while the checked images for A, B and C say 750 ml. Please reconcile the figures and specify the delivered capacity and measurement method for each option."
+            "requested_evidence": "Ask for the delivered specification, the explanation for different readings, and SKU-specific evidence.",
+            "evidence_limits": "A written answer identifies the seller's stated specification. Verification requires evidence for the exact item.",
+            "supplier_question": "Do these saved readings describe the same specification? Option A: shared selector 720 ml and thumbnail label 750 ml. Option B: shared selector 720 ml and thumbnail label 750 ml. Option C: shared selector 720 ml and thumbnail label 750 ml. Please confirm the delivered capacity, its units, and whether it is usable or brim-full for each named option and send evidence identifying that option."
           },
           {
             "finding_id": "f-use",
-            "title": "Drink-contact parts and use conditions are only partly described.",
+            "title": "Request evidence for testing and documentation",
             "option_ids": [
               "v0",
               "v1",
@@ -775,6 +921,13 @@
             "kind": "evidence_gap",
             "action_type": "request_evidence",
             "requirement_ids": [],
+            "claim_ids": [
+              "claim-interior",
+              "claim-exterior",
+              "claim-lid",
+              "claim-report-availability",
+              "claim-dmsc-food-contact"
+            ],
             "citations": [
               {
                 "source_id": "interior",
@@ -802,24 +955,24 @@
                 "image_observation": null
               }
             ],
-            "interpretation": "The seller identifies a PP lid as well as the steel body, so the body alone does not describe all drink-contact parts. The official guidance makes use conditions relevant; it does not determine the suitability of this model.",
-            "impact": "Your drink conditions are unknown, so no hot- or cold-drink limit can be assumed.",
-            "priority_reason": "The PP lid makes other drink-contact parts relevant even without a stated use condition.",
+            "interpretation": "Ask for evidence that identifies the exact options and the specification under review.",
+            "impact": "Knowing testing and documentation helps compare what you would receive.",
+            "priority_reason": "Checking this before ordering can resolve an open detail about the exact item.",
             "unknowns": [
               {
-                "text": "Straw and seal materials, and product-specific support for intended drink conditions in the supplied details.",
                 "reason": "not_found",
                 "source_ids": [
                   "interior",
                   "exterior",
                   "lid",
                   "report-availability"
-                ]
+                ],
+                "text": "The reviewed material did not establish the answer for testing and documentation."
               }
             ],
-            "requested_evidence": "Request every drink-contact material, intended drink types, temperature limits and care instructions. Ask for any available report with its model or sample, method and conditions; if none exists, ask the supplier to confirm that.",
-            "evidence_limits": "No report does not prove the product unsafe. A report only supports its stated sample, method and conditions. General guidance does not certify this product or establish import permission.",
-            "supplier_question": "Please identify all drink-contact materials, including the body, lid, straw and seals, and give intended drink types, temperature limits and care instructions. The listing says no third-party report is available; please confirm this. For any available document, identify the model or sample, method and conditions covered."
+            "requested_evidence": "Ask for the specification or test documents identifying the model, material, and conditions covered.",
+            "evidence_limits": "A document applies only to the identified sample, materials, and test conditions.",
+            "supplier_question": "Could you confirm which tests or documents apply to the exact product and materials for each named option and send the applicable specification or test documents showing the exact model and materials?"
           }
         ],
         "coverage": [
@@ -830,7 +983,7 @@
               "f-artwork",
               "f-capacity"
             ],
-            "note": "Finish and capacity preferences remain unknown; option wording and capacity sources were reviewed."
+            "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
           },
           {
             "group": "intended_use",
@@ -838,7 +991,7 @@
             "finding_ids": [
               "f-use"
             ],
-            "note": "Drink conditions were not supplied. Materials and product-specific use support remain incomplete."
+            "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
           },
           {
             "group": "supporting_evidence",
@@ -846,19 +999,24 @@
             "finding_ids": [
               "f-use"
             ],
-            "note": "Material claims are unverified and the listing states no third-party report is available."
+            "note": "The saved evidence allows a partial assessment. The applicable checks still need confirmation."
           }
         ],
         "limitations": [
           "The saved listing contains seller claims, not physical product measurements.",
-          "No physical sample inspected.",
-          "Image readings in this hand-written example were checked manually for these three options only.",
-          "No safety certification, import permission, supplier reliability, landed cost or profitability assessment.",
           "All three option images here are 150×150 thumbnails; image matching does not confirm the decoration process or durability. Only clearly legible image text may be reported as an image observation, not a product measurement.",
+          "Thumbnail observations cover supported labels and visible details. Verify the delivered specification separately.",
           "Product-detail images were not reviewed in this version."
         ],
-        "supplier_draft": "Hello, I am reviewing these exact options:\nA. 暮色316-贴画粉蓝\nB. 暮色316-贴画黑白\nC. 暮色316-字母粉蓝\n\nPlease identify the relevant option names in your reply.\n\n1. My decoration requirement is not yet set. Please name the process for each exact option, explain the 贴画 wording for A and B, and provide close-up photos or a sample and care instructions.\n\n2. The selector says 720 ml, while the checked images for A, B and C say 750 ml. Please reconcile the figures and specify the delivered capacity and measurement method for each option.\n\n3. Please identify all drink-contact materials, including the body, lid, straw and seals, and give intended drink types, temperature limits and care instructions. The listing says no third-party report is available; please confirm this. For any available document, identify the model or sample, method and conditions covered.\n\nI will review your answers before confirming purchase requirements.",
-        "revision": 1
+        "case_id": "prepare-skipped",
+        "revision": 1,
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "supplier_draft": "Hello, I am reviewing these exact options:\nA. 暮色316-贴画粉蓝\nB. 暮色316-贴画黑白\nC. 暮色316-字母粉蓝\n\nPlease identify the relevant option names in your reply.\n\n1. [Options A, B, C] Do these saved readings describe the same specification? Option A: shared selector 720 ml and thumbnail label 750 ml. Option B: shared selector 720 ml and thumbnail label 750 ml. Option C: shared selector 720 ml and thumbnail label 750 ml. Please confirm the delivered capacity, its units, and whether it is usable or brim-full for each named option and send evidence identifying that option.\n\n2. [Options A, B, C] Could you confirm which tests or documents apply to the exact product and materials for each named option and send the applicable specification or test documents showing the exact model and materials?"
       }
     }
   }

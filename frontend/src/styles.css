@@ -779,8 +779,7 @@ fieldset {
 }
 
 .review-finding-content { display: grid; gap: 17px; }
-.review-finding-content h4,
-.review-source-body h4 { font-size: .875rem; margin-bottom: 4px; }
+.review-finding-content h4 { font-size: .875rem; margin-bottom: 4px; }
 .review-finding-content p + p { margin-top: 6px; }
 
 .review-priority { color: var(--muted); font-size: .9rem; }
@@ -808,9 +807,11 @@ fieldset {
 }
 
 .review-source summary { padding: 7px 10px; cursor: pointer; font-weight: 640; color: var(--green); }
-.review-source-body { display: grid; gap: 8px; padding: 3px 10px 10px; }
+.review-source-body { display: grid; gap: 8px; padding: 3px 10px 10px; font-weight: 400; }
 .review-source-body img { display: block; max-width: min(100%, 250px); height: auto; border-radius: 4px; }
 .review-source-body p { white-space: pre-wrap; }
+.review-source-label { font-weight: 680; }
+.review-finding-content .review-source-label + p { margin-top: 4px; }
 .review-quote { color: #34433b; }
 
 .review-unknowns,

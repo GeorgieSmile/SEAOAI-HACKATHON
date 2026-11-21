@@ -83,11 +83,20 @@ export interface ReviewRequirement {
   quote: string;
 }
 
-export interface ReviewCitation {
+export type ReviewClaim = {
+  claim_id: string;
+  option_ids: string[];
   source_id: string;
-  quote: string | null;
-  image_observation: string | null;
-}
+  display_text: string;
+} & (
+  | { kind: "text_excerpt"; quote: string }
+  | { kind: "image_measurement"; value: number; unit: "ml" | "L" | "fl oz" | "mm" | "cm" | "in" | "g" | "kg" | "oz" | "lb" | "°C" | "°F" }
+  | {
+    kind: "image_detail";
+    detail: "letters_visible" | "illustration_visible" | "straw_visible" | "lid_visible" | "handle_visible"
+      | "retail_box_visible" | "protective_insert_visible" | "markings_visible";
+  }
+);
 
 export interface ReviewFinding {
   finding_id: string;
@@ -96,7 +105,7 @@ export interface ReviewFinding {
   kind: "listing_conflict" | "requirement_unconfirmed" | "clarification_needed" | "evidence_gap";
   action_type: "decide_preference" | "ask_supplier" | "request_evidence";
   requirement_ids: string[];
-  citations: ReviewCitation[];
+  claim_ids: string[];
   interpretation: string;
   impact: string;
   priority_reason: string;
@@ -111,8 +120,10 @@ export interface ReviewFinding {
 }
 
 export interface PurchaseReview extends CaseVersion {
+  contract_version: 2;
   snapshot_id: string;
   selected_option_ids: string[];
+  claims: ReviewClaim[];
   buyer_requirements: ReviewRequirement[];
   open_preferences: {
     preference_id: string;
@@ -122,7 +133,8 @@ export interface PurchaseReview extends CaseVersion {
   }[];
   comparisons: {
     label: string;
-    values: { option_id: string; summary: string; source_ids: string[] }[];
+    shared_claim_ids: string[];
+    values: { option_id: string; summary: string; claim_ids: string[] }[];
   }[];
   findings: ReviewFinding[];
   coverage: {
@@ -217,13 +229,13 @@ export function caseVersion(view: CaseView | null): CaseVersion | null {
 
 export function currentPurchaseReview(view: CaseView | null): PurchaseReview | null {
   const report = view?.report;
-  if (view?.phase !== "reviewed" || !report
+  if (view?.phase !== "reviewed" || !report || report.contract_version !== 2
     || report.case_id !== view.case_id || report.revision !== view.revision
     || report.snapshot_id !== view.snapshot_id
     || !Array.isArray(report.selected_option_ids)
     || report.selected_option_ids.length !== view.selected_option_ids.length
     || !report.selected_option_ids.every((id, index) => id === view.selected_option_ids[index])
-    || !Array.isArray(report.findings) || !Array.isArray(report.comparisons)
+    || !Array.isArray(report.claims) || !Array.isArray(report.findings) || !Array.isArray(report.comparisons)
     || !Array.isArray(report.buyer_requirements) || !Array.isArray(report.open_preferences)
     || !Array.isArray(report.coverage) || !Array.isArray(report.limitations)
     || typeof report.supplier_draft !== "string") return null;

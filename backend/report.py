@@ -1,130 +1,114 @@
 from base64 import b64encode
-from collections.abc import Iterable, Mapping, Set
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
+from itertools import combinations
 import json
 import logging
 import re
-from unicodedata import decimal, normalize
+from unicodedata import normalize
 
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseInputContentParam, ResponseInputParam
 from pydantic import ValidationError
 
 from .ai import (
-    CLAUSE_BOUNDARY,
-    NAMED_OPTIONS,
-    OPTION_NAME_AFTER,
-    OPTION_NAME_BEFORE,
     OPTION_REFERENCES,
     PROMPT_DIRECTORY,
-    SENTENCE_BOUNDARY,
     _InvalidStructuredOutput,
     _ProviderFailure,
     _build_client,
-    _named_option_references,
     _request_structured,
 )
-from .contracts import Option, ReviewInput, Source
+from .contracts import Option, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
 from .intake import IMAGE_MIME
-from .report_models import Finding, PurchaseReview, ReviewContent, ReviewFailed, ReviewReady, ReviewResult
+from .report_models import (
+    BuyerRequirement,
+    Citation,
+    Comparison,
+    ComparisonValue,
+    Coverage,
+    DisplayClaim,
+    DisplayImageDetailClaim,
+    DisplayImageMeasurementClaim,
+    DisplayTextClaim,
+    Finding,
+    FindingSelection,
+    ImageDetailClaim,
+    ImageMeasurementClaim,
+    OpenPreference,
+    PurchaseReview,
+    ReviewContent,
+    ReviewFailed,
+    ReviewReady,
+    ReviewResult,
+    SentReviewEvidence,
+    SourcedClaim,
+    TextClaim,
+    Unknown,
+    UnknownSelection,
+)
 
 
-REVIEW_PROMPT_VERSION = "purchase-review-v2"
+REVIEW_PROMPT_VERSION = "purchase-review-v3"
 REVIEW_PROMPT = (PROMPT_DIRECTORY / f"{REVIEW_PROMPT_VERSION}.txt").read_text(encoding="utf-8")
 REVIEW_DEADLINE_SECONDS = 90
 REVIEW_MAX_OUTPUT_TOKENS = 12_288
 DETAIL_IMAGE_LIMITATION = "Product-detail images were not reviewed in this version."
+THUMBNAIL_LIMITATION = "Thumbnail observations cover supported labels and visible details. Verify the delivered specification separately."
 COVERAGE_GROUPS = {"product_match", "intended_use", "supporting_evidence"}
-NAME_PREDICATE = re.compile(
-    r"\b(?:includes?|contains?|uses?|reads?|says?|mentions?|shows?|has|have|is|are)\b", re.IGNORECASE,
-)
-NAME_INQUIRY = re.compile(
-    r"\b(?:whether|if)\b|^\s*(?:does|do|is|are|has|have|what|which|how)\b", re.IGNORECASE,
-)
-NAME_NEGATION = re.compile(r"\b(?:not|never)\b|n['’]t\b", re.IGNORECASE)
-NAME_VISIBILITY = re.compile(
-    r"\b(?:(?:is|are)\s+(?:(?:not|clearly|fully|partially)\s+)*"
-    r"(?:visible|legible|readable|illegible|unreadable|obscured)|cannot\s+be\s+(?:read|seen))\b", re.IGNORECASE,
-)
-NAME_COORDINATION = re.compile(r"\s*(,\s*(?:(?:and|or|nor|but)\b)?|\b(?:and|or|nor|but)\b|[/&、])\s*", re.IGNORECASE)
-NAME_COORDINATED_PREDICATE = re.compile(
-    r"^\s*(?:(?:do(?:es)?(?:n['’]t|\s+not)?|never)\s+)?" + NAME_PREDICATE.pattern, re.IGNORECASE,
-)
-HAN_CHARACTER = re.compile(r"[\u3400-\u9fff\U00020000-\U000323af]")
-NAME_TERM_AFTER = re.compile(
-    r"^\s*(?:(?P<modifier>not|no|neither|both|either|rather)\s+)?"
-    r"(?:(?:the|a|an)\s+)?(?:(?:Chinese|original)\s+)?(?:\b(?:characters?|phrases?|terms?|words?|wording|text)\s+)?"
-    r"[\"“'‘`]*\s*(?P<term>[\w-]+)[\"”'’`]*(?:\s+(?:wording|terms?|text|labels?)\b)?",
+TOPICS = {
+    "capacity": ("Capacity", "the delivered capacity, its units, and whether it is usable or brim-full"),
+    "finish": ("Decoration and finish", "the decoration process and finish"),
+    "materials": ("Materials", "the materials of the product and its contact surfaces"),
+    "temperature_use": ("Temperature and use", "the intended uses, supported temperature range, and restrictions"),
+    "testing": ("Testing and documentation", "which tests or documents apply to the exact product and materials"),
+    "customization": ("Stock and customization", "the available stock and any customization options"),
+    "packaging": ("Packaging", "the delivered packaging and what is included"),
+    "dimensions": ("Dimensions", "the delivered dimensions, units, and how they are measured"),
+    "weight": ("Weight", "the delivered weight, units, and whether packaging is included"),
+    "sample": ("Samples", "whether a sample of the exact option is available"),
+    "sku_wording": ("SKU wording", "what is supplied under the exact listing name"),
+    "other": ("Delivered specification", "the specification of the exact item that would be delivered"),
+}
+UNIT_TOPICS = {
+    "ml": "capacity", "L": "capacity", "fl oz": "capacity",
+    "mm": "dimensions", "cm": "dimensions", "in": "dimensions",
+    "g": "weight", "kg": "weight", "oz": "weight", "lb": "weight",
+    "°C": "temperature_use", "°F": "temperature_use",
+}
+MEASUREMENT_FIELDS = {
+    "capacity": "capacity", "容量": "capacity", "容积": "capacity",
+    "dimensions": "dimensions", "尺寸": "dimensions",
+    "weight": "weight", "重量": "weight",
+    "temperature": "temperature_use", "温度": "temperature_use",
+}
+TEXT_READING = re.compile(
+    r"(?:(?P<field>[^:]+):\s*)?(?P<value>-?\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>ml|l|fl\s*oz|mm|cm|in|g|kg|oz|lb|°c|°f)",
     re.IGNORECASE,
 )
-NAME_ANNOTATION = re.compile(r"\([^()]*\)")
-MEASUREMENT_UNIT = re.compile(
-    r"^\s+(?:[µμmcdk]?[lgm]|fl\.?\s*oz|oz|inches|lbs?|watts?|volts?|"
-    r"(?:milli|centi|kilo)?(?:lit(?:er|re)|met(?:er|re)|gram)s?)\b", re.IGNORECASE,
-)
-NAME_SUBJECT_PREDICATE = re.compile(
-    r"^\s*(?:(?:only|exclusively)\s+)?(?:appears?|occurs?|does|do|did|can|could|may|might|must|will|would|should)\b",
-    re.IGNORECASE,
-)
-NAME_TERM_BEFORE = re.compile(
-    r"(?P<term>[\w-]+)[\"”'’`]*\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+(?:for|of)\s*$",
-    re.IGNORECASE,
-)
-NAME_TERM_IN_NAME = re.compile(
-    r"(?P<term>[\w-]+)[\"”'’`]*\s+"
-    r"(?:(?P<before_predicate>only|exclusively)\s+)?"
-    r"(?P<predicate>(?:do(?:es)?(?:n['’]t|\s+not)\s+)?(?:appears?|occurs?)|is|are)\s+"
-    r"(?:(?P<qualifier>not\s+only|not|never|only|exclusively)\s+)?in\s+"
-    r"(?:(?:the\s+)?(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+(?:for|of)\s+)?$",
-    re.IGNORECASE,
-)
-NAME_ONLY_BEFORE = re.compile(r"\b(?P<negated>not\s+)?(?:only|exclusively)\s+$", re.IGNORECASE)
-NAME_ONLY_AFTER = re.compile(
-    r"^\s*(?:(?:['’]s\s+)?(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+)?"
-    r"(?:alone\s+|(?:is|are)\s+the\s+only\s+(?:ones?|names?)\s+(?:that\s+)?)",
-    re.IGNORECASE,
-)
-NAME_COMPARISON_SCOPE = re.compile(r"^\s*(?:among|between|of)\s+", re.IGNORECASE)
-NAME_SCOPE_EXCEPTION = re.compile(r"\b(?:except(?:\s+for)?|other\s+than)\s+", re.IGNORECASE)
-IMPLICIT_OPTION_NAME = re.compile(
-    r"(?:\b(?:the|this|its)\s+|^|(?<=[.!?;]\s))(?:(?:original|Chinese|listing)\s+)?"
-    r"(?:(?:SKU|option|variant)(?:['’]s)?\s+)?name\b"
-    r"(?:\s+(?:of|for)\s+(?:this|the selected)\s+(?:SKU|option|variant)\b)?(?!\s+(?:for|of)\b)",
-    re.IGNORECASE | re.MULTILINE,
-)
-PRIVATE_BUSINESS_DETAILS = re.compile(
-    r"\b(?:margins?|profit(?:s|ability)?|mark[ -]?ups?|revenue|resale pric(?:e|ing)|"
-    r"(?:internal|private) (?:notes?|costs?|budgets?)|target costs?|cost (?:ceilings?|targets?)|unit economics)\b"
-    r"|กำไร|ราคาขายต่อ|ต้นทุนเป้าหมาย|利润|毛利|转售价格",
-    re.IGNORECASE,
-)
-PRIVATE_NOTE = re.compile(r"\b(?:internal|private|confidential) notes?\b", re.IGNORECASE)
-NOTE_IDENTIFIER = re.compile(r"\b(?:[A-Za-z]{2,}[-_]\d[\w-]*|[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)+(?![-_]\d))\b")
-BUSINESS_FIGURE = re.compile(
-    r"(?:[$€£¥฿]|\b(?:THB|USD|EUR|GBP|CNY|RMB|JPY)\b)\s*\d+(?:[.,]\d+)*"
-    r"|\b\d+(?:[.,]\d+)*\s*(?:%|\b(?:percent|THB|USD|EUR|GBP|CNY|RMB|JPY)\b|บาท|元)",
-    re.IGNORECASE,
-)
-EMAIL_ADDRESS = re.compile(r"[\w.!#$%&'*+/=?^`{|}~+-]+@(?:[\w-]+\.)+[^\W\d_]{2,63}\b")
-PHONE_NUMBER = re.compile(r"(?<!\w)(?:\+[ \t]*)?(?:\(\d{1,4}\)|\d)(?:[ .()\-‐‑–]*\d){6,14}(?!\w)")
-PHONE_INTRO = re.compile(
-    r"(?:\b(?:phone|mobile|tel|call|text|contact|reach|whatsapp|(?:internal|private|confidential) notes?)\b"
-    r"|โทร|เบอร์|电话)[^\d.!?;]{0,25}$",
-    re.IGNORECASE,
-)
-PRODUCT_NUMBER_LABEL = (
-    r"(?:upc(?:-[ae])?|ean(?:-?(?:8|13))?|gtin(?:-?(?:8|12|13|14))?|isbn(?:-?(?:10|13))?|"
-    r"bar[ -]?code|sku|asin|model|serial|"
-    r"(?:product|part|item)\s+(?:code|id|number)|dimensions?|measurements?)"
-)
-PRODUCT_NUMBER_INTRO = re.compile(
-    rf"\b{PRODUCT_NUMBER_LABEL}\b(?:\s+(?:code|id|number|no|is)\b\.?)*[\s:#=(\[\-]*$", re.IGNORECASE,
-)
-PRODUCT_NUMBER_SUFFIX = re.compile(
-    rf"^\s*(?:\(\s*{PRODUCT_NUMBER_LABEL}\b|(?:is|as)\s+(?:(?:the|an?)\s+)?(?:product\s+)?{PRODUCT_NUMBER_LABEL}\b"
-    r"|(?:mm|cm|ml|kg|mah|volts?|watts?)\b)",
-    re.IGNORECASE,
-)
+UNIT_ALIASES = {unit.casefold().replace(" ", ""): unit for unit in UNIT_TOPICS}
+UNIT_FACTORS = {
+    "ml": ("ml", "1"), "L": ("ml", "1000"), "fl oz": ("fl oz", "1"),
+    "mm": ("mm", "1"), "cm": ("mm", "10"), "in": ("mm", "25.4"),
+    "g": ("g", "1"), "kg": ("g", "1000"), "oz": ("g", "28.349523125"), "lb": ("g", "453.59237"),
+}
+VISIBLE_DETAILS = {
+    "letters_visible": ("finish", "Letter forms are visible"),
+    "illustration_visible": ("finish", "An illustration is visible"),
+    "straw_visible": ("other", "A straw is visible"),
+    "lid_visible": ("other", "A lid is visible"),
+    "handle_visible": ("other", "A handle is visible"),
+    "retail_box_visible": ("packaging", "A box is visible"),
+    "protective_insert_visible": ("packaging", "A protective insert is visible"),
+    "markings_visible": ("sku_wording", "Markings are visible"),
+}
+COVERAGE_NOTES = {
+    "reviewed": "The review considered the supplied material for this group. Product verification is separate.",
+    "limited": "The saved evidence allows a partial assessment. The applicable checks still need confirmation.",
+    "not_assessed": "The supplied buyer details or evidence did not support an assessment of this group.",
+}
 LOGGER = logging.getLogger(__name__)
 
 
@@ -138,13 +122,13 @@ def _selected_options(request: ReviewInput) -> list[Option]:
     return [options[option_id] for option_id in request.selected_option_ids]
 
 
-def _review_limitations(request: ReviewInput, sent_source_ids: Set[str]) -> list[str]:
+def _review_limitations(request: ReviewInput, attached_image_ids: set[str]) -> list[str]:
     selected = _selected_options(request)
-    selected_names = {option.name_original for option in selected}
+    selected_ids = set(request.selected_option_ids)
     excluded_prefixes = tuple(
         prefix
         for option in request.snapshot.options
-        if option.name_original not in selected_names
+        if option.option_id not in selected_ids
         for prefix in (f"{option.name_original} — ", f"{option.name_original} has no SKU-specific image")
     )
     limitations = [
@@ -158,43 +142,61 @@ def _review_limitations(request: ReviewInput, sent_source_ids: Set[str]) -> list
             limitations.append(f"Option {reference} has no SKU-specific image reference.")
         elif image.availability != "available":
             limitations.append(f"The saved image for Option {reference} is {image.availability}.")
-        elif image.source_id not in sent_source_ids:
+        elif image.source_id not in attached_image_ids:
             limitations.append(f"The saved image for Option {reference} was not attached for review.")
-    return [*limitations, DETAIL_IMAGE_LIMITATION]
+    if attached_image_ids:
+        limitations.append(THUMBNAIL_LIMITATION)
+    return list(dict.fromkeys([*limitations, DETAIL_IMAGE_LIMITATION]))
+
+
+def _relevant_text_sources(request: ReviewInput) -> list[Source]:
+    selected = set(request.selected_option_ids)
+    return [
+        source for source in request.snapshot.sources
+        if source.kind != "listing_image" and (not source.option_ids or selected.intersection(source.option_ids))
+    ]
+
+
+def _available_mapped_image_ids(request: ReviewInput) -> tuple[str, ...]:
+    available = {
+        source.source_id for source in request.snapshot.sources
+        if source.kind == "listing_image" and source.availability == "available"
+    }
+    return tuple(dict.fromkeys(
+        option.image_source_id for option in _selected_options(request) if option.image_source_id in available
+    ))
+
+
+def review_sent_evidence(request: ReviewInput, images: Mapping[str, tuple[str, bytes]]) -> SentReviewEvidence:
+    """Return the citable source IDs selected by the report request builder."""
+    return SentReviewEvidence(
+        text_ids=tuple(
+            source.source_id for source in _relevant_text_sources(request) if source.availability == "available"
+        ),
+        attached_image_ids=tuple(
+            image_id for image_id in _available_mapped_image_ids(request)
+            if image_id in images and images[image_id][0] in IMAGE_MIME.values() and images[image_id][1]
+        ),
+    )
+
+
+def _is_shared_source(source: Source) -> bool:
+    return source.kind == "official_guidance" or source.label == "Shared selector value" or len(source.option_ids) != 1
 
 
 @dataclass(frozen=True)
 class ReviewEvidence:
     payload: ResponseInputParam
-    text_ids: tuple[str, ...]
-    attached_image_ids: tuple[str, ...]
+    sent_evidence: SentReviewEvidence
     metadata_only_image_ids: tuple[str, ...]
 
 
-def _prepare_evidence(
-    request: ReviewInput, images: Mapping[str, tuple[str, bytes]],
-) -> ReviewEvidence:
-    selected_options = _selected_options(request)
+def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, bytes]]) -> ReviewEvidence:
     selected = set(request.selected_option_ids)
     image_inventory = [source for source in request.snapshot.sources if source.kind == "listing_image"]
-    available_images = {source.source_id for source in image_inventory if source.availability == "available"}
-    included_images: dict[tuple[str, bytes], list[str]] = {}
-    attached_image_ids: list[str] = []
-    for option in selected_options:
-        image_id = option.image_source_id
-        if image_id is None or image_id not in available_images or image_id in attached_image_ids:
-            continue
-        image = images.get(image_id)
-        if image is not None and image[0] in IMAGE_MIME.values() and image[1]:
-            included_images.setdefault(image, []).append(image_id)
-            attached_image_ids.append(image_id)
-
-    metadata_only = [source.source_id for source in image_inventory if source.source_id not in attached_image_ids]
-    text_sources = [
-        source for source in request.snapshot.sources
-        if source.kind != "listing_image" and (not source.option_ids or selected.intersection(source.option_ids))
-    ]
-    text_ids = tuple(source.source_id for source in text_sources if source.availability == "available")
+    sent = review_sent_evidence(request, images)
+    attached_ids = set(sent.attached_image_ids)
+    metadata_only = tuple(source.source_id for source in image_inventory if source.source_id not in attached_ids)
     data = {
         "selected_options": [
             {
@@ -204,7 +206,7 @@ def _prepare_evidence(
                 "name_en": option.name_en,
                 "image_source_id": option.image_source_id,
             }
-            for reference, option in zip(OPTION_REFERENCES, selected_options)
+            for reference, option in zip(OPTION_REFERENCES, _selected_options(request))
         ],
         "buyer_context": request.buyer_context,
         "answers": [answer.model_dump() for answer in request.answers],
@@ -214,21 +216,25 @@ def _prepare_evidence(
                 "kind": source.kind,
                 "label": source.label,
                 "option_ids": [option_id for option_id in source.option_ids if option_id in selected],
+                "claim_scope": "shared" if _is_shared_source(source) else "sku",
                 "availability": source.availability,
                 "original_text": source.original_text,
                 "text_en": source.text_en,
             }
-            for source in text_sources
+            for source in _relevant_text_sources(request)
         ],
         "image_inventory": [
             source.model_dump(include={"source_id", "label", "option_ids", "availability"})
             for source in image_inventory
         ],
-        "attached_image_ids": attached_image_ids,
+        "attached_image_ids": sent.attached_image_ids,
         "metadata_only_image_ids": metadata_only,
-        "limitations": _review_limitations(request, set(attached_image_ids)),
+        "limitations": _review_limitations(request, attached_ids),
     }
     content: list[ResponseInputContentParam] = [{"type": "input_text", "text": json.dumps(data, ensure_ascii=False)}]
+    included_images: dict[tuple[str, bytes], list[str]] = {}
+    for image_id in sent.attached_image_ids:
+        included_images.setdefault(images[image_id], []).append(image_id)
     for (mime, image_bytes), source_ids in included_images.items():
         content.append({"type": "input_text", "text": f"Attached image source IDs: {', '.join(source_ids)}"})
         content.append({
@@ -237,115 +243,294 @@ def _prepare_evidence(
         })
     return ReviewEvidence(
         payload=[{"role": "user", "content": content}],
-        text_ids=text_ids,
-        attached_image_ids=tuple(attached_image_ids),
-        metadata_only_image_ids=tuple(metadata_only),
+        sent_evidence=sent,
+        metadata_only_image_ids=metadata_only,
     )
 
 
 def _unique_ids(ids: Iterable[str], field: str) -> set[str]:
-    unique = set()
-    for identifier in ids:
-        if identifier in unique:
-            raise ValueError(f"Do not repeat IDs in {field}.")
-        unique.add(identifier)
+    values = list(ids)
+    unique = set(values)
+    if len(unique) != len(values):
+        raise ValueError(f"Do not repeat IDs in {field}.")
     return unique
 
 
-def _validate_refs(ids: Iterable[str], allowed: Set[str], field: str) -> set[str]:
+def _validate_refs(ids: Iterable[str], allowed: Iterable[str], field: str) -> set[str]:
     refs = _unique_ids(ids, field)
     if not refs.issubset(allowed):
         raise ValueError(f"Use only valid IDs in {field}.")
     return refs
 
 
-def _scoped_source(sources: Mapping[str, Source], source_id: str, option_ids: Set[str]) -> Source:
-    source = sources.get(source_id)
-    if source is None or (source.option_ids and option_ids.isdisjoint(source.option_ids)):
-        raise ValueError("Use only sources whose scope matches the referenced options.")
-    return source
+def _measurement(claim: ImageMeasurementClaim) -> str:
+    value = str(int(claim.value)) if claim.value.is_integer() else str(claim.value)
+    return f"{value} {claim.unit}"
 
 
-def _normalized_prose(text: str) -> str:
-    text = re.sub(r"\bpercent\b", "%", normalize("NFKC", text).casefold())
-    return " ".join(re.findall(r"\w+|[%$€£¥฿]", text))
-
-
-def _private_note_values(text: str) -> Iterable[str]:
-    for clause in CLAUSE_BOUNDARY.split(normalize("NFKC", text)):
-        detail = PRIVATE_BUSINESS_DETAILS.search(clause)
-        note = PRIVATE_NOTE.search(clause)
-        if detail is None and note is None:
-            continue
-        yield from (_normalized_prose(figure.group()) for figure in BUSINESS_FIGURE.finditer(clause))
-        marker = note or detail
-        _, delimiter, value = clause[marker.end():].partition(":")
-        if delimiter and (normalized := _normalized_prose(value)):
-            yield normalized
-            if note is not None:
-                yield from (_normalized_prose(identifier.group()) for identifier in NOTE_IDENTIFIER.finditer(value))
-
-
-def _phone_values(text: str, *, require_contact_format: bool = False) -> Iterable[str]:
-    for match in PHONE_NUMBER.finditer(text):
-        number = match.group()
-        digits = "".join(str(decimal(character)) for character in number if character.isdecimal())
-        if not 7 <= len(digits) <= 15:
-            continue
-        if require_contact_format:
-            # A matching string is sensitive only when the buyer supplied it as a contact or in a recognizable phone format.
-            prefix = text[max(0, match.start() - 60):match.start()]
-            suffix = text[match.end():match.end() + 40]
-            if PRODUCT_NUMBER_INTRO.search(prefix) or PRODUCT_NUMBER_SUFFIX.match(suffix):
-                continue
-            group_sizes = [len(group) for group in re.findall(r"\d+", number)]
-            short_groups = len(group_sizes) >= 3 and all(2 <= size <= 4 for size in group_sizes)
-            area_and_local = (len(group_sizes) == 2 and digits.startswith("0")
-                              and 2 <= group_sizes[0] <= 5 and 5 <= group_sizes[1] <= 8)
-            grouped_phone = len(digits) >= 9 and (short_groups or area_and_local)
-            if not (number.startswith(("+", "(")) or grouped_phone or PHONE_INTRO.search(prefix)):
-                continue
-        yield digits
-
-
-def validate_supplier_privacy(request: ReviewInput, questions: Iterable[str]) -> None:
-    buyer_texts = [request.buyer_context, *(answer.answer_text for answer in request.answers if answer.answer_text)]
-    buyer_phones = {
-        phone for text in buyer_texts for phone in _phone_values(normalize("NFKC", text), require_contact_format=True)
-    }
-    private_values = {value for text in buyer_texts for value in _private_note_values(text)}
-    buyer_context = _normalized_prose(request.buyer_context)
-    if len(buyer_context) >= 30:
-        private_values.add(buyer_context)
-
-    for question in questions:
-        text = normalize("NFKC", question).casefold()
-        normalized = f" {_normalized_prose(text)} "
+def _render_claim(
+    claim: SourcedClaim, source: Source, option_by_id: Mapping[str, Option], sent: SentReviewEvidence,
+) -> DisplayClaim:
+    if not isinstance(claim, TextClaim):
+        (option_id,) = claim.option_ids
+        option = option_by_id.get(option_id)
         if (
-            PRIVATE_BUSINESS_DETAILS.search(text) or PRIVATE_NOTE.search(text)
-            or EMAIL_ADDRESS.search(text)
-            or buyer_phones.intersection(_phone_values(text))
-            or any(f" {value} " in normalized for value in private_values)
+            source.kind != "listing_image" or source.source_id not in sent.attached_image_ids
+            or option is None or option.image_source_id != source.source_id or source.option_ids != [option_id]
         ):
-            raise ValueError("Supplier questions must omit private business details, buyer contact details, and verbatim buyer context.")
+            raise ValueError("An image claim needs the attached thumbnail mapped exclusively to its selected SKU.")
+        if isinstance(claim, ImageMeasurementClaim):
+            if claim.value <= 0 and UNIT_TOPICS[claim.unit] != "temperature_use":
+                raise ValueError("A thumbnail label for capacity, dimensions, or weight must be positive.")
+            return DisplayImageMeasurementClaim(**claim.model_dump(), display_text=f"Thumbnail label: {_measurement(claim)}")
+        return DisplayImageDetailClaim(**claim.model_dump(), display_text=f"Thumbnail detail: {VISIBLE_DETAILS[claim.detail][1]}.")
+
+    if (
+        source.kind == "listing_image" or source.source_id not in sent.text_ids
+        or source.original_text is None or claim.quote not in source.original_text
+    ):
+        raise ValueError("A text claim needs an exact quote from an available text source sent for review.")
+    expected_scope = [] if _is_shared_source(source) else source.option_ids
+    if claim.option_ids != expected_scope or not set(claim.option_ids).issubset(option_by_id):
+        raise ValueError("A text claim must use the owning SKU or an empty scope for shared text.")
+
+    if source.kind == "official_guidance":
+        label = "Official guidance"
+    elif source.label == "Shared selector value":
+        label = "Shared selector"
+    elif _is_shared_source(source):
+        label = "Shared listing text"
+    elif source.label in SKU_NAME_SOURCE_LABELS:
+        label = "SKU wording"
+    else:
+        label = "SKU listing text"
+    if claim.quote != source.original_text:
+        return DisplayTextClaim(**claim.model_dump(), display_text=f"{label} excerpt: “{claim.quote}”")
+    wording = source.original_text
+    if source.text_en is not None:
+        label = f"{label} (source translation)"
+        wording = source.text_en
+    return DisplayTextClaim(**claim.model_dump(), display_text=f"{label}: {wording}")
 
 
-def build_supplier_draft(request: ReviewInput, content: ReviewContent) -> str:
-    validate_supplier_privacy(request, (
-        finding.supplier_question for finding in content.findings if finding.supplier_question is not None
-    ))
-    questions = []
-    for finding in content.findings:
-        if finding.supplier_question is None:
-            if finding.action_type in {"ask_supplier", "request_evidence"}:
-                raise ValueError("An ask_supplier or request_evidence finding must include a supplier_question.")
+def _check_claim_topic(claim: SourcedClaim, topic: str) -> None:
+    if isinstance(claim, ImageMeasurementClaim) and UNIT_TOPICS[claim.unit] != topic:
+        raise ValueError("Use a thumbnail measurement with its matching topic.")
+    if isinstance(claim, ImageDetailClaim) and VISIBLE_DETAILS[claim.detail][0] != topic:
+        raise ValueError("Use a thumbnail detail with its matching topic.")
+
+
+@dataclass(frozen=True)
+class _Reading:
+    claim: SourcedClaim
+    value: Decimal
+    unit: str
+    label: str
+
+    def normalized(self) -> tuple[str, Decimal]:
+        if self.unit == "°C":
+            return "temperature", self.value * 9
+        if self.unit == "°F":
+            return "temperature", (self.value - 32) * 5
+        unit, factor = UNIT_FACTORS[self.unit]
+        return unit, self.value * Decimal(factor)
+
+    def display(self) -> str:
+        return f"{self.label} {self.value.normalize():f} {self.unit}"
+
+
+def _reading(claim: SourcedClaim, source: Source) -> _Reading | None:
+    if isinstance(claim, ImageMeasurementClaim):
+        return _Reading(claim, Decimal(str(claim.value)), claim.unit, "thumbnail label")
+    if not isinstance(claim, TextClaim) or source.kind != "listing_text" or source.label in SKU_NAME_SOURCE_LABELS:
+        return None
+    # A full standalone specification can be compared. A selected substring of arbitrary text
+    # cannot turn a part number, negated statement, or other context into a measurement.
+    if claim.quote != source.original_text:
+        return None
+    match = TEXT_READING.fullmatch(normalize("NFKC", claim.quote).strip())
+    if match is None:
+        return None
+    unit = UNIT_ALIASES["".join(match["unit"].casefold().split())]
+    if match["field"] is not None:
+        topic = MEASUREMENT_FIELDS.get(match["field"].strip().casefold())
+        if topic != UNIT_TOPICS[unit]:
+            return None
+    elif source.label != "Shared selector value":
+        return None
+    value = Decimal(match["value"])
+    if (value <= 0 and UNIT_TOPICS[unit] != "temperature_use") or abs(value) > 1_000_000:
+        return None
+    if source.label == "Shared selector value":
+        label = "shared selector"
+    else:
+        label = "saved SKU specification" if claim.option_ids else "shared saved specification"
+    return _Reading(claim, value, unit, label)
+
+
+def _conflicting_readings(
+    finding: FindingSelection, claims: list[DisplayClaim], sources: Mapping[str, Source], aliases: Mapping[str, str],
+) -> list[str]:
+    readings = [
+        reading for claim in claims
+        if (reading := _reading(claim, sources[claim.source_id])) is not None and UNIT_TOPICS[reading.unit] == finding.topic
+    ]
+    differences = []
+    for option_id, alias in aliases.items():
+        if option_id not in finding.option_ids:
             continue
-        question = " ".join(finding.supplier_question.split())
+        local = [reading for reading in readings if not reading.claim.option_ids or option_id in reading.claim.option_ids]
+        for first, second in combinations(local, 2):
+            if first.claim.source_id == second.claim.source_id or not (first.claim.option_ids or second.claim.option_ids):
+                continue
+            first_unit, first_value = first.normalized()
+            second_unit, second_value = second.normalized()
+            if first_unit == second_unit and first_value != second_value:
+                differences.append(f"Option {alias}: {first.display()} and {second.display()}.")
+                break
+        else:
+            raise ValueError("A listing conflict requires comparable, different readings from separate sources for each affected SKU.")
+    return differences
+
+
+def _scoped_sources(source_ids: Iterable[str], sources: Mapping[str, Source], scope: set[str]) -> list[Source]:
+    _validate_refs(source_ids, sources, "unknown sources")
+    scoped = [sources[source_id] for source_id in source_ids]
+    if any(source.option_ids and scope.isdisjoint(source.option_ids) for source in scoped):
+        raise ValueError("Unknown sources must belong to an option covered by the finding.")
+    return scoped
+
+
+def _render_unknown(
+    selection: UnknownSelection, finding: FindingSelection, sources: Mapping[str, Source], sent: set[str]
+) -> Unknown:
+    scoped = _scoped_sources(selection.source_ids, sources, set(finding.option_ids))
+    # A source-specific unknown can cover only part of the finding. Source links retain that narrower scope.
+    topic = TOPICS[finding.topic][0].lower()
+    if selection.reason == "not_found":
+        if not set(selection.source_ids).issubset(sent):
+            raise ValueError("Use not_found only for sources whose content was sent for review.")
+        text = f"The reviewed material did not establish the answer for {topic}."
+    elif selection.reason == "not_reviewed":
+        if not scoped or any(source.availability != "available" or source.source_id in sent for source in scoped):
+            raise ValueError("Use not_reviewed only for available sources whose content was not sent.")
+        text = f"The referenced source was not included when reviewing {topic}."
+    else:
+        if not scoped or any(
+            source.availability == "available" and (source.kind != "listing_image" or source.source_id not in sent)
+            for source in scoped
+        ):
+            raise ValueError("Use unreadable for missing or unreadable sources, or for an attached image that is illegible.")
+        if all(source.availability == "missing" for source in scoped):
+            text = f"The referenced source is missing, so {topic} could not be checked there."
+        else:
+            text = f"The referenced evidence for {topic} could not be read."
+    return Unknown(**selection.model_dump(), text=text)
+
+
+def _render_next_step(finding: FindingSelection, differences: list[str]) -> tuple[str | None, str, str]:
+    action = finding.supplier_action
+    _, spec = TOPICS[finding.topic]
+    seller_limit = "A written answer identifies the seller's stated specification. Verification requires evidence for the exact item."
+    if action is None:
+        return None, "Choose what matters for this purchase before asking the supplier.", "This decision describes the buying criteria."
+    if action == "reconcile_sources":
+        question = (
+            f"Do these saved readings describe the same specification? {' '.join(differences)} "
+            f"Please confirm {spec} for each named option and send evidence identifying that option."
+        )
+        return question, "Ask for the delivered specification, the explanation for different readings, and SKU-specific evidence.", seller_limit
+    if action == "request_documentation":
+        return (
+            f"Could you confirm {spec} for each named option and send the applicable specification or test documents "
+            "showing the exact model and materials?",
+            "Ask for the specification or test documents identifying the model, material, and conditions covered.",
+            "A document applies only to the identified sample, materials, and test conditions.",
+        )
+    if action == "confirm_ready_made":
+        return (
+            f"Please confirm {spec} for these exact options. Please answer for ready-made stock.",
+            "Ask the supplier for the specification of each ready-made option.",
+            seller_limit,
+        )
+    if action == "confirm_custom_order":
+        return (
+            f"Please confirm {spec} for these exact options. If a different specification requires a custom order, "
+            "please describe what is available and give the lead time and minimum order quantity.",
+            "Ask which specification is available from stock and which would require a custom order.",
+            "Custom-order availability does not establish the specification of a ready-made SKU.",
+        )
+    if action == "request_sample":
+        return (
+            f"Could you send a sample of each named option and confirm {spec}?",
+            "Ask for a sample labelled with the exact option name and its specification.",
+            "A sample shows the inspected piece. Delivered batches may differ.",
+        )
+    if action == "request_close_up":
+        return (
+            f"Could you send a close-up photo of each named option and confirm {spec}?",
+            "Ask for a close-up with the exact option name and readable markings.",
+            "A photo can show visible details. It cannot establish material, use limits, or how a finish was made.",
+        )
+    return (
+        f"Please confirm {spec} for each named option and identify it by its exact listing name.",
+        "Ask for a written specification identifying the exact listing option.",
+        seller_limit,
+    )
+
+
+def _render_finding(
+    finding: FindingSelection, claims: list[DisplayClaim], unknowns: list[Unknown], differences: list[str],
+) -> Finding:
+    label, _ = TOPICS[finding.topic]
+    title = {
+        "decide_preference": f"Decide what you need for {label.lower()}",
+        "ask_supplier": f"Confirm {label.lower()} with the supplier",
+        "request_evidence": f"Request evidence for {label.lower()}",
+    }[finding.action_type]
+    interpretations = {
+        "listing_conflict": "Compare the cited seller readings and verify the delivered specification and measurement method.",
+        "requirement_unconfirmed": "The cited evidence leaves the linked buyer requirement to confirm for these exact options.",
+        "clarification_needed": "Confirm the specification with the supplier for the named options.",
+        "evidence_gap": "Ask for evidence that identifies the exact options and the specification under review.",
+    }
+    question, requested_evidence, limits = _render_next_step(finding, differences)
+    return Finding(
+        **finding.model_dump(include={"finding_id", "option_ids", "kind", "action_type", "requirement_ids", "claim_ids"}),
+        title=title,
+        citations=[
+            Citation(
+                source_id=claim.source_id,
+                quote=claim.quote if isinstance(claim, TextClaim) else None,
+                image_observation=None if isinstance(claim, TextClaim) else claim.display_text,
+            )
+            for claim in claims
+        ],
+        interpretation=interpretations[finding.kind],
+        impact=(
+            f"Confirm {label.lower()} against the linked buyer requirement before choosing an option."
+            if finding.requirement_ids else f"Knowing {label.lower()} helps compare what you would receive."
+        ),
+        priority_reason=(
+            "This check may affect whether an option meets a stated buyer requirement."
+            if finding.requirement_ids else "Checking this before ordering can resolve an open detail about the exact item."
+        ),
+        unknowns=unknowns,
+        requested_evidence=requested_evidence,
+        evidence_limits=limits,
+        supplier_question=question,
+    )
+
+
+def _supplier_draft(request: ReviewInput, findings: list[Finding]) -> str:
+    questions = []
+    for finding in findings:
+        if finding.supplier_question is None:
+            continue
         letters = [letter for option_id, letter in zip(request.selected_option_ids, OPTION_REFERENCES)
                    if option_id in finding.option_ids]
         scope = "Option" if len(letters) == 1 else "Options"
-        questions.append(f"[{scope} {', '.join(letters)}] {question}")
-
+        questions.append(f"[{scope} {', '.join(letters)}] {finding.supplier_question}")
     if not questions:
         return ""
     options = [
@@ -362,285 +547,119 @@ def build_supplier_draft(request: ReviewInput, content: ReviewContent) -> str:
     ])
 
 
-def _validate_option_language(text: str | None, allowed: set[str]) -> None:
-    if text is not None and any(
-        not aliases.issubset(allowed) for aliases, _, _, _ in _named_option_references(normalize("NFKC", text))
-    ):
-        raise ValueError("Name only the option letters covered by the referenced finding, source, or comparison.")
-
-
-def _finding_prose(finding: Finding) -> Iterable[str]:
-    yield from (
-        finding.title, finding.interpretation, finding.impact, finding.priority_reason,
-        finding.requested_evidence, finding.evidence_limits,
-    )
-    if finding.supplier_question is not None:
-        yield finding.supplier_question
-    yield from (unknown.text for unknown in finding.unknowns)
-
-
-def _original_term(match: re.Match[str] | None) -> str:
-    term = match["term"] if match is not None else ""
-    return term if HAN_CHARACTER.search(term) or any(char.isdecimal() for char in term) else ""
-
-
-@dataclass
-class _NamePredicate:
-    # Each alternative is a conjunction of (term, absent) operands.
-    alternatives: list[list[tuple[str, bool]]]
-    negated: bool
-    joins_with_or: bool = False
-
-
-def _name_predicates(tail: str, predicate: re.Match[str]) -> Iterable[_NamePredicate]:
-    """Read the coordinated objects of a name predicate until the prose changes subject."""
-    current = _NamePredicate([[]], bool(NAME_NEGATION.search(tail[:predicate.start()])))
-    parts = NAME_COORDINATION.split(NAME_ANNOTATION.sub(" ", tail[predicate.end():]))
-    for separator, phrase in zip(["", *parts[1::2]], parts[::2]):
-        continuation = NAME_COORDINATED_PREDICATE.match(phrase) if separator else None
-        if continuation is not None:
-            phrase = phrase[continuation.end():]
-        operand = NAME_TERM_AFTER.match(phrase)
-        if operand is None:
-            break
-        remainder = phrase[operand.end():]
-        if operand["term"].isdecimal():
-            # In “750 ml appears on the thumbnail”, the unit belongs to the new subject.
-            remainder = MEASUREMENT_UNIT.sub("", remainder, count=1)
-        if separator and continuation is None and (
-            NAME_COORDINATED_PREDICATE.match(remainder) or NAME_SUBJECT_PREDICATE.match(remainder)
-        ):
-            # This term is the subject of a new predicate. Its own option is checked separately.
-            break
-        modifier = (operand["modifier"] or "").casefold()
-        alternative = separator.casefold().endswith("or")
-        if continuation is not None or modifier == "rather":
-            yield current
-            negated = bool(continuation and NAME_NEGATION.search(continuation[0]))
-            current = _NamePredicate([[]], negated, joins_with_or=alternative)
-        elif alternative:
-            current.alternatives.append([])
-        if modifier in {"no", "neither"}:
-            current.negated = True
-        absent = modifier == "not" or (not current.negated and separator.casefold().endswith("nor"))
-        current.alternatives[-1].append((_original_term(operand), absent))
-    if any(current.alternatives):
-        yield current
-
-
-def _name_condition_matches(predicates: list[_NamePredicate], name: str, excerpts: list[str] | None = None) -> bool:
-    def supports(term: str, absent: bool) -> bool:
-        # A neutral operand cannot prove that a peer meets the whole condition.
-        if not term:
-            return excerpts is not None
-        if absent:
-            return term not in name
-        return term in name if excerpts is None else any(term in quote for quote in excerpts)
-
-    conjunction = True
-    for predicate in predicates:
-        if predicate.joins_with_or:
-            if conjunction:
-                return True
-            conjunction = True
-        if predicate.negated:
-            matches = all(any(supports(term, not absent) for term, absent in group) for group in predicate.alternatives)
-        else:
-            matches = any(all(supports(term, absent) for term, absent in group) for group in predicate.alternatives)
-        conjunction = conjunction and matches
-    return conjunction
-
-
-def _name_comparison_options(before: str, selected: Set[str]) -> Set[str]:
-    intro, comma, _ = before.rpartition(",")
-    if not comma or not NAME_COMPARISON_SCOPE.match(intro):
-        return selected
-    included, *excluded = NAME_SCOPE_EXCEPTION.split(intro, maxsplit=1)
-    named = set().union(*(aliases for aliases, *_ in _named_option_references(included)))
-    exceptions = set().union(*(aliases for clause in excluded for aliases, *_ in _named_option_references(clause)))
-    return (named or selected) - exceptions
-
-
-def _validate_name_claims(
-    text: str, wording_by_alias: Mapping[str, list[str]], full_name_by_alias: Mapping[str, str], owner: str | None,
-) -> None:
-    text = normalize("NFKC", text)
-    if owner:
-        # A comparison cell or a single-option finding supplies the owner of “the SKU name”.
-        text = IMPLICIT_OPTION_NAME.sub(f"Option {owner}'s name", text)
-    for references, before, after, _ in _named_option_references(text, boundary=SENTENCE_BOUNDARY):
-        # Each alias in a sentence has its own words and evidence.
-        next_reference = NAMED_OPTIONS.search(after)
-        tail = after[:next_reference.start()] if next_reference is not None else after
-        only_before = NAME_ONLY_BEFORE.search(before)
-        prefix = before[:only_before.start()] if only_before else before
-        owner_only = only_before is not None and only_before["negated"] is None
-        if NAME_INQUIRY.search(before) or not (OPTION_NAME_BEFORE.search(prefix) or OPTION_NAME_AFTER.match(tail)):
-            continue
-        only_after = NAME_ONLY_AFTER.match(tail)
-        predicate = NAME_PREDICATE.search(tail, only_after.end() if only_after else 0)
-        term = _original_term(NAME_TERM_BEFORE.search(prefix))
-        terms = [(term, False)] if term else []
-        exclusive_terms: list[tuple[str, bool]] = []
-        term_in_name = NAME_TERM_IN_NAME.search(prefix)
-        if term_in_name is not None and (subject := _original_term(term_in_name)):
-            qualifier = " ".join((term_in_name["qualifier"] or "").casefold().split())
-            exclusive = bool(owner_only or term_in_name["before_predicate"] or qualifier in {"only", "exclusively"})
-            negated = bool(NAME_NEGATION.search(term_in_name["predicate"]))
-            absent = negated or qualifier in {"not", "never"}
-            # Negating "appears only in" negates exclusivity, not membership.
-            if not (exclusive and negated):
-                terms.append((subject, absent))
-                if exclusive:
-                    exclusive_terms.append((subject, absent))
-        if predicate is None and not terms:
-            continue
-        predicates = list(_name_predicates(tail, predicate)) if predicate is not None else []
-        objects = [
-            (term, clause.negated or absent)
-            for clause in predicates for group in clause.alternatives for term, absent in group
-            if term
-        ]
-        exclusive_objects = bool(owner_only or only_after) and bool(objects)
-        operand_count = sum(len(group) for clause in predicates for group in clause.alternatives)
-        compound_exclusive = exclusive_objects and operand_count > 1
-        if not compound_exclusive:
-            terms.extend(objects)
-            if exclusive_objects:
-                exclusive_terms.extend(objects)
-
-        # A visibility limitation does not quote the SKU name. A separate claim
-        # about its actual wording still needs the corresponding name evidence.
-        if not terms and not compound_exclusive and NAME_VISIBILITY.search(tail):
-            continue
-        for alias in references:
-            wording = wording_by_alias.get(alias)
-            if not wording:
-                raise ValueError("Each named option claim about wording needs its own cited SKU name.")
-            for original_term, absent in terms:
-                if absent:
-                    if original_term in full_name_by_alias[alias]:
-                        raise ValueError("Do not claim an original term is absent when it occurs in that option's full SKU name.")
-                elif not any(original_term in excerpt for excerpt in wording):
-                    raise ValueError("Match every asserted original term to the cited SKU name for that option.")
-            if compound_exclusive and not _name_condition_matches(predicates, full_name_by_alias[alias], wording):
-                raise ValueError("Match the original terms in the claimed condition to the cited SKU name for that option.")
-
-        if exclusive_terms or compound_exclusive:
-            comparison = _name_comparison_options(before, full_name_by_alias.keys())
-            peers = (comparison & full_name_by_alias.keys()) - references
-            if any(
-                (original_term in full_name_by_alias[other]) != absent
-                for original_term, absent in exclusive_terms
-                for other in peers
-            ) or (
-                compound_exclusive and any(_name_condition_matches(predicates, full_name_by_alias[other]) for other in peers)
-            ):
-                raise ValueError("The exclusive SKU name claim contradicts another option's full name in the comparison.")
-
-
-def validate_report_attribution(request: ReviewInput, content: ReviewContent) -> None:
-    """Bind identifiable SKU-name claims to each option's own report evidence."""
-    names = request.snapshot.option_name_sources()
-    aliases = dict(zip(request.selected_option_ids, OPTION_REFERENCES))
-    full_names = {alias: normalize("NFKC", names[option_id].original_text or "") for option_id, alias in aliases.items()}
-    alias_by_name_id = {names[option_id].source_id: alias for option_id, alias in aliases.items()}
-    for comparison in content.comparisons:
-        name_column = IMPLICIT_OPTION_NAME.fullmatch(comparison.label.strip())
-        for value in comparison.values:
-            source = names.get(value.option_id)
-            alias = aliases.get(value.option_id)
-            wording = {}
-            if alias and source and source.original_text and source.source_id in value.source_ids:
-                wording[alias] = [full_names[alias]]
-            summary = value.summary.strip()
-            if name_column and not summary.endswith("?"):
-                # The column supplies the subject for “Includes …” and standalone original names.
-                if NAME_COORDINATED_PREDICATE.match(summary):
-                    summary = f"The SKU name {summary}"
-                elif HAN_CHARACTER.search(summary) and re.fullmatch(r"[\w-]+", summary):
-                    summary = f"The SKU name includes {summary}"
-            _validate_name_claims(summary, wording, full_names, alias)
-
-    for finding in content.findings:
-        quotes: dict[str, list[str]] = {}
-        for citation in finding.citations:
-            alias = alias_by_name_id.get(citation.source_id)
-            if alias is not None and citation.quote is not None:
-                quotes.setdefault(alias, []).append(normalize("NFKC", citation.quote))
-        owner = aliases.get(finding.option_ids[0]) if len(finding.option_ids) == 1 else None
-        for text in _finding_prose(finding):
-            _validate_name_claims(text, quotes, full_names, owner)
-
-
 def assemble_review(
-    request: ReviewInput, content: ReviewContent, *, sent_source_ids: Set[str],
+    request: ReviewInput, content: ReviewContent, *, sent_evidence: SentReviewEvidence,
 ) -> PurchaseReview:
-    """Validate report references against the input and the sources actually supplied."""
+    """Validate structured selections against the case, then render the public report."""
+    if sent_evidence.text_ids != tuple(
+        source.source_id for source in _relevant_text_sources(request) if source.availability == "available"
+    ):
+        raise ValueError("Sent text evidence must match the available text for the selected case.")
+    _validate_refs(sent_evidence.attached_image_ids, _available_mapped_image_ids(request), "attached thumbnails")
     sources = {source.source_id: source for source in request.snapshot.sources}
-    selected = set(request.selected_option_ids)
+    option_by_id = {option.option_id: option for option in _selected_options(request)}
+    selected = set(option_by_id)
     aliases = dict(zip(request.selected_option_ids, OPTION_REFERENCES))
-    available_sources = {
-        source_id for source_id in sent_source_ids
-        if source_id in sources and sources[source_id].availability == "available"
-    }
+    sent = set(sent_evidence.text_ids) | set(sent_evidence.attached_image_ids)
+
+    _unique_ids((claim.claim_id for claim in content.claims), "claims")
+    claims = {}
+    for claim in content.claims:
+        if claim.source_id not in sent:
+            raise ValueError("Claims must cite an available source actually sent for review.")
+        claims[claim.claim_id] = _render_claim(claim, sources[claim.source_id], option_by_id, sent_evidence)
+
     inputs = {"context": request.buyer_context, **{
         f"answer:{answer.question_id}": answer.answer_text for answer in request.answers
     }}
-    requirement_ids = _unique_ids((row.requirement_id for row in content.buyer_requirements), "buyer requirements")
-    for requirement in content.buyer_requirements:
-        quote_source = inputs.get(requirement.input_ref)
-        if not quote_source or requirement.quote not in quote_source:
+    _unique_ids((row.requirement_id for row in content.buyer_requirements), "buyer requirements")
+    requirement_by_id = {row.requirement_id: row for row in content.buyer_requirements}
+    requirements = []
+    for row in content.buyer_requirements:
+        quote_source = inputs.get(row.input_ref)
+        if not quote_source or row.quote not in quote_source:
             raise ValueError("Each requirement needs a verbatim quote from its non-null buyer input reference.")
+        requirements.append(BuyerRequirement(
+            **row.model_dump(exclude={"topic"}), text=row.quote,
+        ))
 
+    comparisons = []
+    _unique_ids((comparison.topic for comparison in content.comparisons), "comparison topics")
     for comparison in content.comparisons:
         compared = _validate_refs((value.option_id for value in comparison.values), selected, "comparison values")
         if compared != selected:
             raise ValueError("Each comparison must contain every selected option once.")
-        for value in comparison.values:
-            _validate_option_language(value.summary, {aliases[value.option_id]})
-            for source_id in _validate_refs(value.source_ids, available_sources, "comparison sources"):
-                _scoped_source(sources, source_id, {value.option_id})
+        _validate_refs(comparison.shared_claim_ids, claims, "shared comparison claims")
+        for claim_id in comparison.shared_claim_ids:
+            claim = claims[claim_id]
+            scope = sources[claim.source_id].option_ids
+            if claim.option_ids or (scope and not selected.issubset(scope)):
+                raise ValueError("A shared comparison claim must cover the entire comparison without claiming a SKU.")
+        values_by_id = {value.option_id: value for value in comparison.values}
+        values = []
+        for option_id in request.selected_option_ids:
+            value = values_by_id[option_id]
+            _validate_refs(value.claim_ids, claims, "comparison claims")
+            references = [claims[claim_id] for claim_id in value.claim_ids]
+            for claim in references:
+                if claim.option_ids != [option_id]:
+                    raise ValueError("A comparison cell can cite only claims owned by its exact SKU.")
+                _check_claim_topic(claim, comparison.topic)
+            values.append(ComparisonValue(
+                **value.model_dump(),
+                summary="\n".join(claim.display_text for claim in references) or "No SKU-specific evidence cited for this topic.",
+                source_ids=list(dict.fromkeys(claim.source_id for claim in references)),
+            ))
+        comparisons.append(Comparison(
+            label=TOPICS[comparison.topic][0], values=values, shared_claim_ids=comparison.shared_claim_ids,
+        ))
 
     finding_ids = _unique_ids((finding.finding_id for finding in content.findings), "findings")
+    finding_by_id = {finding.finding_id: finding for finding in content.findings}
+    findings = []
     for finding in content.findings:
         scope = _validate_refs(finding.option_ids, selected, "finding options")
-        finding_aliases = {aliases[option_id] for option_id in scope}
-        for explanation in _finding_prose(finding):
-            _validate_option_language(explanation, finding_aliases)
-        _validate_refs(finding.requirement_ids, requirement_ids, "finding requirements")
-        for citation in finding.citations:
-            source = _scoped_source(sources, citation.source_id, scope)
-            if citation.source_id not in available_sources:
-                raise ValueError("Citations require available sources sent in the report request.")
-            if source.kind == "listing_image":
-                if citation.quote is not None or citation.image_observation is None:
-                    raise ValueError("Use only an image observation for an image citation.")
-                image_scope = scope.intersection(source.option_ids) if source.option_ids else scope
-                _validate_option_language(citation.image_observation, {aliases[option_id] for option_id in image_scope})
-            elif (
-                citation.quote is None or citation.image_observation is not None
-                or source.original_text is None or citation.quote not in source.original_text
-            ):
-                raise ValueError("For a text citation use an exact quote from original_text and no image observation.")
-        for unknown in finding.unknowns:
-            for source_id in _unique_ids(unknown.source_ids, "unknown sources"):
-                source = _scoped_source(sources, source_id, scope)
-                if unknown.reason == "not_found" and source_id not in available_sources:
-                    raise ValueError("Use not_found only for sources whose content was available and sent.")
-                if unknown.reason == "not_reviewed" and source.availability != "available":
-                    raise ValueError("For missing or unreadable sources, describe why they could not be read.")
-                if unknown.reason == "unreadable" and source.availability == "available" and (
-                    source.kind != "listing_image" or source_id not in available_sources
-                ):
-                    raise ValueError("An available source can be unreadable only when an attached image is illegible.")
-    validate_report_attribution(request, content)
+        linked_requirements = _validate_refs(finding.requirement_ids, requirement_by_id, "finding requirements")
+        _validate_refs(finding.claim_ids, claims, "finding claims")
+        references = [claims[claim_id] for claim_id in finding.claim_ids]
+        for claim in references:
+            if claim.option_ids and not scope.issuperset(claim.option_ids):
+                raise ValueError("A finding must cover the SKU that owns each SKU-specific claim.")
+            if not claim.option_ids and (shared_scope := sources[claim.source_id].option_ids) and not scope.issubset(shared_scope):
+                raise ValueError("A finding using scoped shared text must cover only options associated with that text.")
+            _check_claim_topic(claim, finding.topic)
+        if finding.kind == "requirement_unconfirmed" and not linked_requirements:
+            raise ValueError("A requirement_unconfirmed finding must link to an actual buyer requirement.")
+        if (finding.kind == "listing_conflict") != (finding.supplier_action == "reconcile_sources"):
+            raise ValueError("Use reconcile_sources for a supported listing conflict.")
+        if (finding.action_type == "decide_preference") != (finding.supplier_action is None):
+            raise ValueError("Every supplier-facing finding must select a supplier action. Use null only for buyer decisions.")
+        if finding.supplier_action in {"confirm_ready_made", "confirm_custom_order"} and not any(
+            requirement_by_id[requirement_id].topic == "customization" for requirement_id in linked_requirements
+        ):
+            raise ValueError("A stock or customization question must link a buyer requirement about order type.")
+
+        unknowns = [_render_unknown(unknown, finding, sources, sent) for unknown in finding.unknowns]
+        differences = _conflicting_readings(finding, references, sources, aliases) if finding.kind == "listing_conflict" else []
+        findings.append(_render_finding(finding, references, unknowns, differences))
 
     _unique_ids((row.preference_id for row in content.open_preferences), "open preferences")
     preference_findings = set()
+    preferences = []
     for preference in content.open_preferences:
-        _validate_refs(preference.input_refs, inputs.keys(), "preference input references")
-        preference_findings.update(_validate_refs(preference.finding_ids, finding_ids, "preference findings"))
+        _validate_refs(preference.input_refs, inputs, "preference input references")
+        linked_findings = _validate_refs(preference.finding_ids, finding_ids, "preference findings")
+        if any(
+            finding_by_id[finding_id].action_type == "decide_preference"
+            and finding_by_id[finding_id].topic != preference.topic
+            for finding_id in linked_findings
+        ):
+            raise ValueError("A buyer decision must link to an open preference about the same topic.")
+        preference_findings.update(linked_findings)
+        preferences.append(OpenPreference(
+            **preference.model_dump(exclude={"topic"}),
+            text=f"Your preference for {TOPICS[preference.topic][0].lower()} is still open.",
+        ))
     if any(finding.action_type == "decide_preference" and finding.finding_id not in preference_findings
            for finding in content.findings):
         raise ValueError("Link every decide_preference finding to an open preference.")
@@ -650,21 +669,20 @@ def assemble_review(
     for row in content.coverage:
         _validate_refs(row.finding_ids, finding_ids, "coverage findings")
 
-    option_order = {option_id: index for index, option_id in enumerate(request.selected_option_ids)}
-    comparisons = [
-        comparison.model_copy(update={"values": sorted(comparison.values, key=lambda value: option_order[value.option_id])})
-        for comparison in content.comparisons
-    ]
-    limitations = list(dict.fromkeys([*content.limitations, *_review_limitations(request, sent_source_ids)]))
     return PurchaseReview(
-        **content.model_dump(exclude={"comparisons", "limitations"}),
+        contract_version=content.contract_version,
+        claims=list(claims.values()),
+        buyer_requirements=requirements,
+        open_preferences=preferences,
+        comparisons=comparisons,
+        findings=findings,
+        coverage=[Coverage(**row.model_dump(), note=COVERAGE_NOTES[row.status]) for row in content.coverage],
+        limitations=_review_limitations(request, set(sent_evidence.attached_image_ids)),
         case_id=request.case_id,
         revision=request.revision,
         snapshot_id=request.snapshot.snapshot_id,
         selected_option_ids=request.selected_option_ids,
-        comparisons=comparisons,
-        limitations=limitations,
-        supplier_draft=build_supplier_draft(request, content),
+        supplier_draft=_supplier_draft(request, findings),
     )
 
 
@@ -683,19 +701,23 @@ async def generate_review(
         )
 
     evidence = _prepare_evidence(request, images)
+    sent = evidence.sent_evidence
     LOGGER.info(
         "Review prompt %s text sources=%s attached images=%s metadata-only images=%s",
-        REVIEW_PROMPT_VERSION, evidence.text_ids, evidence.attached_image_ids, evidence.metadata_only_image_ids,
+        REVIEW_PROMPT_VERSION, sent.text_ids, sent.attached_image_ids, evidence.metadata_only_image_ids,
     )
-    sent_ids = set(evidence.text_ids).union(evidence.attached_image_ids)
+
+    def validate(content: ReviewContent) -> ReviewReady:
+        return ReviewReady(content=content, sent_evidence=sent, report=assemble_review(request, content, sent_evidence=sent))
+
     try:
-        report = await _request_structured(
+        return await _request_structured(
             client=client,
             payload=evidence.payload,
             prompt=REVIEW_PROMPT,
-            schema_name="purchase_review",
+            schema_name="purchase_review_v2",
             schema=ReviewContent,
-            validate=lambda content: assemble_review(request, content, sent_source_ids=sent_ids),
+            validate=validate,
             deadline_seconds=REVIEW_DEADLINE_SECONDS,
             max_output_tokens=REVIEW_MAX_OUTPUT_TOKENS,
         )
@@ -704,4 +726,3 @@ async def generate_review(
         return ReviewFailed(**binding, code="invalid_review", message=str(error))
     except _ProviderFailure as error:
         return ReviewFailed(**binding, code="analysis_failed", message=str(error))
-    return ReviewReady(report=report)

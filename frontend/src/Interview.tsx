@@ -174,6 +174,7 @@ export function Interview({
   const reviewPrepared = view?.phase === "ready_for_review"
     && view.last_operation?.stage === "review" && view.last_operation.status === "ready";
   const reviewFailed = failed && view?.last_operation?.stage === "review";
+  const needsRegeneration = reviewFailed && view?.last_operation?.code === "review_regeneration_required";
 
   useEffect(() => {
     if (!hidden) heading.current?.focus();
@@ -343,7 +344,7 @@ export function Interview({
             {failed && !locked && (
               <div className="interview-actions">
                 <button className={`button ${reviewFailed ? "button-primary" : "button-secondary"}`} type="button" onClick={onRetry}>
-                  {reviewFailed ? "Retry purchase review" : "Retry last request"}
+                  {needsRegeneration ? "Regenerate report" : reviewFailed ? "Retry purchase review" : "Retry last request"}
                 </button>
               </div>
             )}

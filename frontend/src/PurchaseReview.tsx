@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
-  CaseView, ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewCitation, ReviewFinding, ReviewRequirement, Source,
+  CaseView, ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewClaim, ReviewFinding, ReviewRequirement, Source,
 } from "./api";
 
 const findingKinds = {
@@ -57,26 +57,29 @@ interface EvidenceContext {
   snapshotId: string;
   selected: string[];
   sources: Map<string, Source>;
+  claims: Map<string, ReviewClaim>;
 }
 
-function EvidenceSource({ context, id, citation }: {
+function EvidenceSource({ context, id, claim, showOptionScope = true }: {
   context: EvidenceContext;
   id: string;
-  citation?: ReviewCitation;
+  claim?: ReviewClaim;
+  showOptionScope?: boolean;
 }) {
   const source = context.sources.get(id);
   if (!source) return null;
-  const scope = context.selected.filter((optionId) => source.option_ids.includes(optionId));
+  const scope = context.selected.filter((optionId) => (claim?.option_ids ?? source.option_ids).includes(optionId));
   const optionScope = scope.map((optionId) => optionLabel(context.selected, optionId)).join(", ");
   const isGuidance = source.kind === "official_guidance";
   const isImage = source.kind === "listing_image";
-  const showScopeInLabel = !isGuidance && scope.length > 0
+  const showScopeInLabel = showOptionScope && !isGuidance && scope.length > 0
     && (source.option_ids.length === 1 || scope.length < context.selected.length);
 
   return (
-    <details className="review-source">
-      <summary>{source.label}{showScopeInLabel && ` · ${optionScope}`}</summary>
+    <details className="review-source" data-claim-id={claim?.claim_id}>
+      <summary>{claim?.display_text ?? source.label}{showScopeInLabel && ` · ${optionScope}`}</summary>
       <div className="review-source-body">
+        {claim && <p><strong>{source.label}</strong></p>}
         <p className="muted">
           {isGuidance ? "Official guidance · curated reference" : isImage ? "Seller listing image" : "Seller listing claim"}
           {scope.length > 0 ? ` · ${optionScope}`
@@ -85,17 +88,14 @@ function EvidenceSource({ context, id, citation }: {
         {source.availability !== "available" ? (
           <p>{source.availability === "missing" ? "Missing from the saved listing." : "This source could not be read."}</p>
         ) : isImage ? (
-          <>
-            <EvidenceImage snapshotId={context.snapshotId} source={source} />
-            {citation?.image_observation && <div><h4>Image observation</h4><p>{citation.image_observation}</p></div>}
-          </>
+          <EvidenceImage snapshotId={context.snapshotId} source={source} />
         ) : (
           <>
-            {citation?.quote && citation.quote !== source.original_text && (
-              <div><h4>Cited excerpt</h4><p className="review-quote" lang={isGuidance ? undefined : "zh-Hans"}>{citation.quote}</p></div>
+            {claim?.kind === "text_excerpt" && claim.quote !== source.original_text && (
+              <div><p className="review-source-label">Cited excerpt</p><p className="review-quote" lang={isGuidance ? undefined : "zh-Hans"}>{claim.quote}</p></div>
             )}
-            <div><h4>Original source text</h4><p className="review-quote" lang={isGuidance ? undefined : "zh-Hans"}>{source.original_text}</p></div>
-            <div><h4>English translation of the source</h4><p>{source.text_en ?? "English translation unavailable."}</p></div>
+            <div><p className="review-source-label">Original source text</p><p className="review-quote" lang={isGuidance ? undefined : "zh-Hans"}>{source.original_text}</p></div>
+            <div><p className="review-source-label">English translation of the source</p><p>{source.text_en ?? "English translation unavailable."}</p></div>
             {isGuidance && source.url?.startsWith("https://") && (
               <a href={source.url} target="_blank" rel="noreferrer">Open guidance document (new tab)</a>
             )}
@@ -104,6 +104,17 @@ function EvidenceSource({ context, id, citation }: {
       </div>
     </details>
   );
+}
+
+function ClaimEvidence({ claimIds, context, showOptionScope }: {
+  claimIds: string[];
+  context: EvidenceContext;
+  showOptionScope?: boolean;
+}) {
+  return claimIds.map((id) => {
+    const claim = context.claims.get(id);
+    return claim && <EvidenceSource key={id} context={context} id={claim.source_id} claim={claim} showOptionScope={showOptionScope} />;
+  });
 }
 
 function requirementOrigin(inputRef: string, rounds: CaseView["rounds"]) {
@@ -115,7 +126,7 @@ function requirementOrigin(inputRef: string, rounds: CaseView["rounds"]) {
 function Requirement({ requirement, rounds }: { requirement: ReviewRequirement; rounds: CaseView["rounds"] }) {
   return (
     <div className="review-requirement">
-      <p>{requirement.text}</p>
+      {requirement.text !== requirement.quote && <p>{requirement.text}</p>}
       <blockquote>
         <p>{requirement.quote}</p>
         <footer>{requirementOrigin(requirement.input_ref, rounds)}</footer>
@@ -157,13 +168,10 @@ function FindingCard({ finding, report, context, rounds }: {
           <p>{finding.impact}</p>
           <p className="review-priority"><strong>Why it’s prioritized</strong> {finding.priority_reason}</p>
         </div>
-        {finding.citations.length > 0 && (
+        {finding.claim_ids.length > 0 && (
           <section aria-label="Source evidence">
             <h4>Source evidence</h4>
-            {finding.citations.map((citation, index) => (
-              <EvidenceSource key={`${citation.source_id}-${index}`} id={citation.source_id}
-                context={context} citation={citation} />
-            ))}
+            <ClaimEvidence claimIds={finding.claim_ids} context={context} />
           </section>
         )}
         {finding.unknowns.length > 0 && (
@@ -175,7 +183,7 @@ function FindingCard({ finding, report, context, rounds }: {
                   <p className="muted">{unknownReasons[unknown.reason]}</p>
                   <p>{unknown.text}</p>
                   {unknown.source_ids
-                    .filter((sourceId) => !finding.citations.some((citation) => citation.source_id === sourceId))
+                    .filter((sourceId) => !finding.claim_ids.some((id) => context.claims.get(id)?.source_id === sourceId))
                     .map((sourceId) => <EvidenceSource key={sourceId} context={context} id={sourceId} />)}
                 </li>
               ))}
@@ -231,14 +239,18 @@ function Comparisons({ report, snapshot, context }: { report: Review; snapshot: 
           <tbody role="rowgroup">
             {report.comparisons.map((comparison, index) => (
               <tr key={index} role="row">
-                <th role="rowheader" scope="row">{comparison.label}</th>
+                <th role="rowheader" scope="row">
+                  {comparison.label}
+                  <ClaimEvidence claimIds={comparison.shared_claim_ids} context={context} showOptionScope={false} />
+                </th>
                 {optionIds.map((id) => {
                   const value = comparison.values.find((candidate) => candidate.option_id === id);
                   return (
                     <td key={id} role="cell">
                       <span className="comparison-mobile-option" aria-hidden="true">{optionLabel(optionIds, id)}</span>
-                      <p>{value?.summary ?? "No comparison value provided."}</p>
-                      {value?.source_ids.map((sourceId) => <EvidenceSource key={sourceId} context={context} id={sourceId} />)}
+                      {value?.claim_ids.length
+                        ? <ClaimEvidence claimIds={value.claim_ids} context={context} showOptionScope={false} />
+                        : <p className="muted">{value?.summary ?? "No comparison value provided."}</p>}
                     </td>
                   );
                 })}
@@ -340,6 +352,7 @@ export function PurchaseReview({ report, snapshot, rounds, supplierDraft, onChan
     snapshotId: snapshot.snapshot_id,
     selected: report.selected_option_ids,
     sources: new Map(snapshot.sources.map((source) => [source.source_id, source])),
+    claims: new Map(report.claims.map((claim) => [claim.claim_id, claim])),
   };
   const otherRequirements = report.buyer_requirements.filter((requirement) => (
     !report.findings.some((finding) => finding.requirement_ids.includes(requirement.requirement_id))

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import sqlite3
 
@@ -120,11 +121,7 @@ class Store:
             raise sqlite3.DatabaseError("The saved snapshot could not be read.") from None
 
     def workspace(self) -> tuple[int, ListingSnapshot | None, CaseRecord | None]:
-        generation, snapshot, case = self.connection.execute("""
-            SELECT active_import.generation, active_import.snapshot, active_case.data
-            FROM active_import JOIN active_case USING (singleton)
-            WHERE active_import.singleton = 1
-        """).fetchone()
+        generation, snapshot, case = self._workspace_rows()
         try:
             return (
                 generation,
@@ -133,6 +130,30 @@ class Store:
             )
         except ValidationError:
             raise sqlite3.DatabaseError("The saved workspace could not be read.") from None
+
+    def workspace_for_recovery(self) -> tuple[int, ListingSnapshot | None, CaseRecord | None, object, object]:
+        """Decode the saved case separately from its potentially legacy or invalid report."""
+        generation, snapshot, serialized = self._workspace_rows()
+        try:
+            listing = ListingSnapshot.model_validate_json(snapshot) if snapshot is not None else None
+            if serialized is None:
+                return generation, listing, None, None, None
+            data = json.loads(serialized)
+            if not isinstance(data, dict) or not isinstance(data.get("view"), dict):
+                raise sqlite3.DatabaseError("The saved workspace could not be read.")
+            report = data["view"].pop("report", None)
+            saved_review = data.pop("saved_review", None)
+            record = CaseRecord.model_validate(data)
+            return generation, listing, record, report, saved_review
+        except (TypeError, ValueError):
+            raise sqlite3.DatabaseError("The saved workspace could not be read.") from None
+
+    def _workspace_rows(self) -> tuple[int, str | None, str | None]:
+        return self.connection.execute("""
+            SELECT active_import.generation, active_import.snapshot, active_case.data
+            FROM active_import JOIN active_case USING (singleton)
+            WHERE active_import.singleton = 1
+        """).fetchone()
 
     def operation_binding(self, operation_id: str) -> OperationBinding | None:
         row = self.connection.execute("""
