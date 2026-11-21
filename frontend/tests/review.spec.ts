@@ -130,9 +130,15 @@ for (const entry of ["TTP Cargo link", "ZIP after a link failure"] as const) {
   });
 }
 
-test("shows scoped requirement decisions and saves an effect-only change to an earlier answer", async ({ page }) => {
+test("previews and saves a natural answer with all SKU changes visible in the brief and report", async ({ page }) => {
   const finish = "Screen printing is required.";
   const answerText = "  Matte would work for this one.  ";
+  const newAnswer = "  Use a matte finish instead of screen printing for Option A.  ";
+  const keptAnswer = "Keep screen printing for Option B.";
+  const savedNatural = {
+    question_id: "texture-c", answer_text: "Maybe matte.", answer_mode: "natural" as const,
+    natural_decision: { status: "unrelated" },
+  };
   const initial: ResolvedRequirement = {
     requirement_id: "finish", statement: finish, status: "active", option_ids: ["v0", "v1"],
     provenance: [{ input_ref: "context", quote: finish, question_text: null, action: "add", option_ids: ["v0", "v1"] }],
@@ -160,8 +166,8 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
     ],
     answers: [
       { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "keep", requirement_id: "finish" } },
-      { question_id: "revisit-b", answer_text: null },
-      { question_id: "texture-c", answer_text: "Maybe matte." },
+      { question_id: "revisit-b", answer_text: keptAnswer, requirement_effect: { action: "keep", requirement_id: "finish" } },
+      savedNatural,
     ],
   };
   const confirmed: ResolvedRequirement = {
@@ -181,27 +187,48 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
     provenance: [{ input_ref: "answer:texture-c", quote: "Maybe matte.",
       question_text: round.questions[2]!.prompt, action: "unresolved", option_ids: ["v6"] }],
   };
+  const later: QuestionRound = {
+    round_id: "follow-up", round_number: 2, reason: "Follow up on the finish.",
+    questions: [{
+      question_id: "finish-followup", prompt: "Do you need a sample of the original finish?",
+      why_ask: "Check the look of the printed sample.", option_ids: ["v0"], source_ids: [], choices: [],
+    }],
+    answers: [{ question_id: "finish-followup", answer_text: "One sample, please." }],
+  };
+  const replacement: ResolvedRequirement = {
+    ...confirmed, requirement_id: "matte-a", statement: newAnswer,
+    provenance: [{ input_ref: "answer:revisit-a", quote: newAnswer, question_text: round.questions[0]!.prompt,
+      action: "add", option_ids: ["v0"] }],
+  };
+  const impact = { changed_requirements: [replacement], removed_requirements: [confirmed], discarded_rounds: [later] };
   let saved = reviewed(skipReport, {
-    rounds: [round], requirements: [{ ...initial, option_ids: ["v1"] }, confirmed, waived, unresolved],
+    rounds: [round, later], requirements: [{ ...initial, option_ids: ["v1"] }, confirmed, waived, unresolved],
   });
   const originalRevision = saved.revision;
 
-  await mockAnswerImpact(page);
+  await page.route("**/api/brief/preview-answers", (route) => {
+    if (route.request().postDataJSON().submission.answers[0].answer_text === "Use that instead.") {
+      return route.fulfill({ status: 422, json: {
+        status: "failed", code: "answer_clarification_required", question_id: "revisit-a",
+        message: "Which finish should replace screen printing for Option A?",
+      } });
+    }
+    return route.fulfill({ json: impact });
+  });
   await page.route("**/api/brief", (route) => {
     const { operation_id, submission } = route.request().postDataJSON();
     saved = prepared(saved, operation_id, {
       revision: originalRevision + 1,
       rounds: [{ ...round, answers: submission.answers }],
-      requirements: saved.requirements!.map((requirement) => requirement.requirement_id === confirmed.requirement_id
-        ? { ...confirmed, statement: answerText, provenance: confirmed.provenance.map((entry) =>
-          entry.action === "keep" ? { ...entry, action: "replace" } : entry) } : requirement),
+      requirements: saved.requirements!.map((requirement) => requirement.requirement_id === confirmed.requirement_id ? replacement : requirement),
+      brief_impact: impact,
     });
     return route.fulfill({ json: ready(saved) });
   });
   await page.route("**/api/reviews", (route) => {
     const { operation_id, revision } = route.request().postDataJSON();
     const nextReport = { ...skipReport, revision, supplier_draft: "Could you confirm the finish for Option A?" };
-    saved = { ...saved, phase: "reviewed", report: nextReport,
+    saved = { ...saved, phase: "reviewed", report: nextReport, confirmed_revision: revision,
       last_operation: { ...saved.last_operation!, stage: "review", operation_id },
     };
     return route.fulfill({ json: ready(saved) });
@@ -226,29 +253,44 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   const history = page.getByRole("region", { name: "Saved answers" });
   await history.getByText("Round 1 answers", { exact: true }).click();
   await expect(history.getByText(round.questions[1]!.prompt)).toBeVisible();
-  await expect(history.getByText("Skipped / unknown", { exact: true })).toBeVisible();
+  await expect(history.getByText(keptAnswer, { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Edit round 1" }).click();
   const targetQuestion = page.getByRole("group", { name: round.questions[0]!.prompt });
-  await expect(targetQuestion.getByRole("radio", { name: `Keep “${finish}”` })).toBeVisible();
-  await expect(targetQuestion.getByRole("radio", { name: `Remove “${finish}”` })).toBeVisible();
-  await expect(targetQuestion.getByRole("textbox", { name: "Your answer" })).toHaveValue(answerText);
-  const effect = targetQuestion.getByRole("combobox", { name: "How should this answer affect your requirements?" });
-  await expect(effect).toHaveValue("keep:finish");
-  await effect.selectOption({ label: `Replace “${finish}” with my answer` });
+  await expect(targetQuestion.getByRole("radio", { name: "The original finish still works.", exact: true })).toBeVisible();
+  await expect(targetQuestion.getByRole("radio", { name: "Any finish works.", exact: true })).toBeVisible();
+  const answer = targetQuestion.getByRole("textbox", { name: "Your answer" });
+  await expect(answer).toHaveValue(answerText);
+  await expect(targetQuestion.getByRole("combobox")).toHaveCount(0);
+  await answer.fill("Use that instead.");
+  await page.getByRole("button", { name: "Preview and review brief" }).click();
+  await expect(targetQuestion.getByRole("alert")).toHaveText("Which finish should replace screen printing for Option A?");
+  await expect(answer).toHaveValue("Use that instead.");
+  await answer.fill(newAnswer);
   const request = page.waitForRequest("**/api/brief");
   await page.getByRole("button", { name: "Preview and review brief" }).click();
+  const preview = page.getByRole("region", { name: "Preview of answer changes" });
+  const removed = preview.getByRole("list", { name: "Requirements removed" });
+  await expect(removed.getByRole("listitem")).toContainText("Option A");
+  await expect(removed.getByRole("listitem")).toContainText(finish);
+  await expect(preview.getByRole("list", { name: "Updated requirements" }).getByRole("listitem")).toContainText(newAnswer.trim());
+  await expect(preview.getByRole("listitem").filter({ hasText: "Answer to be removed · One sample, please." })).toContainText("Option A");
   await page.getByRole("button", { name: "Save answer changes" }).click();
-  expect((await request).postDataJSON()).toMatchObject({
-    revision: originalRevision, submission: { answers: [
-      { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "replace", requirement_id: "finish" } },
-      { question_id: "revisit-b", answer_text: null },
-      { question_id: "texture-c", answer_text: "Maybe matte." },
-    ] },
-  });
-  await expect(optionA.locator("summary").filter({ hasText: answerText.trim() })).toBeVisible();
+  const submitted = (await request).postDataJSON();
+  expect(submitted.revision).toBe(originalRevision);
+  expect(submitted.submission.answers).toEqual([
+      { question_id: "revisit-a", answer_text: newAnswer, answer_mode: "natural" },
+      { question_id: "revisit-b", answer_text: keptAnswer, requirement_effect: { action: "keep", requirement_id: "finish" } },
+      { question_id: "texture-c", answer_text: "Maybe matte.", answer_mode: "natural" },
+  ]);
+  await expect(optionA.locator("summary").filter({ hasText: newAnswer.trim() })).toBeVisible();
   await expect(optionB.locator("summary").filter({ hasText: finish })).toBeVisible();
+  const latestChanges = page.getByRole("region", { name: "Latest changes to the buying brief" });
+  await expect(latestChanges.getByRole("list", { name: "Requirements removed" })).toContainText("Option A");
+  await expect(latestChanges.getByText("Removed answer · One sample, please.")).toBeVisible();
   await confirmBrief(page).click();
   await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(saved.report!.supplier_draft);
+  await expect(latestChanges.getByRole("list", { name: "Updated requirements" })).toContainText(newAnswer.trim());
+  await expect(latestChanges.getByRole("list", { name: "Requirements removed" })).toContainText(finish);
 });
 
 test("settles one option's conflicting order instructions from a report with no interview rounds", async ({ page }) => {
@@ -744,6 +786,58 @@ test("discards a delayed report after a new selection starts a different case", 
   } finally {
     release();
   }
+});
+
+test("follows another tab’s queued review through reload and generation, then retries the canonical operation", async ({ page }) => {
+  let saved = prepared(reviewed(skipReport), "confirmed-brief");
+  const submissions: unknown[] = [];
+  await page.route("**/api/reviews", (route) => {
+    const payload = route.request().postDataJSON();
+    submissions.push(payload);
+    saved = {
+      ...saved, phase: "generating_review", confirmed_revision: saved.revision,
+      last_operation: { operation_id: "first-tab-review", stage: "review", status: "queued", code: null, message: null },
+    };
+    return route.fulfill({ status: 202, json: ready(saved) });
+  });
+  await page.route("**/api/case/retry", (route) => {
+    submissions.push(route.request().postDataJSON());
+    saved = { ...saved, phase: "generating_review", last_operation: { ...saved.last_operation!,
+      status: "queued", code: null, message: null, retry_token: null,
+    } };
+    return route.fulfill({ status: 202, json: ready(saved) });
+  });
+  await openWorkspace(page, () => saved);
+  await confirmBrief(page).click();
+  const waiting = page.getByRole("heading", { name: "In the report queue" });
+  const confirmPayload = submissions[0] as { operation_id: string };
+  await expect(waiting).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.reload();
+  await expect(waiting).toBeVisible();
+  await expect(confirmBrief(page)).toHaveCount(0);
+
+  const operation = saved.last_operation!;
+  saved = { ...saved, last_operation: { ...operation, status: "running" } };
+  await expect(page.getByRole("heading", { name: "Generating your evidence report" })).toBeVisible();
+  saved = {
+    ...saved, phase: "failed",
+    last_operation: { ...operation, status: "failed", code: "review_failed",
+      message: "The review could not be generated.", retry_token: "first-failure-token",
+    },
+  };
+  await expect(page.getByRole("alert")).toHaveText("The review could not be generated.");
+  await expect(page.getByRole("heading", { name: "Saved answers" })).toBeVisible();
+  await page.getByRole("button", { name: "Retry purchase review" }).click();
+  await expect(waiting).toBeVisible();
+  expect(confirmPayload.operation_id).not.toBe(operation.operation_id);
+  expect(submissions).toEqual([
+    { case_id: saved.case_id, revision: saved.revision, operation_id: confirmPayload.operation_id, confirm: true },
+    { case_id: saved.case_id, revision: saved.revision, operation_id: operation.operation_id, retry_token: "first-failure-token" },
+  ]);
+
+  saved = { ...saved, phase: "reviewed", report: skipReport, last_operation: { ...operation, status: "ready" } };
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
 });
 
 test("rejects a ready review with an old revision and accepts corrected saved progress on reload", async ({ page }) => {

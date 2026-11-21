@@ -155,7 +155,7 @@ test("brings a rejected answer into view on mobile and retains the answer for co
   const answer = field.getByRole("textbox", { name: "Your answer" });
   const text = "For Option A, custom orders are acceptable.";
   await answer.fill(text);
-  await field.getByRole("combobox").selectOption({ label: "Add my answer as a requirement" });
+  await expect(field.getByRole("combobox")).toHaveCount(0);
   const submit = page.getByRole("button", { name: "Continue", exact: true });
   await submit.click();
 
@@ -164,8 +164,52 @@ test("brings a rejected answer into view on mobile and retains the answer for co
   await expect(alert).toBeFocused();
   await expect(alert).toBeInViewport();
   await expect(answer).toHaveValue(text);
-  await expect(field.getByRole("combobox")).toHaveValue("add:");
   await expect(submit).toBeEnabled();
+});
+
+test("asks for scoped clarification and lets the buyer leave that answer open", async ({ page }) => {
+  const [first, second] = firstRound.questions;
+  const round = { ...firstRound, questions: [first!, { ...second!, choices: [] }] };
+  const question = round.questions[1]!;
+  const wording = "Should the restriction apply to Option A only or to all selected options?";
+  let saved = view({ rounds: [round] });
+  await page.route("**/api/brief", (route) => {
+    const { submission, operation_id } = route.request().postDataJSON();
+    if (submission.answers[1].answer_text !== null) {
+      expect(submission.answers[1]).toEqual({
+        question_id: question.question_id, answer_text: "Only that one needs it.", answer_mode: "natural",
+      });
+      return route.fulfill({
+        status: 422, json: {
+          status: "failed", code: "answer_clarification_required", message: wording, question_id: question.question_id,
+          case_id: saved.case_id, revision: saved.revision,
+        },
+      });
+    }
+    expect(submission.answers).toEqual([
+      { question_id: first!.question_id, answer_text: first!.choices[0] },
+      { question_id: question.question_id, answer_text: null },
+    ]);
+    saved = view({ phase: "ready_for_review", revision: 1,
+      rounds: [{ ...round, answers: submission.answers }], last_operation: operation("brief", "ready", operation_id) });
+    return route.fulfill({ json: response(saved) });
+  });
+  await mockSaved(page, () => saved);
+
+  const field = page.getByRole("group", { name: question.prompt });
+  const otherAnswer = page.getByRole("radio", { name: first!.choices[0]!, exact: true });
+  await otherAnswer.check();
+  await field.getByRole("textbox", { name: "Your answer" }).fill("Only that one needs it.");
+  await page.getByRole("button", { name: "Review buying brief" }).click();
+  const clarification = field.getByRole("alert");
+  await expect(clarification).toHaveText(wording);
+  await expect(clarification).toBeFocused();
+  await expect(field.getByRole("textbox", { name: "Your answer" })).toHaveValue("Only that one needs it.");
+  await expect(otherAnswer).toBeChecked();
+  await field.getByRole("button", { name: "Leave this answer open" }).click();
+  await expect(field.getByRole("button", { name: "Not sure / Skip" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Review buying brief" }).click();
+  await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
 });
 
 test("opens the buying brief with partial answers, skipped values and exact nonblank free text", async ({ page }) => {
@@ -197,7 +241,7 @@ test("opens the buying brief with partial answers, skipped values and exact nonb
     submission: { round_id: "round-1", answers: [
       { question_id: "q-finish", answer_text: null },
       { question_id: "q-capacity", answer_text: null },
-      { question_id: "q-use", answer_text: "  Cold drinks only.  " },
+      { question_id: "q-use", answer_text: "  Cold drinks only.  ", answer_mode: "natural" },
     ] },
   });
   await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();

@@ -18,18 +18,19 @@ from starlette.responses import JSONResponse, Response
 
 from .ai import (
     TranslationConfigurationError, build_question_client, build_translation_client, generate_brief_proposal,
-    generate_questions, translate_listing,
+    generate_questions, interpret_written_answers, translate_listing,
 )
 from .archive import IntakeError, MAX_ZIP_BYTES, MiB
 from .case_models import (
-    BriefCorrection, BriefEdit, ConfirmBrief, ContinueCase, PrepareBrief, ResetCase, ResumeQuestions, RetryCase,
+    BriefCorrection, BriefEdit, CaseView, ConfirmBrief, ContinueCase, PrepareBrief, ResetCase, ResumeQuestions, RetryCase,
     StartCase, UndoBriefPreview,
 )
-from .case_workflow import BriefGenerator, CaseCommandError, CaseWorkflow, QuestionGenerator, ReviewGenerator
+from .case_workflow import BriefGenerator, CaseCommandError, CaseWorkflow, NaturalAnswerInterpreter, QuestionGenerator, ReviewGenerator
 from .contracts import ContractModel, IntakeFailed, IntakeReady, ListingSnapshot
 from .intake import ParsedListing, parse_listing
 from .link_intake import LINK_HINT, fetch_listing, parse_product_link
 from .report import build_review_client, generate_review
+from .review_queue import ReviewQueue
 from .state import Store
 
 
@@ -67,7 +68,14 @@ def _case_failure(error: CaseCommandError) -> JSONResponse:
     return JSONResponse({
         "status": "failed", "case_id": case.case_id if case is not None else None,
         "revision": case.revision if case is not None else None, "code": error.code, "message": str(error),
+        **({"question_id": error.question_id} if error.question_id is not None else {}),
     }, status_code=error.status)
+
+
+def _review_response(case: CaseView):
+    if case.last_operation.stage == "review" and case.last_operation.status in {"queued", "running"}:
+        return JSONResponse({"status": "ready", "case": case.model_dump(mode="json")}, status_code=202)
+    return {"status": "ready", "case": case}
 
 
 def _obsolete_import() -> JSONResponse:
@@ -129,7 +137,9 @@ def _translation(original: ListingSnapshot, output: ListingSnapshot) -> ListingS
 def create_app(
     db_path: Path | str | None = None, *, translator: Translator | None = None,
     question_generator: QuestionGenerator | None = None, review_generator: ReviewGenerator | None = None,
-    brief_generator: BriefGenerator | None = None,
+    brief_generator: BriefGenerator | None = None, interpret_answers: NaturalAnswerInterpreter | None = None,
+    review_queue: ReviewQueue | None = None,
+    allowed_origin: str | None = None,
 ) -> FastAPI:
     database = Path(db_path if db_path is not None else os.environ.get("PURCHASE_DATABASE_PATH", DEFAULT_DATABASE))
 
@@ -156,6 +166,10 @@ def create_app(
                 store, question_generator if question_generator is not None else partial(generate_questions, client=question_client),
                 review_generator if review_generator is not None else partial(generate_review, client=review_client),
                 brief_generator if brief_generator is not None else partial(generate_brief_proposal, client=question_client),
+                interpret_answers=interpret_answers or (
+                    partial(interpret_written_answers, client=question_client) if question_client is not None else None
+                ),
+                review_queue=review_queue,
             )
             app.state.case_workflow.recover_saved_case()
             yield
@@ -167,15 +181,16 @@ def create_app(
             finally:
                 store.close()
 
+    origin = allowed_origin or DEMO_ORIGIN
     application = FastAPI(lifespan=lifespan)
     application.add_middleware(
-        CORSMiddleware, allow_origins=[DEMO_ORIGIN], allow_methods=["GET", "POST"], allow_headers=["Content-Type"],
+        CORSMiddleware, allow_origins=[origin], allow_methods=["GET", "POST"], allow_headers=["Content-Type"],
     )
 
     @application.middleware("http")
     async def guard_origin(request: Request, call_next):
         origins = request.headers.getlist("origin")
-        if request.method == "POST" and origins and origins != [DEMO_ORIGIN]:
+        if request.method == "POST" and origins and origins != [origin]:
             return _invalid_request("This request is from an unsupported origin.", 403)
         return await call_next(request)
 
@@ -295,7 +310,7 @@ def create_app(
         _, snapshot, case = application.state.store.workspace()
         return JSONResponse(
             {"snapshot": snapshot.model_dump() if snapshot is not None else None,
-             "case": case.view.model_dump() if case is not None else None},
+             "case": case.view.model_dump(mode="json") if case is not None else None},
             headers={"Cache-Control": "no-store"},
         )
 
@@ -340,7 +355,7 @@ def create_app(
 
     @application.post("/api/brief")
     async def prepare_brief(command: PrepareBrief):
-        return {"status": "ready", "case": application.state.case_workflow.prepare_brief(command)}
+        return {"status": "ready", "case": await application.state.case_workflow.prepare_brief(command)}
 
     @application.post("/api/brief/preview")
     async def preview_brief(command: BriefCorrection):
@@ -352,7 +367,7 @@ def create_app(
 
     @application.post("/api/brief/preview-answers")
     async def preview_answers(command: PrepareBrief):
-        return application.state.case_workflow.preview_answers(command)
+        return await application.state.case_workflow.preview_answers(command)
 
     @application.post("/api/brief/edit")
     async def edit_brief(command: BriefEdit):
@@ -360,11 +375,11 @@ def create_app(
 
     @application.post("/api/reviews")
     async def review_case(command: ConfirmBrief):
-        return {"status": "ready", "case": await application.state.case_workflow.confirm_brief(command)}
+        return _review_response(await application.state.case_workflow.confirm_brief(command))
 
     @application.post("/api/case/retry")
     async def retry_case(command: RetryCase):
-        return {"status": "ready", "case": await application.state.case_workflow.retry(command)}
+        return _review_response(await application.state.case_workflow.retry(command))
 
     @application.post("/api/case/reset")
     async def reset_case(command: ResetCase):

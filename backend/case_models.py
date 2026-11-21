@@ -98,6 +98,7 @@ class BriefPreview(BriefImpact):
 
 class RetryCase(CaseReference):
     operation_id: OperationId
+    retry_token: OperationId | None = None
 
 
 class ResetCase(ContractModel):
@@ -108,9 +109,10 @@ class ResetCase(ContractModel):
 class CaseOperation(ContractModel):
     operation_id: str
     stage: CaseStage
-    status: Literal["running", "ready", "failed"]
+    status: Literal["queued", "running", "ready", "failed"]
     code: str | None = None
     message: str | None = None
+    retry_token: OperationId | None = Field(default=None, exclude_if=lambda token: token is None)
 
 
 class CaseView(CaseReference):
@@ -146,6 +148,7 @@ class CaseRecord(ContractModel):
     review_input: ReviewInput | None = None
     saved_review: SavedReview | None = None
     confirmed_review_digest: ReviewDigest | None = Field(default=None, exclude_if=lambda digest: digest is None)
+    review_queue_order: Annotated[int, Field(ge=1)] | None = Field(default=None, exclude_if=lambda order: order is None)
     requirement_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
     order_conflict_version: Literal[1, 2, 3] | None = Field(default=None, exclude_if=lambda version: version is None)
     initial_requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)

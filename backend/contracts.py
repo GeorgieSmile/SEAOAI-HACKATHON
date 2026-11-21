@@ -248,10 +248,11 @@ class RequirementTarget(ContractModel):
     option_ids: SelectedOptionIds
 
 
-class Answer(ContractModel):
+class SubmittedAnswer(ContractModel):
     question_id: NonEmptyText
     answer_text: Annotated[str, Field(max_length=1_000)] | None
     requirement_effect: RequirementEffect | None = Field(default=None, exclude_if=lambda effect: effect is None)
+    answer_mode: Literal["natural"] | None = Field(default=None, exclude_if=lambda mode: mode is None)
 
     @field_validator("answer_text")
     @classmethod
@@ -262,7 +263,42 @@ class Answer(ContractModel):
     def effect_needs_answer(self) -> Self:
         if self.requirement_effect is not None and self.answer_text is None:
             raise ValueError("Submit a written answer to change a requirement.")
+        if self.answer_mode == "natural" and (self.answer_text is None or self.requirement_effect is not None):
+            raise ValueError("Submit the written answer on its own for interpretation.")
         return self
+
+
+class RecordedNaturalAnswer(ContractModel):
+    effect: RequirementEffect
+    option_ids: SelectedOptionIds
+    supplier_target: SupplierTarget | None
+    delivery_condition: DeliveryCondition | None
+
+    @model_validator(mode="after")
+    def validate_terms(self) -> Self:
+        if len(self.option_ids) != len(set(self.option_ids)):
+            raise ValueError("An answer decision must use distinct options.")
+        if self.effect.action in {"keep", "waive"} and (self.supplier_target or self.delivery_condition):
+            raise ValueError("Keeping or waiving a decision does not add terms.")
+        condition = self.delivery_condition
+        if condition is not None and (
+            self.supplier_target is not None or condition.follows_deadline == (condition.latest_arrival is not None)
+        ):
+            raise ValueError("A conditional order must use a specific arrival date or follow the case deadline.")
+        return self
+
+
+class Answer(SubmittedAnswer):
+    natural_decision: RecordedNaturalAnswer | None = Field(default=None, exclude_if=lambda decision: decision is None)
+
+    @model_validator(mode="after")
+    def decision_needs_mode(self) -> Self:
+        if self.natural_decision is not None and self.answer_mode != "natural":
+            raise ValueError("A recorded decision needs a natural answer.")
+        return self
+
+    def effective_scope(self, issued_scope: list[str]) -> list[str]:
+        return self.natural_decision.option_ids if self.natural_decision is not None else issued_scope
 
 
 class AnsweredQuestion(Answer):
@@ -272,7 +308,7 @@ class AnsweredQuestion(Answer):
 
 class AnswerSubmission(ContractModel):
     round_id: NonEmptyText
-    answers: Annotated[list[Answer], Field(min_length=1, max_length=5)]
+    answers: Annotated[list[SubmittedAnswer], Field(min_length=1, max_length=5)]
 
     @model_validator(mode="after")
     def unique_answers(self) -> Self:
@@ -364,17 +400,24 @@ class _CaseAnalysisInput(ContractModel):
         return self
 
     def _validate_answer_scope(self, scopes: dict[str, list[str]]) -> None:
-        answered_ids = {answer.question_id for answer in self.answers}
+        answers = {answer.question_id: answer for answer in self.answers}
         selected = set(self.selected_option_ids)
-        if not answered_ids.issuperset(scopes):
+        if not answers.keys() >= scopes.keys():
             raise ValueError("Answer scope must refer to submitted question IDs.")
         for option_ids in scopes.values():
             if len(option_ids) != len(set(option_ids)) or not selected.issuperset(option_ids):
                 raise ValueError("Answer scope must refer to distinct selected options.")
+        for question_id, answer in answers.items():
+            if answer.natural_decision is not None and not set(answer.natural_decision.option_ids).issubset(
+                scopes.get(question_id, []),
+            ):
+                raise ValueError("An answer decision must stay within the issued question scope.")
         for row in self.requirements or []:
             for entry in row.provenance:
-                if entry.input_ref.startswith("answer:") and scopes.get(entry.input_ref[7:]) != entry.option_ids:
-                    raise ValueError("Requirement provenance must use the exact issued question scope.")
+                if entry.input_ref.startswith("answer:"):
+                    question_id = entry.input_ref[7:]
+                    if answers[question_id].effective_scope(scopes.get(question_id, [])) != entry.option_ids:
+                        raise ValueError("Requirement provenance must match the answer decision's option scope.")
 
 
 class ReviewInput(_CaseAnalysisInput):

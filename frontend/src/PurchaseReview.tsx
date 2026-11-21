@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { sourceImageUrl } from "./api";
 import type {
   ListingOption, ListingSnapshot, OrderClarification, PurchaseReview as Review, ResolvedRequirement, ReviewClaim,
@@ -367,7 +368,12 @@ export function briefDecisionText(requirement: ResolvedRequirement) {
       .format(new Date(Date.UTC(2024, date.month - 1)));
     return `Custom allowed if it arrives by ${date.day} ${month}${date.year ? ` ${date.year}` : ""}`;
   }
-  return condition ? "Custom-order cutoff needs a delivery date" : requirement.statement;
+  if (condition) return "Custom-order cutoff needs a delivery date";
+  if (/^(?:yes|no)[.!]?$/i.test(requirement.statement.trim())) {
+    const origin = requirement.provenance.find(entry => entry.quote === requirement.statement && entry.question_text);
+    if (origin) return `${origin.question_text} ${requirement.statement}`;
+  }
+  return requirement.statement;
 }
 
 function RequirementDecision({ requirement, optionIds, selected, changed, buyingBrief }: {
@@ -626,11 +632,12 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, requirements, confirmed, onReviewBrief, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, requirements, confirmed, briefChanges, onReviewBrief, supplierDraft, onChangeDraft }: {
   report: Review;
   snapshot: ListingSnapshot;
   requirements?: ResolvedRequirement[] | null;
   confirmed: boolean;
+  briefChanges?: ReactNode;
   onReviewBrief: () => void;
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
@@ -680,6 +687,7 @@ export function PurchaseReview({ report, snapshot, requirements, confirmed, onRe
       <Comparisons report={report} snapshot={snapshot} context={context} />
       {requirements && <RequirementDecisions requirements={requirements} selected={context.selected}
         snapshot={snapshot} confirmed={confirmed} />}
+      {briefChanges}
       {((!requirements && otherRequirements.length > 0) || report.open_preferences.length > 0) && (
         <section className="review-panel review-buyer-inputs" aria-labelledby="buyer-inputs-heading">
           <h2 id="buyer-inputs-heading">Buyer inputs</h2>

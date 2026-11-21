@@ -79,11 +79,13 @@ export interface Question {
 export interface Answer {
   question_id: string;
   answer_text: string | null;
+  answer_mode?: "natural";
   requirement_effect?: RequirementEffect | null;
 }
 
 export function sameAnswer(saved: Answer | undefined, submitted: Answer) {
   return saved?.answer_text === submitted.answer_text
+    && saved.answer_mode === submitted.answer_mode
     && saved.requirement_effect?.action === submitted.requirement_effect?.action
     && saved.requirement_effect?.requirement_id === submitted.requirement_effect?.requirement_id;
 }
@@ -236,9 +238,10 @@ export type CaseStage = "start" | "continue" | "brief" | "review";
 interface CaseOperation {
   operation_id: string;
   stage: CaseStage;
-  status: "running" | "ready" | "failed";
+  status: "queued" | "running" | "ready" | "failed";
   code: string | null;
   message: string | null;
+  retry_token?: string | null;
 }
 
 export interface CaseView extends Selection, CaseVersion {
@@ -262,12 +265,27 @@ interface SavedCase {
 
 type CaseResult = { status: "ready"; case: CaseView } | ApiFailure;
 
+export class AnswerClarificationRequired extends Error {
+  constructor(readonly questionId: string, message: string) {
+    super(message);
+  }
+}
+
+export class DemoLocked extends Error {
+  constructor() {
+    super("Reload the page and enter the demo code to reopen your workspace.");
+  }
+}
+
 async function request<T>(path: string, fallback: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init).catch(() => {
-    throw new Error("The server could not be reached. Try again.");
-  });
+  const response = await fetchResponse(path, init);
   const result = await response.json().catch(() => null);
 
+  if (response.status === 401 && result?.code === "demo_locked") throw new DemoLocked();
+  if (response.status === 422 && result?.code === "answer_clarification_required"
+    && typeof result.question_id === "string" && typeof result.message === "string") {
+    throw new AnswerClarificationRequired(result.question_id, result.message);
+  }
   if (!response.ok || !result || result.status === "failed") {
     throw new Error(
       typeof result?.message === "string" && result.message ? result.message : fallback,
@@ -276,9 +294,27 @@ async function request<T>(path: string, fallback: string, init?: RequestInit): P
   return result as T;
 }
 
+function fetchResponse(path: string, init?: RequestInit) {
+  return fetch(path, init).catch(() => {
+    throw new Error("The server could not be reached. Try again.");
+  });
+}
+
+export async function unlockDemo(code: string) {
+  const response = await fetchResponse("/api/demo/unlock", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+  if (response.status === 204) return;
+  if (response.status === 401) throw new Error("That demo code was not accepted. Check it and try again.");
+  const result = await response.json().catch(() => null);
+  throw new Error(typeof result?.message === "string" && result.message ? result.message : "Could not unlock the demo. Try again.");
+}
+
 export async function getCurrentCase(signal?: AbortSignal) {
   const result = await request<SavedCase>(
-    "/api/case", "Could not load the current listing.", { signal },
+    "/api/case", "Could not load the current listing.", { signal, cache: "no-store" },
   );
   if (result.snapshot === undefined || result.case === undefined) {
     throw new Error("Could not load the current listing.");
@@ -318,6 +354,12 @@ async function postCaseCommand(path: string, payload: object) {
 
 export function caseVersion(view: CaseView | null): CaseVersion | null {
   return view ? { case_id: view.case_id, revision: view.revision } : null;
+}
+
+export function pendingReview(view: CaseView | null) {
+  if (view?.phase !== "generating_review" || view.last_operation?.stage !== "review") return null;
+  const status = view.last_operation.status;
+  return status === "queued" || status === "running" ? status : null;
 }
 
 export function currentPurchaseReview(view: CaseView | null): PurchaseReview | null {
@@ -391,20 +433,26 @@ export function saveBriefEdit(view: CaseView, edit: BriefEdit, operationId: stri
 }
 
 export function retryCase(view: CaseView, operationId: string) {
+  const retryToken = view.last_operation?.retry_token;
   return postCaseCommand("/api/case/retry", {
-    ...caseVersion(view), operation_id: operationId,
+    ...caseVersion(view), operation_id: operationId, ...(retryToken && { retry_token: retryToken }),
   }).then((result) => view.last_operation?.stage === "review"
     ? checkReviewResponse(result, view, operationId, 0) : result);
 }
 
 function checkReviewResponse(result: CaseView, base: CaseView, operationId: string, revisionChange: number) {
-  const resultOperation = result.last_operation?.operation_id;
-  const cached = revisionChange === 0 && result.confirmed_revision === base.revision
-    && result.last_operation?.stage === "review" && result.last_operation?.status === "ready";
-  if (result.phase === "reviewed" && (!currentPurchaseReview(result)
-    || result.case_id !== base.case_id || result.snapshot_id !== base.snapshot_id
-    || result.revision !== base.revision + revisionChange
-    || (resultOperation !== operationId && !cached))) {
+  const operation = result.last_operation;
+  // A second tab can confirm the same revision and receive the canonical saved operation.
+  const confirmedOperation = revisionChange === 0 && result.confirmed_revision === base.revision
+    && operation?.stage === "review" && Boolean(operation.operation_id);
+  const cached = confirmedOperation && operation.status === "ready";
+  const wrongVersion = result.case_id !== base.case_id || result.snapshot_id !== base.snapshot_id
+    || result.revision !== base.revision + revisionChange;
+  const rejectsPending = result.phase === "generating_review" && (!pendingReview(result) || wrongVersion || !confirmedOperation
+    || result.buyer_context !== base.buyer_context || result.selected_option_ids.length !== base.selected_option_ids.length
+    || !result.selected_option_ids.every((id, index) => id === base.selected_option_ids[index]));
+  if ((result.phase === "reviewed" && (!currentPurchaseReview(result) || wrongVersion || (operation?.operation_id !== operationId && !cached)))
+    || rejectsPending) {
     throw new Error("The purchase review could not be matched to your saved answers. Reload saved progress.");
   }
   return result;

@@ -1,0 +1,11 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+numReplicas = 1
+sleepApplication = false
+requiredMountPath = "/data"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"

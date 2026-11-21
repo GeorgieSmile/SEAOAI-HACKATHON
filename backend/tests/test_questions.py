@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 from pydantic import ValidationError
 
 from backend import ai
-from backend.contracts import AnswerSubmission, IssuedRound, ListingSnapshot, QuestionInput, QuestionResult
+from backend.contracts import AnswerSubmission, IssuedQuestion, IssuedRound, ListingSnapshot, QuestionInput, QuestionResult
 
 
 FIXTURE = Path(__file__).resolve().parents[2] / "frontend/src/fixtures/integration-flow.json"
@@ -66,6 +66,61 @@ def api_response(request, output, *, status="completed"):
         },
         request=request,
     )
+
+
+@pytest.mark.parametrize("outcome", ["clear", "invalid_options", "rate_limit"])
+def test_interpretation_uses_one_provider_request_for_the_round(request_input, outcome):
+    questions = {
+        key: (IssuedQuestion(
+            question_id=key, prompt=prompt, why_ask="Helps identify what to check.",
+            option_ids=["v1"], source_ids=[], choices=[], requirement_ids=[], choice_effects=[],
+            topic=topic, buyer_facet="other",
+        ), text)
+        for key, prompt, text, topic in [
+            ("pack", "How will you package the cups?", "Each one gets its own gift box.", "packaging"),
+            ("use", "How will you use them?", "We serve iced lemonade at the stall.", "temperature_use"),
+        ]
+    }
+    questions["order"] = (IssuedQuestion(
+        question_id="order", prompt="Would you consider a custom order?", why_ask="Order terms affect sourcing.",
+        option_ids=["v1"], source_ids=[], choices=[], requirement_ids=[], choice_effects=[],
+        topic="customization", buyer_facet="order_type",
+    ), "A bespoke production run works for us")
+    requests = []
+
+    def respond(request):
+        payload = json.loads(json.loads(request.content)["input"])
+        requests.append(payload)
+        if outcome == "rate_limit":
+            return httpx2.Response(429, json={"error": {"message": "Try later"}}, request=request)
+        return api_response(request, {"answers": [
+            {"question_id": item["question_id"], "status": "decided", "effect": {"action": "add", "requirement_id": None},
+             "option_ids": ["v0" if outcome == "invalid_options" else "v1"],
+             "order_choice": "custom_orders_acceptable" if item["question_id"] == "order" else None,
+             "clarification": None}
+            for item in payload["answers"]
+        ]})
+
+    async def run():
+        async with AsyncOpenAI(
+            api_key="offline-test-placeholder", max_retries=0,
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(respond)),
+        ) as client:
+            return await ai.interpret_written_answers(
+                request_input.snapshot, request_input.selected_option_ids, questions, client=client,
+            )
+
+    if outcome == "clear":
+        result = asyncio.run(run())
+        assert set(result) == set(questions)
+        assert all(row.status == "decided" and row.option_ids == ["v1"] for row in result.values())
+        assert result["order"].supplier_target.value == "custom_orders_acceptable"
+    else:
+        with pytest.raises(ai.QuestionGenerationError):
+            asyncio.run(run())
+    assert len(requests) == 1
+    assert [entry["answer"] for entry in requests[0]["answers"]] == [text for _, text in questions.values()]
+    assert "Cedar-914" not in json.dumps(requests)
 
 
 def run_questions(request_input, respond):

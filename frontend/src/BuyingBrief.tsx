@@ -4,59 +4,84 @@ import type { BriefCorrection, BriefEdit, BriefImpact, BriefPreview, CaseView, L
 import { briefDecisionText, groupBriefRequirements, OrderClarificationForm, RequirementDecisions } from "./PurchaseReview";
 
 function optionLabels(snapshot: ListingSnapshot, selected: string[], ids: string[]) {
-  return ids.map((id) => {
+  return selected.filter((id) => ids.includes(id)).map((id) => {
     const option = snapshot.options.find((item) => item.option_id === id);
-    return option?.name_en ?? option?.name_original ?? `Option ${"ABC"[selected.indexOf(id)]}`;
+    const label = `Option ${"ABC"[selected.indexOf(id)]}`;
+    const name = option?.name_en ?? option?.name_original;
+    return name ? `${label} · ${name}` : label;
   }).join(", ");
 }
 
-export function BriefChanges({ impact, snapshot, selected }: {
+function hasChanges(impact: BriefImpact | undefined): impact is BriefImpact {
+  return Boolean(impact && (impact.changed_requirements.length || impact.removed_requirements.length || impact.discarded_rounds.length));
+}
+
+const changeStatuses = { active: "Updated", waived: "Waived", unresolved: "Open" };
+
+export function BriefChanges({ impact, snapshot, selected, saved }: {
   impact: BriefImpact;
   snapshot: ListingSnapshot;
   selected: string[];
+  saved?: boolean;
 }) {
   const rounds = impact.discarded_rounds;
   return (
     <div className="brief-changes">
       {impact.changed_requirements.length > 0 && (
-        <ul aria-label="Updated requirements">
-          {groupBriefRequirements(impact.changed_requirements).map(({ row }) => (
-            <li key={row.requirement_id}>
-              <strong>{optionLabels(snapshot, selected, row.option_ids)}</strong>
-              <span>{briefDecisionText(row)}{row.status === "unresolved" ? " · Open" : ""}</span>
-            </li>
-          ))}
-        </ul>
+        <div>
+          <h4>Updated requirements</h4>
+          <ul aria-label="Updated requirements">
+            {groupBriefRequirements(impact.changed_requirements).map(({ row }) => (
+              <li key={row.requirement_id}>
+                <strong>{optionLabels(snapshot, selected, row.option_ids)}</strong>
+                <span>{changeStatuses[row.status]} · {briefDecisionText(row)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {impact.removed_requirements.length > 0 && (
-        <ul aria-label="Requirements removed">
-          {groupBriefRequirements(impact.removed_requirements).map(({ row }) => (
-            <li key={row.requirement_id}>
-              <strong>{optionLabels(snapshot, selected, row.option_ids)}</strong>
-              <span>Removed · {briefDecisionText(row)}</span>
-            </li>
-          ))}
-        </ul>
+        <div>
+          <h4>Requirements removed</h4>
+          <ul aria-label="Requirements removed">
+            {groupBriefRequirements(impact.removed_requirements).map(({ row }) => (
+              <li key={row.requirement_id}>
+                <strong>{optionLabels(snapshot, selected, row.option_ids)}</strong>
+                <span>{briefDecisionText(row)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {rounds.length > 0 && (
         <div>
-          <h4>Follow-up questions to revisit</h4>
+          <h4>{saved ? "Follow-up questions removed" : "Follow-up questions to revisit"}</h4>
           <ul>
             {rounds.flatMap((round) => round.questions.map((question) => {
               const answer = round.answers?.find((item) => item.question_id === question.question_id);
               return (
                 <li key={question.question_id}>
                   <strong>Round {round.round_number} · {question.prompt}</strong>
-                  {answer?.answer_text && <span>Your saved answer will be removed · {answer.answer_text}</span>}
+                  <span>{optionLabels(snapshot, selected, question.option_ids)}</span>
+                  {answer?.answer_text && <span>{saved ? "Removed answer" : "Answer to be removed"} · {answer.answer_text}</span>}
                 </li>
               );
             }))}
           </ul>
         </div>
       )}
-      {impact.changed_requirements.length === 0 && impact.removed_requirements.length === 0 && rounds.length === 0
-        && <p>No requirements or follow-up answers will change.</p>}
+      {!hasChanges(impact) && <p>No requirements or follow-up answers will change.</p>}
     </div>
+  );
+}
+
+export function SavedBriefChanges({ view, snapshot }: { view: CaseView; snapshot: ListingSnapshot }) {
+  if (!hasChanges(view.brief_impact)) return null;
+  return (
+    <section className="review-panel" aria-label="Latest changes to the buying brief">
+      <h2>Latest changes to the buying brief</h2>
+      <BriefChanges impact={view.brief_impact} snapshot={snapshot} selected={view.selected_option_ids} saved />
+    </section>
   );
 }
 
@@ -67,20 +92,26 @@ export function BriefSummary({ view, snapshot, expanded, onToggle }: {
   onToggle: () => void;
 }) {
   const requirements = view.requirements ?? [];
-  const current = new Set(requirements.map((row) => row.requirement_id));
-  const changes = (view.brief_impact?.changed_requirements ?? []).filter((row) => current.has(row.requirement_id));
-  const open = requirements.filter((row) => row.status === "unresolved");
-  const highlighted = [...changes, ...open.filter((row) => !changes.some((change) => change.requirement_id === row.requirement_id))];
+  const impact = view.brief_impact;
+  const open = requirements.filter((row) => row.status === "unresolved").flatMap((row) => {
+    const changed = impact?.changed_requirements.find((change) => change.requirement_id === row.requirement_id);
+    const option_ids = row.option_ids.filter((id) => !changed?.option_ids.includes(id));
+    return option_ids.length ? [{ ...row, option_ids }] : [];
+  });
   return (
     <section className="review-panel brief-summary" aria-labelledby="brief-summary-title">
       <h2 id="brief-summary-title">Buying brief so far</h2>
-      {highlighted.length > 0 ? <ul>
-        {highlighted.slice(0, 3).map((row) => <li key={row.requirement_id}>
-          <span className={`requirement-status is-${row.status}`}>{row.status === "unresolved" ? "Open" : "Updated"}</span>
+      {!expanded && hasChanges(impact) && <BriefChanges impact={impact} snapshot={snapshot} selected={view.selected_option_ids} saved />}
+      {!expanded && open.length > 0 && <ul className="brief-summary-open" aria-label="Open decisions">
+        {groupBriefRequirements(open).map(({ row }) => <li key={row.requirement_id}>
+          <span className="requirement-status is-unresolved">Open</span>
           <span>{briefDecisionText(row)}</span>
           <small>{optionLabels(snapshot, view.selected_option_ids, row.option_ids)}</small>
         </li>)}
-      </ul> : <p className="muted">{requirements.length ? "No new changes." : "No requirements recorded yet."}</p>}
+      </ul>}
+      {!expanded && !hasChanges(impact) && open.length === 0 && (
+        <p className="muted">{requirements.length ? "No new changes." : "No requirements recorded yet."}</p>
+      )}
       <button type="button" className="button button-secondary" aria-expanded={expanded}
         aria-controls={expanded ? "expanded-buying-brief" : undefined} onClick={onToggle}>
         {expanded ? "Hide buying brief" : "View or edit buying brief"}
@@ -167,6 +198,7 @@ export function BuyingBrief({ id, view, snapshot, disabled, onEdit, onConfirmOrd
 
   return (
     <section id={id} className="buying-brief" aria-label="Buying brief">
+      <SavedBriefChanges view={view} snapshot={snapshot} />
       <RequirementDecisions buyingBrief requirements={requirements} selected={selected} snapshot={snapshot}
         changed={view.brief_impact?.changed_requirements} />
       {requirements.filter((row) => row.order_conflict).flatMap((row) => row.option_ids.map((id) => (
@@ -183,12 +215,6 @@ export function BuyingBrief({ id, view, snapshot, disabled, onEdit, onConfirmOrd
             onClick={() => startEditing(row.change_id)}>Clarify open correction</button>
         </div>
       ))}
-      {view.brief_impact && (view.brief_impact.discarded_rounds.length > 0 || view.brief_impact.removed_requirements.length > 0) && (
-        <details className="review-panel">
-          <summary>Changes to saved requirements and follow-up answers</summary>
-          <BriefChanges impact={view.brief_impact} snapshot={snapshot} selected={selected} />
-        </details>
-      )}
       <div className="interview-actions">
         <button type="button" className="button button-secondary" disabled={disabled || previewing}
           onClick={() => startEditing()}>
@@ -212,8 +238,8 @@ export function BuyingBrief({ id, view, snapshot, disabled, onEdit, onConfirmOrd
             <strong>Applies to</strong>
             <select value={option} disabled={disabled || previewing} onChange={(event) => { setOption(event.target.value); setPreview(null); }}>
               <option value="">Match my wording</option>
-              {selected.map((id, index) => <option key={id} value={id}>
-                Option {"ABC"[index]} · {optionLabels(snapshot, selected, [id])}
+              {selected.map((id) => <option key={id} value={id}>
+                {optionLabels(snapshot, selected, [id])}
               </option>)}
             </select>
           </label>

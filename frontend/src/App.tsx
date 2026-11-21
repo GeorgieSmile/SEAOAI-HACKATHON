@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { caseVersion, currentPurchaseReview, getCurrentCase, importListing, resetCase } from "./api";
+import { caseVersion, currentPurchaseReview, DemoLocked, getCurrentCase, importListing, pendingReview, resetCase, unlockDemo } from "./api";
 import type { CaseVersion, ListingSnapshot } from "./api";
 import { Interview } from "./Interview";
 import type { InterviewScreen } from "./Interview";
@@ -8,7 +8,7 @@ import { Listing, OptionImage } from "./Listing";
 import { useInterviewSession } from "./useInterviewSession";
 
 type ImportState =
-  | { status: "recovering" | "recovery-failed" | "replacement" | "empty" }
+  | { status: "recovering" | "recovery-failed" | "locked" | "replacement" | "empty" }
   | { status: "loading"; sourceLabel: string }
   | { status: "failed"; sourceLabel?: string; message: string }
   | { status: "ready"; sourceLabel?: string; snapshot: ListingSnapshot };
@@ -44,6 +44,48 @@ const workMessages = {
   refresh: "Loading your saved progress…",
 };
 
+function DemoAccess({ onUnlock }: { onUnlock: () => void }) {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+  const [unlocking, setUnlocking] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => heading.current?.focus(), []);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (unlocking) return;
+    setUnlocking(true);
+    setError("");
+    try {
+      await unlockDemo(code);
+      onUnlock();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Could not unlock the demo. Try again.");
+      setUnlocking(false);
+    }
+  }
+
+  return (
+    <main className="container demo-access">
+      <section className="review-panel demo-access-panel" aria-labelledby="demo-access-title">
+        <h1 id="demo-access-title" tabIndex={-1} ref={heading}>Unlock the demo</h1>
+        <p className="muted">Enter the demo code you received.</p>
+        <form onSubmit={(event) => void submit(event)}>
+          <label htmlFor="demo-code">Demo code</label>
+          <input id="demo-code" type="password" value={code} required maxLength={256} readOnly={unlocking} autoComplete="off"
+            aria-invalid={Boolean(error) || undefined} aria-describedby={error ? "demo-access-error" : undefined}
+            onChange={(event) => { setCode(event.currentTarget.value); setError(""); }} />
+          {error && <p className="error" id="demo-access-error" role="alert">{error}</p>}
+          <button className="button button-primary" type="submit" disabled={unlocking}>
+            {unlocking ? "Unlocking…" : "Unlock demo"}
+          </button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
 export function App() {
   const [intake, setIntake] = useState<ImportState>({ status: "recovering" });
   const [selected, setSelected] = useState<string[]>([]);
@@ -63,13 +105,14 @@ export function App() {
   const selectionTitle = useRef<HTMLHeadingElement>(null);
   const resetHeading = useRef<HTMLHeadingElement>(null);
   const startOverButton = useRef<HTMLButtonElement>(null);
-  const interview = useInterviewSession();
+  const interview = useInterviewSession(!resetTarget && !editingSelection);
   const restoreInterview = interview.restore;
   const recovering = intake.status === "recovering";
   const recoveryFailed = intake.status === "recovery-failed";
+  const demoLocked = intake.status === "locked";
   const replacing = intake.status === "replacement";
   const resetPrompt = resetTarget !== null;
-  const canUpload = !recovering && !recoveryFailed && !resetPrompt;
+  const canUpload = !recovering && !recoveryFailed && !demoLocked && !resetPrompt;
 
   useEffect(() => {
     if (!recovering) return;
@@ -86,8 +129,8 @@ export function App() {
           setEditingSelection(false);
         }
       }
-    }).catch(() => {
-      if (isCurrent()) setIntake({ status: "recovery-failed" });
+    }).catch((failure) => {
+      if (isCurrent()) setIntake({ status: failure instanceof DemoLocked ? "locked" : "recovery-failed" });
     });
     return () => controller.abort();
   }, [recovering, restoreInterview]);
@@ -227,9 +270,9 @@ export function App() {
 
   const sourceLabel = "sourceLabel" in intake ? intake.sourceLabel : undefined;
 
-  const progress = !snapshot || editingSelection ? 1 : interviewScreen === "report" ? 3 : 2;
+  const progress = !snapshot || editingSelection ? 1 : interviewScreen === "report" || interviewScreen === "preparing-report" ? 3 : 2;
   const steps = ["Choose options", "Buying brief", "Evidence report"];
-  const pageTitle = !snapshot ? "Import a listing" : progress !== 2 ? steps[progress - 1]
+  const pageTitle = demoLocked ? "Unlock the demo" : !snapshot ? "Import a listing" : progress !== 2 ? steps[progress - 1]
     : interviewScreen === "brief" ? "Review buying brief" : "Buyer questions";
   useEffect(() => {
     document.title = `${pageTitle} · DiliDoo!`;
@@ -240,11 +283,19 @@ export function App() {
       onClick={() => setShowImport(!showImport)}>{showImport ? "Close" : editingSelection ? "Replace" : "Replace listing"}</button>
   );
 
+  const brand = <span className="brand"><img src="/dilidoo-icon.svg" alt="" width="36" height="36" /><span>DiliDoo<span className="brand-bang">!</span></span></span>;
+  if (demoLocked) return (
+    <>
+      <header className="site-header"><div className="container site-header-inner">{brand}</div></header>
+      <DemoAccess onUnlock={() => setIntake({ status: "recovering" })} />
+    </>
+  );
+
   return (
     <>
       <header className="site-header">
         <div className="container site-header-inner">
-          <span className="brand"><img src="/dilidoo-icon.svg" alt="" width="36" height="36" /><span>DiliDoo<span className="brand-bang">!</span></span></span>
+          {brand}
           <ol className="steps" aria-label="Case progress">
             {steps.map((step, index) => <li key={step} aria-current={progress === index + 1 ? "step" : undefined}
               className={index + 1 < progress ? "done" : ""}><b aria-hidden="true">{index + 1 < progress ? "✓" : index + 1}</b>{step}</li>)}
@@ -489,7 +540,7 @@ export function App() {
                   disabled={resetPrompt || mustReloadInterview || selected.length === 0 || contextTooLong}
                 >
                   {activeInterview
-                    ? currentPurchaseReview(activeInterview) ? "Resume purchase review"
+                    ? currentPurchaseReview(activeInterview) || pendingReview(activeInterview) ? "Resume purchase review"
                       : activeInterview.phase === "ready_for_review" ? "Resume buying brief" : "Resume questions"
                     : "Confirm options"}
                 </button>
@@ -512,6 +563,7 @@ export function App() {
             workingMessage={interview.work ? workMessages[interview.work] : ""}
             error={savedInterviewChanged ? "The saved interview changed. Reload saved progress to open it." : interview.error}
             needsRefresh={interview.needsRefresh || mustReloadInterview}
+            reportConnectionLost={interview.reportConnectionLost}
             onChangeSelection={mustReloadInterview ? undefined : () => {
               interview.suspend();
               setEditingSelection(true);

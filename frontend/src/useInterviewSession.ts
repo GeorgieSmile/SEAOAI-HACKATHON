@@ -1,6 +1,7 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  caseVersion, continueQuestions, getCurrentCase, prepareBrief, requestReview, resumeQuestions, retryCase, saveBriefEdit, startQuestions,
+  AnswerClarificationRequired, caseVersion, continueQuestions, DemoLocked, getCurrentCase, pendingReview, prepareBrief, requestReview, resumeQuestions,
+  retryCase, saveBriefEdit, startQuestions,
 } from "./api";
 import type { BriefEdit, CaseStage, CaseVersion, CaseView, OrderClarification, Selection, Submission } from "./api";
 
@@ -31,24 +32,77 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Could not save your progress. Try again.";
 }
 
-async function savedInterview(snapshotId: string) {
-  const saved = await getCurrentCase();
+async function savedInterview(snapshotId: string, signal?: AbortSignal) {
+  const saved = await getCurrentCase(signal);
   if (saved.snapshot?.snapshot_id !== snapshotId) {
     throw new Error("The active listing changed. Reload the page to open the current listing.");
   }
   return saved.case;
 }
 
-export function useInterviewSession() {
+export function useInterviewSession(pollReview: boolean) {
   const [view, setView] = useState<CaseView | null>(null);
   const [work, setWork] = useState<Work | null>(null);
   const [error, setError] = useState("");
   const [needsRefresh, setNeedsRefresh] = useState(false);
   const [requiresReload, setRequiresReload] = useState(false);
+  const [reportConnectionLost, setReportConnectionLost] = useState(false);
   const activeRequest = useRef(0);
   const pending = useRef(false);
   const unconfirmedOperation = useRef<{ key: string; id: string } | null>(null);
   const lastSent = useRef<SentOperation | null>(null);
+
+  useEffect(() => {
+    const status = pendingReview(view);
+    if (!view || !status || !pollReview || work || needsRefresh || requiresReload) return;
+    const controller = new AbortController();
+    const request = activeRequest.current;
+    const version = caseVersion(view);
+    const operationId = view.last_operation?.operation_id;
+    const isCurrent = () => !controller.signal.aborted && activeRequest.current === request;
+    let timeout: number;
+
+    function requireReload(message: string) {
+      setReportConnectionLost(false);
+      setRequiresReload(true);
+      setNeedsRefresh(true);
+      setError(message);
+    }
+
+    async function checkReport() {
+      try {
+        const { snapshot, case: saved } = await getCurrentCase(controller.signal);
+        if (!isCurrent()) return;
+        if (snapshot?.snapshot_id !== view?.snapshot_id || !saved || !sameCaseVersion(caseVersion(saved), version)
+          || saved.last_operation?.stage !== "review" || saved.last_operation.operation_id !== operationId) {
+          requireReload("The saved review changed. Reload saved progress to open it.");
+          return;
+        }
+        setReportConnectionLost(false);
+        if (pendingReview(saved) !== status) {
+          setView(saved);
+          unconfirmedOperation.current = null;
+          lastSent.current = null;
+          return;
+        }
+        timeout = window.setTimeout(() => void checkReport(), 1_500);
+      } catch (failure) {
+        if (!isCurrent()) return;
+        if (failure instanceof DemoLocked) {
+          requireReload("Your demo access changed. Reload saved progress to unlock the demo.");
+          return;
+        }
+        setReportConnectionLost(true);
+        timeout = window.setTimeout(() => void checkReport(), 3_000);
+      }
+    }
+
+    timeout = window.setTimeout(() => void checkReport(), 1_500);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [view, pollReview, work, needsRefresh, requiresReload]);
 
   const restore = useCallback((restored: CaseView | null) => {
     ++activeRequest.current;
@@ -57,6 +111,7 @@ export function useInterviewSession() {
     lastSent.current = null;
     setWork(null);
     setError("");
+    setReportConnectionLost(false);
     setNeedsRefresh(false);
     setRequiresReload(false);
     setView(restored);
@@ -112,6 +167,11 @@ export function useInterviewSession() {
       return result;
     } catch (actionError) {
       if (!isCurrent()) return null;
+      if (actionError instanceof AnswerClarificationRequired) {
+        unconfirmedOperation.current = null;
+        lastSent.current = null;
+        throw actionError;
+      }
       // A lost response can still leave committed answers or a running operation.
       try {
         const saved = await savedInterview(snapshotId);
@@ -122,7 +182,7 @@ export function useInterviewSession() {
             unconfirmedOperation.current = null;
             return saved;
           }
-          if (saved.last_operation.status === "running") return saved;
+          if (saved.last_operation.status === "queued" || saved.last_operation.status === "running") return saved;
           setError(saved.last_operation.message || errorMessage(actionError));
         } else {
           setError(errorMessage(actionError));
@@ -217,5 +277,8 @@ export function useInterviewSession() {
     }
   }
 
-  return { view, work, error, needsRefresh, requiresReload, restore, start, submit, confirm, edit, resume, retry, refresh, suspend };
+  return {
+    view, work, error, needsRefresh, requiresReload, reportConnectionLost,
+    restore, start, submit, confirm, edit, resume, retry, refresh, suspend,
+  };
 }

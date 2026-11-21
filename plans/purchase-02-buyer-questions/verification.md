@@ -137,3 +137,21 @@ git diff --check
 ```
 
 `PROOFLY_PYTHON` was the source checkout's `.venv/bin/python`. Screenshots and local database copies stayed outside the checkout. Fresh Standards and Spec reviews of this combined change and live provider quality checks remain pending.
+
+## Natural interview answers
+
+Tested the local changes based on `840ee64` using the original Website Test.zip, a disposable SQLite database, the React app, and FastAPI with scripted providers. In Chrome at 1280 × 850 and 390 × 850, selected black/white (A), blue/white (B), and black/pink (C). The starting brief required ready-made stock for all three by 1 December.
+
+- Typed “Maybe for one of them” and “15 December is fine” in the same round. The order question asked which option could be custom-made. Both draft answers stayed in place. Editing the first answer to “Custom is fine for the blue cup” saved B’s exception and the shared deadline. A and C kept their stock requirement. Checked the per-SKU changes, reopened the brief, confirmed it, and verified the supplier draft had separate B and A/C questions. Inspected top, middle, and bottom screenshots of the clarification and brief at both widths and checked for horizontal overflow.
+- Through the actual SDK with a local mock transport, the round with “A bespoke production run works for us for the blue cup” used one interpretation request. The locally recognized deadline was excluded from that request. Saving after preview and a backend restart reused the result. The report kept the order requirement scoped to B and reopened after a second restart.
+- Ran the following from the repo root using the shared project virtualenv. All 513 backend and 43 Chrome tests passed. Typecheck, production build, and whitespace checks passed.
+
+```sh
+PURCHASE_TEST_ZIP="$HOME/Downloads/Website Test.zip" OPENAI_LIVE_TRANSLATION=0 OPENAI_LIVE_QUESTIONS=0 OPENAI_LIVE_REVIEW=0 "$PYTHON" -m pytest -q -p no:cacheprovider backend/tests --tb=short
+PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --workers=2 --reporter=dot
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
+git diff --check
+```
+
+Restarted the live local backend and verified that its existing reviewed case reopened at revision 3 through the frontend proxy. Verification used zero paid requests. Live interpretation quality was not measured.

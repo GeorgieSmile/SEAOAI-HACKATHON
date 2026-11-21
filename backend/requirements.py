@@ -44,12 +44,14 @@ def _binding_origin(row: ResolvedRequirement) -> RequirementProvenance | None:
 
 def _with_supplier_target(
     row: ResolvedRequirement, *, selected_option_ids: list[str] | None = None, scoped_answers: bool = True,
-    historical_order: bool = False,
+    historical_order: bool = False, interpreted_refs: frozenset[str] = frozenset(),
 ) -> ResolvedRequirement:
     if row.status != "active":
         return row
     target = row.supplier_target
     origin = _binding_origin(row)
+    if origin is not None and origin.input_ref in interpreted_refs:
+        return row
     if (
         selected_option_ids is not None and origin is not None and origin.quote == row.statement
         and (origin.input_ref == "context" or scoped_answers and origin.input_ref.startswith("answer:"))
@@ -216,6 +218,21 @@ def validate_submission_effect(
     question: IssuedQuestion, answer: Answer, *, selected_option_ids: list[str] | None = None,
     snapshot: ListingSnapshot | None = None,
 ) -> None:
+    if decision := answer.natural_decision:
+        _validate_effect_target(decision.effect, question.requirement_ids or [])
+        if not set(decision.option_ids).issubset(question.option_ids) or answer.answer_text in question.choices:
+            raise ValueError("An interpreted answer must stay within its issued question and option scope.")
+        topic = question.topic or BUYER_FACET_TOPICS.get(question.buyer_facet)
+        target = decision.supplier_target
+        if target is not None and (
+            BUYER_FACET_TOPICS.get(target.kind) != topic or question.buyer_facet not in {None, target.kind}
+        ):
+            raise ValueError("The inferred term must answer the issued question's buyer facet.")
+        if decision.delivery_condition is not None and (
+            topic != "customization" or question.buyer_facet not in {None, "order_type"}
+        ):
+            raise ValueError("A custom order condition must answer an order-type question.")
+        return
     effect = answer.requirement_effect
     if effect is not None:
         if question.requirement_ids is None:
@@ -274,10 +291,11 @@ def recover_direct_legacy_requirement(
 
 def _order_conflicts(
     case_id: str, rows: dict[str, ResolvedRequirement], *, historical: bool = False,
+    interpreted_refs: frozenset[str] = frozenset(),
 ) -> dict[str, tuple[ResolvedRequirement, tuple[str, ...]]]:
     by_option: dict[str, list[tuple[str, OrderTarget]]] = {}
     for row in rows.values():
-        target = _with_supplier_target(row, historical_order=historical).supplier_target
+        target = _with_supplier_target(row, historical_order=historical, interpreted_refs=interpreted_refs).supplier_target
         if row.delivery_condition is not None:
             target = OrderTarget(value="custom_orders_acceptable")
         if row.status == "active" and isinstance(target, OrderTarget):
@@ -375,12 +393,12 @@ def _save_scoped_change(
 
 def _apply_order_clarification(
     case_id: str, rows: dict[str, ResolvedRequirement], clarification: OrderClarification,
-    forks: dict[str, dict[str, str]],
+    forks: dict[str, dict[str, str]], interpreted_refs: frozenset[str],
 ) -> None:
     option_id = clarification.option_id
     target_id = clarification.requirement_id
     scope = [option_id]
-    branch = _order_conflicts(case_id, rows).get(target_id)
+    branch = _order_conflicts(case_id, rows, interpreted_refs=interpreted_refs).get(target_id)
     if branch is not None:
         decision, sources = branch
         candidates = [rows[key] for key in sources if option_id in rows[key].option_ids]
@@ -479,14 +497,19 @@ def arrival_cutoff(rows: list[ResolvedRequirement], option_ids: list[str]) -> De
     return next(iter(dates)) if len(dates) == 1 else None
 
 
-def _link_arrival_conditions(rows: list[ResolvedRequirement]) -> list[ResolvedRequirement]:
+def _link_arrival_conditions(rows: list[ResolvedRequirement], interpreted_refs: frozenset[str]) -> list[ResolvedRequirement]:
     linked = []
     for row in rows:
         condition = row.delivery_condition
         if condition is None or not condition.follows_deadline:
             linked.append(row)
             continue
-        date = arrival_cutoff(rows, row.option_ids)
+        origin = _binding_origin(row)
+        if origin is not None and origin.input_ref in interpreted_refs:
+            dates = {arrival_cutoff(rows, [option_id]) for option_id in row.option_ids}
+            date = next(iter(dates)) if len(dates) == 1 else None
+        else:
+            date = arrival_cutoff(rows, row.option_ids)
         linked.append(row.model_copy(update={
             "status": "active" if row.status == "active" and date is not None else "unresolved",
             "delivery_condition": condition.model_copy(update={"latest_arrival": date}),
@@ -501,6 +524,10 @@ def resolve_requirements(
 ) -> list[ResolvedRequirement]:
     historical = projection != "current"
     selected = selected_option_ids or []
+    interpreted_refs = frozenset(
+        f"answer:{answer.question_id}"
+        for round in rounds for answer in round.answers or [] if answer.natural_decision is not None
+    )
     rows = {row.requirement_id: row for row in initial if row.provenance[0].input_ref == "context"}
     for key, row in rows.items():
         if row.status == "active":
@@ -520,13 +547,13 @@ def resolve_requirements(
             if isinstance(event, BriefChange):
                 _apply_brief_change(case_id, rows, event)
             else:
-                _apply_order_clarification(case_id, rows, event, conflict_forks)
+                _apply_order_clarification(case_id, rows, event, conflict_forks, interpreted_refs)
 
     apply_events(0)
     for issued_round in rounds:
         if issued_round.answers is None:
             break
-        order_conflicts = _order_conflicts(case_id, rows, historical=historical)
+        order_conflicts = _order_conflicts(case_id, rows, historical=historical, interpreted_refs=interpreted_refs)
         # Questions in the same round may target disjoint subsets of a row. They use
         # the IDs issued before that round, even as earlier questions split a row.
         for question, answer in zip(issued_round.questions, issued_round.answers, strict=True):
@@ -542,8 +569,12 @@ def resolve_requirements(
                 # The saved answer records the skip, while the earlier decision still stands.
                 continue
             choice = next((item for item in question.choice_effects or [] if item.choice == answer.answer_text), None)
-            effect = choice or answer.requirement_effect
-            wrong_scope = not historical and not _answer_matches_scope(question, answer.answer_text, selected)
+            natural = answer.natural_decision
+            if answer.answer_mode == "natural" and natural is None and question.requirement_ids:
+                continue
+            effect = natural.effect if natural is not None else choice or answer.requirement_effect
+            scope = answer.effective_scope(question.option_ids)
+            wrong_scope = natural is None and not historical and not _answer_matches_scope(question, answer.answer_text, selected)
             if wrong_scope:
                 # Keep older issued references replayable without letting a wrong-SKU answer alter the decision.
                 for target_id, target_scope in _scoped_targets(
@@ -557,10 +588,17 @@ def resolve_requirements(
             action = effect.action if effect is not None else "unresolved"
             provenance = RequirementProvenance(
                 input_ref=input_ref, quote=answer.answer_text,
-                question_text=question.prompt, action=action, option_ids=question.option_ids,
+                question_text=question.prompt, action=action, option_ids=scope,
             )
-            topic = question.topic or "other"
-            supplier_target = choice.supplier_target if choice is not None and action in {"add", "replace"} else None
+            topic = question.topic or (BUYER_FACET_TOPICS.get(question.buyer_facet) if natural is not None else None) or "other"
+            supplier_target = (
+                natural.supplier_target if natural is not None
+                else choice.supplier_target if choice is not None and action in {"add", "replace"} else None
+            )
+            delivery_condition = natural.delivery_condition if natural is not None else None
+            facet = question.buyer_facet
+            if natural is not None and facet is None:
+                facet = "order_type" if delivery_condition is not None else supplier_target.kind if supplier_target is not None else None
             if effect is not None and effect.requirement_id is not None:
                 target_ids = [effect.requirement_id]
             elif effect is None and question.requirement_ids:
@@ -570,13 +608,15 @@ def resolve_requirements(
                 status = {"add": "active", "waive": "waived"}.get(action, "unresolved")
                 row = ResolvedRequirement(
                     requirement_id=requirement_id, statement=answer.answer_text or question.prompt,
-                    option_ids=question.option_ids, status=status,
-                    topic=topic, buyer_facet=question.buyer_facet, provenance=[provenance],
-                    supplier_target=supplier_target,
+                    option_ids=scope, status=status,
+                    topic=topic, buyer_facet=facet, provenance=[provenance],
+                    supplier_target=supplier_target, delivery_condition=delivery_condition,
                 )
-                rows[requirement_id] = _with_supplier_target(row, selected_option_ids=selected) if not historical else row
+                rows[requirement_id] = _with_supplier_target(
+                    row, selected_option_ids=selected, interpreted_refs=interpreted_refs,
+                ) if not historical else row
                 continue
-            for target_id, target_scope in _scoped_targets(target_ids, question.option_ids, conflict_forks):
+            for target_id, target_scope in _scoped_targets(target_ids, scope, conflict_forks):
                 if conflict := order_conflicts.get(target_id):
                     if projection in {"before_review_fixes", "before_order_conflicts"} and action not in {"replace", "waive"}:
                         continue
@@ -594,10 +634,13 @@ def resolve_requirements(
                         "statement": answer.answer_text if action == "replace" else decision.statement,
                         "status": status,
                         "supplier_target": supplier_target,
+                        "delivery_condition": delivery_condition,
                         "provenance": [*decision.provenance, provenance],
                         "order_conflict": decision.order_conflict if status == "unresolved" else None,
                     })
-                    rows[resolved_id] = _with_supplier_target(resolved, selected_option_ids=selected) if not historical else resolved
+                    rows[resolved_id] = _with_supplier_target(
+                        resolved, selected_option_ids=selected, interpreted_refs=interpreted_refs,
+                    ) if not historical else resolved
                     if status == "unresolved" and resolved_id != target_id:
                         # An existing issued round may still refer to the original conflict scope.
                         conflict_forks.setdefault(target_id, {}).update(
@@ -613,14 +656,14 @@ def resolve_requirements(
                 updated = row.model_copy(update={
                     "statement": answer.answer_text if action == "replace" else row.statement,
                     "option_ids": target_scope, "status": status, "topic": topic if action == "replace" else row.topic,
-                    "buyer_facet": question.buyer_facet if action == "replace" else row.buyer_facet,
+                    "buyer_facet": facet if action == "replace" else row.buyer_facet,
                     "supplier_target": retained_target if status == "active" else None,
                     "provenance": [*row.provenance, provenance],
                     "order_conflict": row.order_conflict if status == "unresolved" else None,
-                    "delivery_condition": row.delivery_condition if action not in {"replace", "waive"} else None,
+                    "delivery_condition": delivery_condition if action == "replace" else None if action == "waive" else row.delivery_condition,
                 })
                 if not historical:
-                    updated = _with_supplier_target(updated, selected_option_ids=selected)
+                    updated = _with_supplier_target(updated, selected_option_ids=selected, interpreted_refs=interpreted_refs)
                 if remaining:
                     fork_id = _derived_id(case_id, target_id, question.question_id)
                     rows[target_id] = row.model_copy(update={"option_ids": remaining})
@@ -631,14 +674,19 @@ def resolve_requirements(
     if events:
         raise ValueError("Brief changes must follow completed question rounds.")
     if not historical:
-        rows = {row.requirement_id: row for row in _link_arrival_conditions(list(rows.values()))}
+        rows = {row.requirement_id: row for row in _link_arrival_conditions(list(rows.values()), interpreted_refs)}
     if projection != "before_order_conflicts":
         # Keep the original decisions for replay. Expose one unresolved decision
         # for each overlapping scope, with both source statements attached.
-        for conflict, sources in _order_conflicts(case_id, rows, historical=historical).values():
+        for conflict, sources in _order_conflicts(
+            case_id, rows, historical=historical, interpreted_refs=interpreted_refs,
+        ).values():
             _remove_conflicting_scope(rows, sources, conflict.option_ids)
             rows[conflict.requirement_id] = conflict
-    resolved = {key: _with_supplier_target(row, historical_order=historical) for key, row in rows.items()}
+    resolved = {
+        key: _with_supplier_target(row, historical_order=historical, interpreted_refs=interpreted_refs)
+        for key, row in rows.items()
+    }
     # Keep suppressed rows addressable by already-issued follow-ups during replay.
     return _visible_requirements(resolved) if projection in {"current", "before_buying_brief"} else list(resolved.values())
 

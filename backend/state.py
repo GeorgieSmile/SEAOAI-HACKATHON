@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -51,6 +52,15 @@ class Store:
                     revision INTEGER NOT NULL,
                     result_operation_id TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS answer_interpretations (
+                    generation INTEGER NOT NULL,
+                    case_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    round_id TEXT NOT NULL,
+                    fingerprints TEXT NOT NULL,
+                    result TEXT,
+                    PRIMARY KEY (generation, case_id, revision, round_id)
+                );
             """)
         except BaseException:
             connection.close()
@@ -59,6 +69,16 @@ class Store:
 
     def close(self) -> None:
         self.connection.close()
+
+    @staticmethod
+    def has_queued_review(path: Path) -> bool:
+        """Find work to restore before the hosted queue starts dispatching."""
+        # A crash during an image write can leave a hot journal. SQLite needs
+        # write access to roll it back before even the first SELECT can run.
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True)) as connection:
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'active_case'").fetchone() is None:
+                return False
+            return connection.execute("SELECT 1 FROM active_case WHERE operation_status = 'queued'").fetchone() is not None
 
     def begin_import(self) -> int:
         generation = self._clear_workspace(None)
@@ -85,6 +105,7 @@ class Store:
                     operation_status = NULL, data = NULL WHERE singleton = 1
             """)
             self.connection.execute("DELETE FROM operation_bindings")
+            self.connection.execute("DELETE FROM answer_interpretations")
             self.connection.execute("DELETE FROM image_sources")
             self.connection.execute("DELETE FROM image_blobs")
         return row[0]
@@ -181,6 +202,45 @@ class Store:
         """, (operation_id,)).fetchone()
         return OperationBinding(*row) if row is not None else None
 
+    def answer_interpretation(
+        self, generation: int, case_id: str, revision: int, round_id: str,
+    ) -> tuple[str, str | None] | None:
+        return self.connection.execute("""
+            SELECT fingerprints, result FROM answer_interpretations
+            WHERE generation = ? AND case_id = ? AND revision = ? AND round_id = ?
+        """, (generation, case_id, revision, round_id)).fetchone()
+
+    def reserve_answer_interpretation(
+        self, generation: int, case: CaseRecord, round_id: str, fingerprints: str,
+    ) -> bool:
+        view = case.view
+        operation = view.last_operation
+        with self.connection:
+            update = self.connection.execute("""
+                INSERT INTO answer_interpretations (generation, case_id, revision, round_id, fingerprints)
+                SELECT ?, ?, ?, ?, ?
+                WHERE EXISTS (
+                    SELECT 1 FROM active_case JOIN active_import USING (singleton)
+                    WHERE generation = ? AND case_id = ? AND revision = ?
+                        AND operation_id = ? AND operation_status = ?
+                )
+                ON CONFLICT DO NOTHING
+            """, (
+                generation, view.case_id, view.revision, round_id, fingerprints,
+                generation, view.case_id, view.revision, operation.operation_id, operation.status,
+            ))
+            return update.rowcount == 1
+
+    def save_answer_interpretation(
+        self, generation: int, case_id: str, revision: int, round_id: str, result: str,
+    ) -> bool:
+        with self.connection:
+            update = self.connection.execute("""
+                UPDATE answer_interpretations SET result = ?
+                WHERE generation = ? AND case_id = ? AND revision = ? AND round_id = ? AND result IS NULL
+            """, (result, generation, case_id, revision, round_id))
+            return update.rowcount == 1
+
     def save_case(
         self, generation: int, previous: CaseRecord | None, case: CaseRecord,
         *, binding: OperationBinding | None = None,
@@ -208,6 +268,11 @@ class Store:
             ))
             if update.rowcount != 1:
                 return False
+            if prior is None or (prior.case_id, prior.revision) != (next_case.case_id, next_case.revision):
+                self.connection.execute("""
+                    DELETE FROM answer_interpretations
+                    WHERE generation != ? OR case_id != ? OR revision != ?
+                """, (generation, next_case.case_id, next_case.revision))
             if binding is not None:
                 self.connection.execute("""
                     INSERT INTO operation_bindings VALUES (?, ?, ?, ?, ?, ?)

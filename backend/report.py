@@ -997,6 +997,11 @@ def _current_report_requirements(
     answers = {f"answer:{answer.question_id}": answer for answer in request.answers}
     clarifications = {f"clarification:{item.clarification_id}": item for item in request.order_clarifications}
     corrections = {f"brief:{item.change_id}": item for item in request.brief_changes}
+    condition_sources = {ref for ref, change in corrections.items() if change.proposal.kind == "custom_by_deadline"}
+    condition_sources.update(
+        ref for ref, answer in answers.items()
+        if answer.natural_decision is not None and answer.natural_decision.delivery_condition is not None
+    )
     selected = set(request.selected_option_ids)
     _unique_ids((row.requirement_id for row in rows), "resolved requirements")
     requirements = []
@@ -1035,9 +1040,12 @@ def _current_report_requirements(
                     or entry.context_start is not None
                 ):
                     raise ValueError("Requirement answers must match submitted questions and answers in the current case.")
-                evidence_scope = set(request.answer_option_ids.get(answer.question_id, []))
+                issued_scope = request.answer_option_ids.get(answer.question_id, [])
+                evidence_scope = set(answer.effective_scope(issued_scope))
                 if evidence_scope != set(entry.option_ids):
-                    raise ValueError("Requirement provenance must keep an answer's issued option scope.")
+                    raise ValueError("Requirement provenance must keep the submitted answer's option scope.")
+                if answer.natural_decision is not None and entry.action != answer.natural_decision.effect.action:
+                    raise ValueError("Requirement provenance must keep the submitted answer's recorded action.")
             if not scope.issubset(evidence_scope):
                 raise ValueError("A requirement must stay within the source input's option scope.")
         if row.status != "active":
@@ -1046,9 +1054,9 @@ def _current_report_requirements(
             continue
         origins = (entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"})
         if current_supplier_questions and row.delivery_condition is not None:
-            origin = next((entry for entry in origins if entry.quote == row.statement and entry.input_ref in corrections
-                           and corrections[entry.input_ref].proposal.kind == "custom_by_deadline"), None)
-            if origin is None or row.topic != "customization" or row.buyer_facet != "order_type" or row.order_conflict:
+            origin = next((entry for entry in origins
+                           if entry.quote == row.statement and entry.input_ref in condition_sources), None)
+            if origin is None or row.topic != "customization" or row.buyer_facet not in {None, "order_type"} or row.order_conflict:
                 raise ValueError("A custom-order condition must belong to a confirmed order requirement.")
         else:
             origin = next(origins, None)
@@ -1062,6 +1070,9 @@ def _current_report_requirements(
             option_ids=origin.option_ids, selected_option_ids=request.selected_option_ids,
         ) if origin.input_ref == "context" or origin.input_ref.startswith("answer:") else None
         correction = corrections.get(origin.input_ref)
+        answer = answers.get(origin.input_ref)
+        natural = answer.natural_decision if answer is not None else None
+        recorded_condition = None
         if correction is not None:
             proposal = correction.proposal
             target = {
@@ -1072,20 +1083,32 @@ def _current_report_requirements(
             if row.supplier_target != target:
                 raise ValueError("The requirement target must match the saved brief correction.")
             if proposal.kind == "custom_by_deadline":
-                condition = row.delivery_condition
-                expected = proposal.date
-                if expected is None:
-                    if current_supplier_questions:
-                        cutoffs = {arrival_cutoff(rows, [option_id]) for option_id in row.option_ids}
-                        expected = next(iter(cutoffs)) if len(cutoffs) == 1 else None
-                    else:
-                        expected = arrival_cutoff(rows, row.option_ids)
-                if condition is None or expected is None or condition != DeliveryCondition(
-                    follows_deadline=proposal.date is None, latest_arrival=expected,
-                ):
-                    raise ValueError("The custom-order condition must match the confirmed arrival cutoff.")
+                recorded_condition = DeliveryCondition(follows_deadline=proposal.date is None, latest_arrival=proposal.date)
+        elif natural is not None:
+            if natural.supplier_target != row.supplier_target or (
+                natural.supplier_target is not None
+                and (BUYER_FACET_TOPICS[natural.supplier_target.kind] != row.topic
+                     or row.buyer_facet not in {None, natural.supplier_target.kind})
+            ):
+                raise ValueError("The requirement target must match the recorded natural answer.")
+            recorded_condition = natural.delivery_condition
         elif row.supplier_target != scoped_target:
             validate_supplier_target(row.supplier_target, row.statement, row.topic, row.buyer_facet)
+
+        if recorded_condition is not None:
+            expected = recorded_condition.latest_arrival
+            if recorded_condition.follows_deadline:
+                if current_supplier_questions:
+                    cutoffs = {arrival_cutoff(rows, [option_id]) for option_id in row.option_ids}
+                    expected = next(iter(cutoffs)) if len(cutoffs) == 1 else None
+                else:
+                    expected = arrival_cutoff(rows, row.option_ids)
+            if expected is None or row.delivery_condition != DeliveryCondition(
+                follows_deadline=recorded_condition.follows_deadline, latest_arrival=expected,
+            ):
+                raise ValueError("The custom-order condition must match the confirmed arrival cutoff.")
+        elif natural is not None and row.delivery_condition is not None:
+            raise ValueError("A requirement cannot add a condition missing from the recorded answer.")
         requirements.append(BuyerRequirement(
             requirement_id=row.requirement_id, text=row.statement, input_ref=origin.input_ref,
             quote=row.statement, option_ids=row.option_ids, question_text=origin.question_text,

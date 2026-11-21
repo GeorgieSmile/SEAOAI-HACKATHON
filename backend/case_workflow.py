@@ -1,5 +1,6 @@
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
+from functools import partial
 from hashlib import sha256
 import json
 import sqlite3
@@ -16,9 +17,10 @@ from .case_models import (
     SavedReview, StartCase, UndoBriefPreview,
 )
 from .contracts import (
-    AnsweredQuestion, AnswerSubmission, BriefChange, BriefProposal, IssuedRound, ListingSnapshot, OrderClarification, QuestionInput,
-    QuestionResult, ResolvedRequirement, ReviewInput,
+    Answer, AnsweredQuestion, AnswerSubmission, BriefChange, BriefProposal, IssuedQuestion, IssuedRound, ListingSnapshot,
+    OrderClarification, QuestionInput, QuestionResult, RecordedNaturalAnswer, ResolvedRequirement, ReviewInput, SubmittedAnswer,
 )
+from .natural_answer import NaturalAnswerDecision, interpret_natural_answer, validate_natural_proposal
 from .report import assemble_review, canonicalize_review_content, review_sent_evidence
 from .report_models import (
     BuyerRequirement, CanonicalReviewContent, PurchaseReview, RequirementSelection, ReviewContent,
@@ -28,6 +30,7 @@ from .requirements import (
     RequirementProjection, issue_requirement_plan, legacy_context_rows, recover_direct_legacy_requirement, resolve_requirements,
     validate_submission_effect,
 )
+from .review_queue import ReviewQueue
 from .state import Store
 
 
@@ -35,8 +38,11 @@ QuestionGenerator = Callable[[QuestionInput], Awaitable[QuestionResult]]
 BriefGenerator = Callable[[str, ListingSnapshot, list[str], str | None], Awaitable[BriefProposal]]
 ReviewImages = Mapping[str, tuple[str, bytes]]
 ReviewGenerator = Callable[[ReviewInput, ReviewImages], Awaitable[ReviewResult]]
+NaturalAnswerBatch = dict[str, tuple[IssuedQuestion, str]]
+NaturalAnswerInterpreter = Callable[[ListingSnapshot, list[str], NaturalAnswerBatch], Awaitable[Mapping[str, NaturalAnswerDecision]]]
 UserCommand = StartCase | ContinueCase | PrepareBrief | ConfirmBrief | BriefEdit | ResumeQuestions
 REVIEW_RESULT = TypeAdapter(ReviewResult)
+NATURAL_ANSWER_RESULTS = TypeAdapter(dict[str, NaturalAnswerDecision])
 HISTORICAL_CANONICAL_REVIEW_VERSION = 7
 CONFIRMED_REVIEW_VERSION = 8
 CURRENT_ORDER_CONFLICT_VERSION = 3
@@ -50,12 +56,13 @@ LEGACY_REPORT_FIELDS = frozenset({
 
 class CaseCommandError(Exception):
     def __init__(
-        self, code: str, message: str, case: CaseView | None = None, *, status: int = 200,
+        self, code: str, message: str, case: CaseView | None = None, *, status: int = 200, question_id: str | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.case = case
         self.status = status
+        self.question_id = question_id
 
 
 def _invalid(message: str, case: CaseView | None) -> CaseCommandError:
@@ -90,9 +97,7 @@ def _input_fields(snapshot: ListingSnapshot, case: CaseView) -> dict:
         if round.answers is not None:
             answers.extend(
                 AnsweredQuestion(
-                    question_id=question.question_id, question_text=question.prompt,
-                    answer_text=answer.answer_text, buyer_facet=question.buyer_facet,
-                    requirement_effect=answer.requirement_effect,
+                    **answer.model_dump(), question_text=question.prompt, buyer_facet=question.buyer_facet,
                 )
                 for question, answer in zip(round.questions, round.answers, strict=True)
             )
@@ -237,7 +242,7 @@ def _legacy_review_migration(
     return updated, saved.model_copy(update={"content": remapped})
 
 
-def _apply_submission(case: CaseView, submission: AnswerSubmission, snapshot: ListingSnapshot) -> CaseView:
+def _submission_round(case: CaseView, submission: AnswerSubmission) -> tuple[int, IssuedRound, dict[str, SubmittedAnswer]]:
     for index, round in enumerate(case.rounds):
         if round.round_id == submission.round_id:
             break
@@ -248,12 +253,10 @@ def _apply_submission(case: CaseView, submission: AnswerSubmission, snapshot: Li
     if len(by_id) != len(submission.answers) or by_id.keys() != {item.question_id for item in round.questions}:
         raise _invalid("Send one answer for every question in the issued round.", case)
 
-    answers = [by_id[question.question_id] for question in round.questions]
-    try:
-        for question, answer in zip(round.questions, answers, strict=True):
-            validate_submission_effect(question, answer, selected_option_ids=case.selected_option_ids, snapshot=snapshot)
-    except ValueError as error:
-        raise _invalid(str(error), case) from error
+    return index, round, by_id
+
+
+def _apply_submission(case: CaseView, index: int, round: IssuedRound, answers: list[Answer]) -> CaseView:
     if answers == round.answers:
         return case
     updated = round.model_copy(update={"answers": answers})
@@ -263,6 +266,37 @@ def _apply_submission(case: CaseView, submission: AnswerSubmission, snapshot: Li
         "brief_changes": [row for row in case.brief_changes if row.after_round <= index],
         "can_resume_questions": False,
     })
+
+
+def _answer_clarification(case: CaseView, question_id: str, message: str) -> CaseCommandError:
+    return CaseCommandError("answer_clarification_required", message, case, status=422, question_id=question_id)
+
+
+def _natural_answer(
+    case: CaseView, question: IssuedQuestion, answer: Answer, decision: NaturalAnswerDecision,
+    *, from_provider: bool = False,
+) -> Answer:
+    message = "Please state the decision for the options in this question, or leave this answer open."
+    if decision.status == "clarify":
+        raise _answer_clarification(case, question.question_id, decision.clarification or message)
+    if decision.status == "unrelated" and not from_provider:
+        return answer
+    if decision.status != "decided" or decision.effect is None or decision.option_ids is None:
+        raise _answer_clarification(case, question.question_id, message)
+    proposed = decision.option_ids
+    scope = [option_id for option_id in question.option_ids if option_id in proposed]
+    if len(scope) != len(proposed):
+        raise _answer_clarification(case, question.question_id, message)
+    try:
+        recorded = RecordedNaturalAnswer(
+            effect=decision.effect, option_ids=scope,
+            supplier_target=decision.supplier_target, delivery_condition=decision.delivery_condition,
+        )
+        materialized = answer.model_copy(update={"natural_decision": recorded})
+        validate_submission_effect(question, materialized)
+    except ValueError as error:
+        raise _answer_clarification(case, question.question_id, message) from error
+    return materialized
 
 
 def _apply_order_clarification(case: CaseView, command: PrepareBrief) -> CaseView:
@@ -311,22 +345,13 @@ def _eligible_brief_phase(case: CaseView) -> bool:
     return case.phase in {"awaiting_answers", "ready_for_review", "reviewed", "failed"}
 
 
-def _operation_result(case: CaseView) -> CaseView:
+def _operation_result(case: CaseView, *, accept_pending: bool = False) -> CaseView:
     operation = case.last_operation
-    if operation.status == "running":
+    if operation.status in {"queued", "running"} and not accept_pending:
         raise CaseCommandError("invalid_input", "This operation is still running.", case, status=409)
     if operation.status == "failed":
         raise CaseCommandError(operation.code or "analysis_failed", operation.message or _interrupted(operation.stage), case)
     return case
-
-
-def _failure(record: CaseRecord, code: str, message: str, *, reconfirm: bool = False) -> CaseRecord:
-    operation = record.view.last_operation.model_copy(update={"status": "failed", "code": code, "message": message})
-    case = record.view.model_copy(update={"phase": "failed", "report": None, "reason": None, "last_operation": operation})
-    if reconfirm or code == "review_regeneration_required":
-        case = case.model_copy(update={"confirmed_revision": None})
-        record = record.model_copy(update={"confirmed_review_digest": None, "review_input": None})
-    return record.model_copy(update={"view": case, "saved_review": None})
 
 
 def _legacy_report_matches(report: object, inputs: ReviewInput) -> bool:
@@ -380,12 +405,30 @@ def _review_digest(
 class CaseWorkflow:
     def __init__(
         self, store: Store, generate_questions: QuestionGenerator, generate_review: ReviewGenerator,
-        generate_brief: BriefGenerator,
+        generate_brief: BriefGenerator, interpret_answers: NaturalAnswerInterpreter | None = None,
+        *, review_queue: ReviewQueue | None = None,
     ):
         self.store = store
         self.generate_questions = generate_questions
         self.generate_review = generate_review
         self.generate_brief = generate_brief
+        self.interpret_answers = interpret_answers
+        self.review_queue = review_queue
+        self._interpreting_rounds: set[tuple[int, str, int, str]] = set()
+
+    def _failure(self, record: CaseRecord, code: str, message: str, *, reconfirm: bool = False) -> CaseRecord:
+        original = record.view.last_operation
+        clears_confirmation = reconfirm or code == "review_regeneration_required"
+        retryable_hosted_review = self.review_queue is not None and original.stage == "review" and not clears_confirmation
+        operation = original.model_copy(update={
+            "status": "failed", "code": code, "message": message,
+            "retry_token": uuid4() if retryable_hosted_review else None,
+        })
+        case = record.view.model_copy(update={"phase": "failed", "report": None, "reason": None, "last_operation": operation})
+        if clears_confirmation:
+            case = case.model_copy(update={"confirmed_revision": None})
+            record = record.model_copy(update={"confirmed_review_digest": None, "review_input": None})
+        return record.model_copy(update={"view": case, "saved_review": None, "review_queue_order": None})
 
     def recover_saved_case(self) -> None:
         generation, snapshot, record, report, saved_review, invalid_confirmation = self.store.workspace_for_recovery()
@@ -414,7 +457,7 @@ class CaseWorkflow:
             raise sqlite3.DatabaseError("The saved buyer decisions could not be matched to the interview.") from error
         upgraded = upgraded.model_copy(update={"order_conflict_version": CURRENT_ORDER_CONFLICT_VERSION})
         if invalid_confirmation and operation.stage == "review":
-            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
         confirmed = None
@@ -422,28 +465,43 @@ class CaseWorkflow:
             try:
                 confirmed = self._confirmed_review(record, snapshot)
             except ValueError:
-                failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
                 self._save(generation, record, failed)
                 return
         if confirmed is not None and new_decisions and case.phase != "reviewed":
-            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
         if operation.stage == "review" and confirmed is None and (
-            operation.status == "running" or (
+            operation.status in {"queued", "running"} or (
                 operation.status == "failed" and (case.confirmed_revision is not None or record.review_input is not None)
             )
         ):
-            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
-        if operation.status == "running":
-            interrupted = _failure(upgraded, "analysis_failed", _interrupted(operation.stage))
+        if operation.status == "queued" and self.review_queue is not None and (
+            confirmed is not None and upgraded.review_queue_order is not None and case.phase == "generating_review"
+        ):
+            if upgraded != record or report is not None or saved_review is not None:
+                self._save(generation, record, upgraded)
+            self._register_queued_review(generation, upgraded.review_queue_order)
+            return
+        if operation.status in {"queued", "running"}:
+            interrupted = self._failure(upgraded, "analysis_failed", _interrupted(operation.stage))
             self._save(generation, record, interrupted)
             return
         if case.phase != "reviewed":
             if case.phase == "ready_for_review" and upgraded.view.requirements is None:
                 upgraded = _upgrade_legacy_case(upgraded)
+            if (
+                self.review_queue is not None and confirmed is not None
+                and operation.status == "failed" and operation.retry_token is None
+            ):
+                # Older hosted failures were saved before retries had per-attempt tokens.
+                operation = operation.model_copy(update={"retry_token": uuid4()})
+                view = upgraded.view.model_copy(update={"last_operation": operation})
+                upgraded = upgraded.model_copy(update={"view": view})
             if upgraded != record or report is not None or saved_review is not None or invalid_confirmation:
                 self._save(generation, record, upgraded)
             return
@@ -453,7 +511,7 @@ class CaseWorkflow:
         if operation.status == "ready" and saved_review is None and _legacy_report_matches(report, inputs):
             if upgraded.initial_requirements is None:
                 upgraded = _upgrade_legacy_case(upgraded)
-            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
 
@@ -462,7 +520,7 @@ class CaseWorkflow:
                 raise ValueError("The saved review operation has not completed successfully.")
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
             if validated.version == CONFIRMED_REVIEW_VERSION and confirmed is None:
-                failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
                 self._save(generation, record, failed)
                 return
             if validated.version < CONFIRMED_REVIEW_VERSION and confirmed is not None:
@@ -492,7 +550,7 @@ class CaseWorkflow:
             if legacy:
                 upgraded, migrated = _legacy_review_migration(upgraded, inputs, rebuilt, validated)
                 if migrated is None:
-                    failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                    failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
                     self._save(generation, record, failed)
                     return
                 validated = migrated
@@ -501,13 +559,13 @@ class CaseWorkflow:
                     inputs, validated.content, sent_evidence=validated.sent_evidence, historical_supplier_questions=True,
                 )
         except ValueError:
-            failed = _failure(
+            failed = self._failure(
                 upgraded, "invalid_review", INVALID_REVIEW, reconfirm=confirmed is None or new_decisions,
             )
             self._save(generation, record, failed)
             return
         if new_decisions:
-            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
         version = max(validated.version, 4)
@@ -520,7 +578,7 @@ class CaseWorkflow:
             except ValueError:
                 unchanged = False
             if not unchanged:
-                failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                failed = self._failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
                 self._save(generation, record, failed)
                 return
             validated = validated.model_copy(update={"content": canonical})
@@ -569,14 +627,14 @@ class CaseWorkflow:
         self._save(generation, current, record, command=command, stage="start")
         return await self._run_questions(generation, record)
 
-    def prepare_brief(self, command: PrepareBrief) -> CaseView:
+    async def prepare_brief(self, command: PrepareBrief) -> CaseView:
         generation, record = self._command_case(command, "brief")
         if isinstance(record, CaseView):
             return record
         previous = record.view
         case = previous
         if command.submission is not None:
-            case = _apply_submission(case, command.submission, self._command_snapshot(case))
+            case = await self._submit_answers(generation, record, command.submission, self._command_snapshot(case))
         if command.order_clarification is not None:
             case = _apply_order_clarification(case, command)
             case = self._close_dependent_questions(case, case.order_clarifications[-1].after_round)
@@ -600,7 +658,7 @@ class CaseWorkflow:
         })
         settled = working.model_copy(update={
             "view": case, "question_input": None, "review_input": None, "saved_review": None,
-            "confirmed_review_digest": None,
+            "confirmed_review_digest": None, "review_queue_order": None,
         })
         self._save(generation, record, settled, command=command, stage="brief")
         return case
@@ -639,11 +697,11 @@ class CaseWorkflow:
         candidate = self._undo_view(record, command.undo_change_id)
         return BriefPreview(**_brief_impact(record.view, candidate).model_dump(), proposal=None)
 
-    def preview_answers(self, command: PrepareBrief) -> BriefImpact:
-        _, record, snapshot = self._editable_case(command)
+    async def preview_answers(self, command: PrepareBrief) -> BriefImpact:
+        generation, record, snapshot = self._editable_case(command)
         if command.submission is None:
             raise _invalid("Choose the answers to preview first.", record.view)
-        case = _resolved_view(record, _apply_submission(record.view, command.submission, snapshot))
+        case = _resolved_view(record, await self._submit_answers(generation, record, command.submission, snapshot))
         return _brief_impact(record.view, case)
 
     def edit_brief(self, command: BriefEdit) -> CaseView:
@@ -673,7 +731,7 @@ class CaseWorkflow:
         })
         self._save(generation, record, working.model_copy(update={
             "view": case, "question_input": None, "review_input": None, "saved_review": None,
-            "confirmed_review_digest": None,
+            "confirmed_review_digest": None, "review_queue_order": None,
         }), command=command, stage="brief")
         return case
 
@@ -735,7 +793,7 @@ class CaseWorkflow:
         case = record.view
         if case.confirmed_revision == case.revision:
             self._save(generation, record, record, command=command, stage="review")
-            return _operation_result(case)
+            return _operation_result(case, accept_pending=self.review_queue is not None)
         if (
             case.phase != "ready_for_review" or case.requirements is None
             or any(round.answers is None for round in case.rounds)
@@ -755,8 +813,7 @@ class CaseWorkflow:
             "view": case, "question_input": None, "review_input": review_input,
             "saved_review": None, "confirmed_review_digest": digest,
         })
-        self._save(generation, record, pending, command=command, stage="review")
-        return await self._run_review(generation, pending, images)
+        return await self._start_review(generation, record, pending, images, command=command)
 
     def _command_case(
         self, command: ContinueCase | PrepareBrief | ConfirmBrief | BriefEdit | ResumeQuestions, stage: CaseStage,
@@ -791,7 +848,7 @@ class CaseWorkflow:
         if isinstance(current, CaseView):
             return current
         previous = current.view
-        case = _apply_submission(previous, command.submission, self._command_snapshot(previous))
+        case = await self._submit_answers(generation, current, command.submission, self._command_snapshot(previous))
         stage = "continue"
         if case is previous:
             self._save(generation, current, current, command=command, stage=stage)
@@ -809,12 +866,119 @@ class CaseWorkflow:
             })
             settled = working.model_copy(update={
                 "view": case, "question_input": None, "review_input": None, "saved_review": None,
-                "confirmed_review_digest": None,
+                "confirmed_review_digest": None, "review_queue_order": None,
             })
             self._save(generation, current, settled, command=command, stage=stage)
             return case
 
         return await self._request_next_round(generation, current, case, command)
+
+    async def _submit_answers(
+        self, generation: int, record: CaseRecord, submission: AnswerSubmission, snapshot: ListingSnapshot,
+    ) -> CaseView:
+        case = record.view
+        index, issued_round, submitted = _submission_round(case, submission)
+        saved = {answer.question_id: answer for answer in issued_round.answers or []}
+        answers: dict[str, Answer] = {}
+        unresolved: NaturalAnswerBatch = {}
+        for question in issued_round.questions:
+            question_id = question.question_id
+            incoming = submitted[question_id]
+            prior = saved.get(question_id)
+            if prior is not None and prior.answer_text == incoming.answer_text and (
+                prior.requirement_effect == incoming.requirement_effect or incoming.answer_mode == "natural"
+            ):
+                answers[question_id] = prior
+                continue
+            answer = Answer.model_validate(incoming.model_dump())
+            text = answer.answer_text
+            if answer.answer_mode is None or text is None or text in question.choices:
+                answer = answer.model_copy(update={"answer_mode": None})
+                try:
+                    validate_submission_effect(question, answer, selected_option_ids=case.selected_option_ids, snapshot=snapshot)
+                except ValueError as error:
+                    raise _invalid(str(error), case) from error
+            else:
+                decision = interpret_natural_answer(question, text, snapshot, case.selected_option_ids)
+                if decision.status == "unrelated" and decision.may_use_model:
+                    unresolved[question_id] = (question, text)
+                else:
+                    answer = _natural_answer(case, question, answer, decision)
+            answers[question_id] = answer
+
+        if unresolved:
+            interpretations = await self._interpret_answer_batch(generation, record, snapshot, issued_round, unresolved)
+            if interpretations is None:
+                question_id = next(iter(unresolved))
+                raise _answer_clarification(
+                    case, question_id,
+                    "Automatic interpretation is unavailable. Try a more direct answer, or leave this answer open.",
+                )
+            for question_id, (question, text) in unresolved.items():
+                result = interpretations.get(question_id)
+                try:
+                    if result is None:
+                        raise ValueError("No interpretation matched the submitted answer.")
+                    result = validate_natural_proposal(question, text, snapshot, case.selected_option_ids, result)
+                except ValueError as error:
+                    raise _answer_clarification(case, question_id,
+                        "I couldn't reliably interpret this answer. State your decision directly, or leave it open.",
+                    ) from error
+                answers[question_id] = _natural_answer(
+                    case, question, answers[question_id], result, from_provider=True,
+                )
+        return _apply_submission(case, index, issued_round, list(answers.values()))
+
+    async def _interpret_answer_batch(
+        self, generation: int, record: CaseRecord, snapshot: ListingSnapshot, issued_round: IssuedRound,
+        unresolved: NaturalAnswerBatch,
+    ) -> Mapping[str, NaturalAnswerDecision] | None:
+        case = record.view
+        round_key = generation, case.case_id, case.revision, issued_round.round_id
+        if round_key in self._interpreting_rounds:
+            raise CaseCommandError("invalid_input", "These answers are already being interpreted.", case, status=409)
+        fingerprints = {question_id: sha256(text.encode()).hexdigest() for question_id, (_, text) in unresolved.items()}
+        if cached := self.store.answer_interpretation(*round_key):
+            previous_fingerprints, serialized_results = cached
+            if serialized_results is None:
+                return None
+            try:
+                previous = json.loads(previous_fingerprints)
+                results = NATURAL_ANSWER_RESULTS.validate_json(serialized_results)
+                if not isinstance(previous, dict):
+                    return None
+            except ValueError:
+                return None
+            return {
+                question_id: results[question_id] for question_id, fingerprint in fingerprints.items()
+                if previous.get(question_id) == fingerprint and question_id in results
+            }
+        if self.interpret_answers is None:
+            return None
+        if not self.store.reserve_answer_interpretation(generation, record, issued_round.round_id, json.dumps(fingerprints)):
+            raise _obsolete(case)
+        self._interpreting_rounds.add(round_key)
+        try:
+            results = await self.interpret_answers(
+                snapshot.model_copy(deep=True), list(case.selected_option_ids),
+                {question_id: (question.model_copy(deep=True), text) for question_id, (question, text) in unresolved.items()},
+            )
+        except Exception:
+            results = None
+        finally:
+            self._interpreting_rounds.remove(round_key)
+        active_generation, _, active = self.store.workspace()
+        if active_generation != generation or active != record:
+            raise _obsolete(active.view if active is not None else None)
+        validated = {
+            question_id: result for question_id, result in results.items()
+            if question_id in unresolved and isinstance(result, NaturalAnswerDecision)
+        } if isinstance(results, Mapping) else None
+        if validated is not None and not self.store.save_answer_interpretation(
+            *round_key, NATURAL_ANSWER_RESULTS.dump_json(validated).decode(),
+        ):
+            raise _obsolete(case)
+        return validated
 
     async def _request_next_round(
         self, generation: int, current: CaseRecord, case: CaseView, command: ContinueCase | ResumeQuestions,
@@ -827,7 +991,7 @@ class CaseWorkflow:
         question_input = _question_input(snapshot, case, round_number=len(case.rounds) + 1)
         record = current.model_copy(update={
             "view": case, "question_input": question_input, "review_input": None,
-            "saved_review": None, "confirmed_review_digest": None,
+            "saved_review": None, "confirmed_review_digest": None, "review_queue_order": None,
         })
         self._save(generation, current, record, command=command, stage="continue")
         return await self._run_questions(generation, record)
@@ -837,21 +1001,30 @@ class CaseWorkflow:
         if record is None or not _matches(record, command) or record.view.last_operation.operation_id != str(command.operation_id):
             raise _obsolete(record.view if record is not None else None)
         case = record.view
-        if case.last_operation.status != "failed":
-            return _operation_result(case)
+        last_operation = case.last_operation
+        if last_operation.status != "failed":
+            return _operation_result(case, accept_pending=self.review_queue is not None and last_operation.stage == "review")
 
-        operation = case.last_operation.model_copy(update={"status": "running", "code": None, "message": None})
+        operation = last_operation.model_copy(update={
+            "status": "running", "code": None, "message": None, "retry_token": None,
+        })
         if operation.stage == "review":
+            if self.review_queue is not None and last_operation.retry_token is not None:
+                if command.retry_token is None:
+                    raise _invalid("Reload the saved review before retrying this failure.", case)
+                if command.retry_token != last_operation.retry_token:
+                    return _operation_result(case)
             try:
                 review_input, images = self._confirmed_review(record, snapshot)
             except ValueError:
                 raise _invalid("Review and confirm your buying brief before generating a new report.", case)
+            if self.review_queue is not None and last_operation.retry_token is None:
+                raise _invalid("Reload the saved review before retrying this failure.", case)
             pending = record.model_copy(update={
                 "question_input": None, "review_input": review_input, "saved_review": None,
                 "view": case.model_copy(update={"phase": "generating_review", "last_operation": operation}),
             })
-            self._save(generation, record, pending)
-            return await self._run_review(generation, pending, images)
+            return await self._start_review(generation, record, pending, images)
 
         if record.question_input is None:
             return _operation_result(case)
@@ -862,6 +1035,49 @@ class CaseWorkflow:
         pending = record.model_copy(update={"view": pending_view, "question_input": inputs})
         self._save(generation, record, pending)
         return await self._run_questions(generation, pending)
+
+    async def _start_review(
+        self, generation: int, previous: CaseRecord, record: CaseRecord, images: ReviewImages,
+        *, command: ConfirmBrief | None = None,
+    ) -> CaseView:
+        if self.review_queue is None:
+            self._save(generation, previous, record, command=command, stage="review")
+            return await self._run_review(generation, record, images)
+
+        order = self.review_queue.next_order()
+        operation = record.view.last_operation.model_copy(update={"status": "queued"})
+        view = record.view.model_copy(update={"last_operation": operation})
+        queued = record.model_copy(update={"view": view, "review_queue_order": order})
+        # The confirmation, input, FIFO order, and duplicate binding commit together.
+        self._save(generation, previous, queued, command=command, stage="review")
+        self._register_queued_review(generation, order)
+        return view
+
+    def _register_queued_review(self, generation: int, order: int) -> None:
+        assert self.review_queue is not None
+        self.review_queue.enqueue(order, self, partial(self._dispatch_queued_review, generation, order))
+
+    async def _dispatch_queued_review(self, generation: int, order: int) -> None:
+        current_generation, snapshot, record = self.store.workspace()
+        if (
+            generation != current_generation or record is None or record.review_queue_order != order
+            or record.view.last_operation.status != "queued"
+        ):
+            return
+        try:
+            review_input, images = self._confirmed_review(record, snapshot)
+        except ValueError:
+            self._save(generation, record, self._failure(record, "review_regeneration_required", REGENERATE_REVIEW))
+            return
+        operation = record.view.last_operation.model_copy(update={"status": "running"})
+        view = record.view.model_copy(update={"last_operation": operation})
+        running = record.model_copy(update={"view": view, "review_queue_order": None, "review_input": review_input})
+        self._save(generation, record, running)
+        try:
+            await self._run_review(generation, running, images)
+        except CaseCommandError:
+            # Failure or replacement is already reflected in the workspace state.
+            pass
 
     def _confirmed_review(self, record: CaseRecord, snapshot: ListingSnapshot | None) -> tuple[ReviewInput, ReviewImages]:
         case = record.view
@@ -906,7 +1122,7 @@ class CaseWorkflow:
             or view.last_operation.operation_id != binding.result_operation_id
         ):
             raise _obsolete(view)
-        return _operation_result(view)
+        return _operation_result(view, accept_pending=stage == "review" and self.review_queue is not None)
 
     def _save(
         self, generation: int, previous: CaseRecord | None, record: CaseRecord,
@@ -952,14 +1168,14 @@ class CaseWorkflow:
                 case = case.model_copy(update={"brief_impact": _brief_impact(record.view, case)})
             settled = settled.model_copy(update={"view": case})
         except QuestionGenerationError as error:
-            settled = _failure(record, error.code, error.message)
+            settled = self._failure(record, error.code, error.message)
         except (AttributeError, TypeError, ValidationError, ValueError):
-            settled = _failure(record, "invalid_questions", "The question response could not be validated.")
+            settled = self._failure(record, "invalid_questions", "The question response could not be validated.")
         except Exception:
-            settled = _failure(record, "analysis_failed", "Questions could not be prepared. Your answers are saved.")
+            settled = self._failure(record, "analysis_failed", "Questions could not be prepared. Your answers are saved.")
         finally:
             if settled is None:
-                settled = _failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
+                settled = self._failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
             published = self.store.save_case(generation, record, settled)
 
         if not published:
@@ -976,7 +1192,7 @@ class CaseWorkflow:
             if isinstance(result, ReviewFailed):
                 if (result.case_id, result.revision) != (inputs.case_id, inputs.revision):
                     raise ValueError("The review result does not match the submitted case.")
-                settled = _failure(record, result.code, result.message)
+                settled = self._failure(record, result.code, result.message)
             else:
                 operation = record.view.last_operation.model_copy(update={"status": "ready"})
                 scope = result.sent_evidence
@@ -998,12 +1214,12 @@ class CaseWorkflow:
                     ),
                 })
         except (AttributeError, TypeError, ValidationError, ValueError):
-            settled = _failure(record, "invalid_review", INVALID_REVIEW)
+            settled = self._failure(record, "invalid_review", INVALID_REVIEW)
         except Exception:
-            settled = _failure(record, "analysis_failed", "The review could not be generated. Your answers are saved.")
+            settled = self._failure(record, "analysis_failed", "The review could not be generated. Your answers are saved.")
         finally:
             if settled is None:
-                settled = _failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
+                settled = self._failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
             published = self.store.save_case(generation, record, settled)
 
         if not published:
