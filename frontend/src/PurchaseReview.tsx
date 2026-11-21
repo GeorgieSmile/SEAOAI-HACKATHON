@@ -67,16 +67,19 @@ function EvidenceSource({ context, id, citation }: {
   const source = context.sources.get(id);
   if (!source) return null;
   const scope = context.selected.filter((optionId) => source.option_ids.includes(optionId));
+  const optionScope = scope.map((optionId) => optionLabel(context.selected, optionId)).join(", ");
   const isGuidance = source.kind === "official_guidance";
   const isImage = source.kind === "listing_image";
+  const showScopeInLabel = !isGuidance && scope.length > 0
+    && (source.option_ids.length === 1 || scope.length < context.selected.length);
 
   return (
     <details className="review-source">
-      <summary>{source.label}</summary>
+      <summary>{source.label}{showScopeInLabel && ` · ${optionScope}`}</summary>
       <div className="review-source-body">
         <p className="muted">
           {isGuidance ? "Official guidance · curated reference" : isImage ? "Seller listing image" : "Seller listing claim"}
-          {scope.length > 0 ? ` · ${scope.map((optionId) => optionLabel(context.selected, optionId)).join(", ")}`
+          {scope.length > 0 ? ` · ${optionScope}`
             : !isGuidance && source.option_ids.length === 0 ? " · listing level" : ""}
         </p>
         {source.availability !== "available" ? (

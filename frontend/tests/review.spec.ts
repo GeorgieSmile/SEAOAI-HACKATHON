@@ -66,7 +66,11 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(findings.nth(0).getByText("Screen printing is required.", { exact: true })).toBeVisible();
   await expect(findings.nth(0).getByText(report.findings[0]!.priority_reason, { exact: false })).toBeVisible();
 
-  const methods = findings.nth(0).getByRole("region", { name: "Source evidence" })
+  const sharedEvidence = findings.nth(0).getByRole("region", { name: "Source evidence" });
+  await expect(sharedEvidence.locator("summary").filter({ hasText: /^Original option name/ })).toHaveText([
+    "Original option name · Option A", "Original option name · Option B", "Original option name · Option C",
+  ]);
+  const methods = sharedEvidence
     .locator("details").filter({ has: page.getByText("Customization methods offered", { exact: true }) });
   await methods.locator("summary").click();
   const original = snapshot.sources.find((source) => source.source_id === "customization-menu")!;
@@ -74,7 +78,7 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(methods.getByText(original.text_en!, { exact: true })).toBeVisible();
   await expect(methods.getByText("Seller listing claim · listing level", { exact: true })).toBeVisible();
   await expect(findings.nth(1).getByText("Listing conflict · Option C", { exact: true })).toBeVisible();
-  await findings.nth(1).getByText("Seller image for option v6", { exact: true }).click();
+  await findings.nth(1).getByText("Seller image for option v6 · Option C", { exact: true }).click();
   const image = findings.nth(1).getByRole("img", { name: "Seller image for option v6" });
   await expect(image).toHaveAttribute("src", `/api/snapshots/${snapshot.snapshot_id}/images/image-v6`);
   await expect.poll(() => image.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
@@ -84,6 +88,7 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(findings.nth(2).getByText("Official guidance · curated reference", { exact: true })).toBeVisible();
 
   const comparison = page.getByRole("table", { name: "Compare selected options" });
+  await expect(comparison.getByText("Shared selector value", { exact: true }).first()).toBeVisible();
   await expect(comparison.getByRole("columnheader")).toHaveText([
     "Listing detail",
     ...snapshot.options.map((option, index) => new RegExp(`Option ${"ABC"[index]}.*${option.name_original}`)),
