@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
-import type { CaseView, ListingSnapshot, PurchaseReview, Submission } from "../src/api";
+import type { CaseView, ListingSnapshot, PurchaseReview, QuestionRound, ResolvedRequirement, Submission } from "../src/api";
 import flow from "../src/fixtures/integration-flow.json" with { type: "json" };
 import contract from "../../docs/contracts/examples/report-contract-example.json" with { type: "json" };
 
@@ -38,6 +38,113 @@ async function openWorkspace(page: Page, saved: () => CaseView) {
   });
   await page.goto("/");
 }
+
+test("shows scoped requirement decisions and saves an effect-only change to an earlier answer", async ({ page }) => {
+  const finish = "Screen printing is required.";
+  const answerText = "  Matte would work for this one.  ";
+  const initial: ResolvedRequirement = {
+    requirement_id: "finish", statement: finish, status: "active", option_ids: ["v0", "v1"],
+    provenance: [{ input_ref: "context", quote: finish, question_text: null, action: "add", option_ids: ["v0", "v1"] }],
+  };
+  const round: QuestionRound = {
+    round_id: "revisit", round_number: 1, reason: "Revisit the finish by option.", questions: [
+      {
+        question_id: "revisit-a", prompt: "What finish works for this option?", why_ask: "This only changes Option A.",
+        option_ids: ["v0"], source_ids: [], choices: ["The original finish still works.", "Any finish works."],
+        requirement_ids: ["finish"], requirement_targets: [{ ...initial, option_ids: ["v0"] }],
+        choice_effects: [
+          { choice: "The original finish still works.", action: "keep", requirement_id: "finish", statement: null },
+          { choice: "Any finish works.", action: "waive", requirement_id: "finish", statement: null },
+        ],
+      },
+      {
+        question_id: "revisit-b", prompt: "Would you change the finish for Option B?", why_ask: "This only changes Option B.",
+        option_ids: ["v1"], source_ids: [], choices: [], requirement_ids: ["finish"],
+        requirement_targets: [{ ...initial, option_ids: ["v1"] }], choice_effects: [],
+      },
+      {
+        question_id: "texture-c", prompt: "What texture works for Option C?", why_ask: "This only changes Option C.",
+        option_ids: ["v6"], source_ids: [], choices: [], requirement_ids: [], choice_effects: [],
+      },
+    ],
+    answers: [
+      { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "keep", requirement_id: "finish" } },
+      { question_id: "revisit-b", answer_text: null },
+      { question_id: "texture-c", answer_text: "Maybe matte." },
+    ],
+  };
+  const confirmed: ResolvedRequirement = {
+    ...initial, requirement_id: "finish-a", option_ids: ["v0"],
+    provenance: [...initial.provenance, {
+      input_ref: "answer:revisit-a", quote: answerText, question_text: round.questions[0]!.prompt,
+      action: "keep", option_ids: ["v0"],
+    }],
+  };
+  const waived: ResolvedRequirement = {
+    ...initial, requirement_id: "order-c", statement: "Any order type is acceptable.", status: "waived", option_ids: ["v6"],
+    provenance: [{ input_ref: "answer:order-c", quote: "Any order type is acceptable.",
+      question_text: "Do you need ready-made stock?", action: "waive", option_ids: ["v6"] }],
+  };
+  const unresolved: ResolvedRequirement = {
+    ...initial, requirement_id: "texture-c", statement: "Maybe matte.", status: "unresolved", option_ids: ["v6"],
+    provenance: [{ input_ref: "answer:texture-c", quote: "Maybe matte.",
+      question_text: round.questions[2]!.prompt, action: "unresolved", option_ids: ["v6"] }],
+  };
+  let saved = reviewed(skipReport, {
+    rounds: [round], requirements: [{ ...initial, option_ids: ["v1"] }, confirmed, waived, unresolved],
+  });
+  const originalRevision = saved.revision;
+
+  await page.route("**/api/reviews", (route) => {
+    const { operation_id, submission } = route.request().postDataJSON();
+    const revision = originalRevision + 1;
+    const nextReport = { ...skipReport, revision, supplier_draft: "Could you confirm the finish for Option A?" };
+    saved = reviewed(nextReport, {
+      rounds: [{ ...round, answers: submission.answers }],
+      requirements: saved.requirements!.map((requirement) => requirement.requirement_id === confirmed.requirement_id
+        ? { ...confirmed, statement: answerText, provenance: confirmed.provenance.map((entry) =>
+          entry.action === "keep" ? { ...entry, action: "replace" } : entry) } : requirement),
+      last_operation: { ...saved.last_operation!, operation_id },
+    });
+    return route.fulfill({ json: ready(saved) });
+  });
+  await openWorkspace(page, () => saved);
+
+  const decisions = page.getByRole("region", { name: "Your requirements by option" });
+  const optionA = decisions.getByRole("region", { name: "Option A", exact: true });
+  const optionB = decisions.getByRole("region", { name: "Option B", exact: true });
+  const optionC = decisions.getByRole("region", { name: "Option C", exact: true });
+  await expect(optionA.locator("summary").filter({ hasText: finish })).toBeVisible();
+  await expect(optionA.getByText("Question skipped", { exact: false })).toHaveCount(0);
+  await expect(optionB.getByText("Question skipped · Kept prior decision")).toBeVisible();
+  await expect(optionC.locator("summary").filter({ hasText: "Waived" })).toBeVisible();
+  await expect(optionC.locator("summary").filter({ hasText: "Decision open · Answer left open" })).toBeVisible();
+  await optionA.locator("summary").filter({ hasText: finish }).click();
+  await expect(optionA.getByRole("list", { name: "Decision history" }).getByText("Added · Your purchase context")).toBeVisible();
+  await expect(optionA.locator("blockquote").last()).toHaveText(answerText);
+
+  await page.getByRole("link", { name: "Edit answers" }).click();
+  await page.getByRole("button", { name: "Edit round 1" }).click();
+  const targetQuestion = page.getByRole("group", { name: round.questions[0]!.prompt });
+  await expect(targetQuestion.getByRole("radio", { name: `Keep “${finish}”` })).toBeVisible();
+  await expect(targetQuestion.getByRole("radio", { name: `Remove “${finish}”` })).toBeVisible();
+  await expect(targetQuestion.getByRole("textbox", { name: "Your answer" })).toHaveValue(answerText);
+  const effect = targetQuestion.getByRole("combobox", { name: "How should this answer affect your requirements?" });
+  await expect(effect).toHaveValue("keep:finish");
+  await effect.selectOption({ label: `Replace “${finish}” with my answer` });
+  const request = page.waitForRequest("**/api/reviews");
+  await page.getByRole("button", { name: "View purchase review" }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    revision: originalRevision, submission: { answers: [
+      { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "replace", requirement_id: "finish" } },
+      { question_id: "revisit-b", answer_text: null },
+      { question_id: "texture-c", answer_text: "Maybe matte." },
+    ] },
+  });
+  await expect(optionA.locator("summary").filter({ hasText: answerText.trim() })).toBeVisible();
+  await expect(optionB.locator("summary").filter({ hasText: finish })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(saved.report!.supplier_draft);
+});
 
 test("opens scoped source evidence and compares ordered options while draft edits stay separate", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);

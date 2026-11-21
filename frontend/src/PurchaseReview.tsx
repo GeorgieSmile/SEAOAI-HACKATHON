@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
-  ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewClaim, ReviewFinding, ReviewRequirement, Source,
+  ListingOption, ListingSnapshot, PurchaseReview as Review, QuestionRound, ResolvedRequirement, ReviewClaim,
+  ReviewFinding, ReviewRequirement, Source,
 } from "./api";
 
 const findingKinds = {
@@ -213,6 +214,95 @@ function OptionName({ option }: { option: ListingOption | undefined }) {
   );
 }
 
+const requirementStatuses = {
+  active: "Required",
+  waived: "Waived",
+  unresolved: "Decision open",
+};
+
+const decisionActions = {
+  keep: "Kept",
+  replace: "Replaced",
+  waive: "Waived",
+  add: "Added",
+  unresolved: "Left open",
+};
+
+function RequirementDecision({ requirement, optionId }: { requirement: ResolvedRequirement; optionId: string }) {
+  const history = requirement.provenance.filter((entry) => entry.option_ids.includes(optionId));
+  const latest = history.at(-1);
+  const skipped = requirement.status === "unresolved" && latest?.question_text && latest.quote === null;
+  const leftOpen = requirement.status === "unresolved" && latest?.question_text && latest.quote !== null;
+
+  return (
+    <li>
+      <details className="requirement-decision">
+        <summary>
+          <span className={`requirement-status is-${requirement.status}`}>
+            {requirementStatuses[requirement.status]}
+            {skipped && " · Question skipped"}
+            {leftOpen && " · Answer left open"}
+          </span>
+          <span className="requirement-statement">{requirement.statement}</span>
+        </summary>
+        <ol className="requirement-history" aria-label="Decision history">
+          {history.map((entry, index) => (
+            <li key={`${entry.input_ref}-${index}`}>
+              <p><strong>{decisionActions[entry.action]}</strong> · {entry.question_text
+                ? `Your answer to “${entry.question_text}”` : "Your purchase context"}</p>
+              {entry.quote === null ? <p className="muted">No answer submitted.</p> : <blockquote>{entry.quote}</blockquote>}
+            </li>
+          ))}
+        </ol>
+      </details>
+    </li>
+  );
+}
+
+function RequirementDecisions({ requirements, selected, snapshot, rounds }: {
+  requirements: ResolvedRequirement[];
+  selected: string[];
+  snapshot: ListingSnapshot;
+  rounds: QuestionRound[];
+}) {
+  const skippedRevisits = rounds.flatMap((round) => round.questions.filter((question) => (
+    question.requirement_ids?.length
+      && round.answers?.some((answer) => answer.question_id === question.question_id && answer.answer_text === null)
+  )));
+  return (
+    <section className="review-panel requirement-decisions" aria-labelledby="requirement-decisions-heading">
+      <h2 id="requirement-decisions-heading">Your requirements by option</h2>
+      <div className="requirement-options">
+        {selected.map((id) => {
+          const decisions = requirements.filter((requirement) => requirement.option_ids.includes(id));
+          const skipped = skippedRevisits.filter((question) => question.option_ids.includes(id));
+          const option = snapshot.options.find((option) => option.option_id === id);
+          const headingId = `requirement-option-${id}`;
+          return (
+            <section key={id} className="requirement-option" aria-labelledby={headingId}>
+              <h3 id={headingId}>{optionLabel(selected, id)}</h3>
+              <div className="requirement-option-name"><OptionName option={option} /></div>
+              {decisions.length === 0 && skipped.length === 0 ? <p className="muted">No requirement decisions recorded.</p> : (
+                <ul className="requirement-decisions-list">
+                  {decisions.map((requirement) => (
+                    <RequirementDecision key={requirement.requirement_id} requirement={requirement} optionId={id} />
+                  ))}
+                  {skipped.map((question) => (
+                    <li key={question.question_id} className="requirement-decision skipped-revisit">
+                      <p className="requirement-status">Question skipped · Kept prior decision</p>
+                      <p>{question.prompt}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function Comparisons({ report, snapshot, context }: { report: Review; snapshot: ListingSnapshot; context: EvidenceContext }) {
   const optionIds = report.selected_option_ids;
   return (
@@ -348,9 +438,11 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, requirements, rounds, supplierDraft, onChangeDraft }: {
   report: Review;
   snapshot: ListingSnapshot;
+  requirements?: ResolvedRequirement[] | null;
+  rounds: QuestionRound[];
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
 }) {
@@ -366,6 +458,8 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
 
   return (
     <div className="purchase-review">
+      {requirements && <RequirementDecisions requirements={requirements} selected={context.selected}
+        snapshot={snapshot} rounds={rounds} />}
       <div className="review-workspace">
         <section className="review-findings" aria-labelledby="findings-heading">
           <h2 id="findings-heading">What to resolve</h2>
@@ -377,10 +471,10 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
         <Comparisons report={report} snapshot={snapshot} context={context} />
         <SupplierDraft draft={report.supplier_draft} text={supplierDraft} onChange={onChangeDraft} />
       </div>
-      {(otherRequirements.length > 0 || report.open_preferences.length > 0) && (
+      {((!requirements && otherRequirements.length > 0) || report.open_preferences.length > 0) && (
         <section className="review-panel review-buyer-inputs" aria-labelledby="buyer-inputs-heading">
           <h2 id="buyer-inputs-heading">Buyer inputs</h2>
-          {otherRequirements.length > 0 && (
+          {!requirements && otherRequirements.length > 0 && (
             <div>
               <h3>Other buyer requirements</h3>
               {otherRequirements.map((requirement) => (

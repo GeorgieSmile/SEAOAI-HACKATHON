@@ -348,12 +348,13 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert restored["phase"] == "ready_for_review"
         assert restored["report"] is None
         assert restored["last_operation"]["stage"] == "review"
+        assert restored["requirements"] == []
         assert calls == []
         command = {**reference(restored), "operation_id": str(uuid4()), "submission": None}
         reviewed = ready(client.post("/api/reviews", json=command))
         assert reviewed["phase"] == "reviewed"
         assert reviewed["revision"] == restored["revision"]
-        assert calls == [inputs]
+        assert calls == [inputs.model_copy(update={"requirements": []})]
 
 
 def _replace_saved_case(database, change):
@@ -576,7 +577,13 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
         assert reference(reviewed) == reference(original)
         assert reviewed["phase"] == "reviewed"
         assert reviewed["last_operation"]["operation_id"] == original["last_operation"]["operation_id"]
-        assert reviewed["report"] == original["report"]
+        if damage == "legacy":
+            assert reviewed["report"]["buyer_requirements"] == []
+            assert [item["status"] for item in reviewed["requirements"]] == ["unresolved", "unresolved"]
+            assert [item["provenance"][0]["quote"] for item in reviewed["requirements"]] == ["  Keep the deadline exactly.  ", None]
+            assert reviewed["report"]["open_preferences"]
+        else:
+            assert reviewed["report"] == original["report"]
         assert ready(client.post("/api/case/retry", json=retry_request(recovered))) == reviewed
         (inputs,) = retries
         assert [answer.answer_text for answer in inputs.answers] == ["  Keep the deadline exactly.  ", None]

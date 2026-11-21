@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, UUID4
 
-from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ReviewInput
+from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ResolvedRequirement, ReviewInput
 from .report_models import PurchaseReview, ReviewContent, SentReviewEvidence
 
 
@@ -60,6 +60,7 @@ class CaseView(CaseReference):
     selected_option_ids: list[Identifier]
     buyer_context: str
     rounds: list[IssuedRound]
+    requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
     phase: CasePhase
     reason: str | None = None
     report: PurchaseReview | None = None
@@ -67,7 +68,7 @@ class CaseView(CaseReference):
 
 
 class SavedReview(ContractModel):
-    version: Literal[2, 3, 4]
+    version: Literal[2, 3, 4, 5]
     input_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     content: ReviewContent
     sent_evidence: SentReviewEvidence
@@ -78,6 +79,8 @@ class CaseRecord(ContractModel):
     question_input: QuestionInput | None = None
     review_input: ReviewInput | None = None
     saved_review: SavedReview | None = None
+    requirement_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
+    initial_requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
 
 @dataclass(frozen=True)

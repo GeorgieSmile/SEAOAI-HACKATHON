@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from .contracts import ContractModel, NonEmptyText, Revision, SelectedOptionIds
+from .contracts import ContractModel, NonEmptyText, ReviewTopic, Revision, SelectedOptionIds
 
 
 ReviewErrorCode = Literal["invalid_input", "analysis_failed", "invalid_review"]
@@ -11,10 +11,6 @@ CoverageStatus = Literal["reviewed", "limited", "not_assessed"]
 FindingKind = Literal["listing_conflict", "requirement_unconfirmed", "clarification_needed", "evidence_gap"]
 FindingAction = Literal["decide_preference", "ask_supplier", "request_evidence"]
 UnknownReason = Literal["not_found", "not_reviewed", "unreadable"]
-ReviewTopic = Literal[
-    "capacity", "finish", "materials", "temperature_use", "testing", "customization",
-    "packaging", "dimensions", "weight", "sample", "sku_wording", "deadline", "other",
-]
 SupplierAction = Literal[
     "confirm_specification", "reconcile_sources", "request_documentation",
     "confirm_ready_made", "confirm_custom_order", "request_sample", "request_close_up",
@@ -103,14 +99,20 @@ class CoverageSelection(ContractModel):
     finding_ids: list[NonEmptyText]
 
 
-class ReviewContent(ContractModel):
+class CurrentReviewContent(ContractModel):
+    """Model selections for a case with backend-resolved buyer requirements."""
+
     contract_version: Literal[2]
     claims: list[SourcedClaim]
-    buyer_requirements: list[RequirementSelection]
     open_preferences: list[PreferenceSelection]
     comparisons: Annotated[list[ComparisonSelection], Field(min_length=1)]
     findings: list[FindingSelection]
     coverage: Annotated[list[CoverageSelection], Field(min_length=3, max_length=3)]
+
+
+class ReviewContent(CurrentReviewContent):
+    # Historical generation records contain model-selected buyer quotes.
+    buyer_requirements: list[RequirementSelection]
 
 
 class SentReviewEvidence(ContractModel):

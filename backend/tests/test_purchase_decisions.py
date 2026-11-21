@@ -1,0 +1,248 @@
+"""Exercise the entire interview/report path with scripted providers and a real listing ZIP."""
+from dataclasses import dataclass, replace
+import json
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+import httpx2
+from openai import AsyncOpenAI
+import pytest
+
+from backend.ai import generate_questions
+from backend.main import create_app
+from backend.report import generate_review
+from backend.tests.test_cases import initial_request, ready, reference, round_request
+from backend.tests.test_imports import RAW, _upload, stub
+from backend.tests.test_reports import finding_selection, image_claim, minimal_content, response, text_claim
+
+
+@dataclass(frozen=True)
+class Decision:
+    prompt: str
+    answer: str
+    topic: str
+    facet: str
+    effect: str = "add"
+    revisits: str | None = None
+
+
+PRINT = Decision("How should the artwork be applied?", "Screen printing is required.", "finish", "decoration_method")
+MATTE = Decision("Which surface texture do you need?", "A matte finish is required.", "finish", "surface_finish")
+WAIVE_PRINT = Decision("Could the decoration be made another way?", "Any finish is acceptable.",
+                       "finish", "decoration_method", "waive", PRINT.answer)
+ANY_TEXTURE = Decision("What surface textures work?", "Any surface texture is acceptable.", "finish", "surface_finish", "waive")
+NO_PRINT = replace(WAIVE_PRINT, prompt="Is screen printing required?", answer="Waive the screen-printing requirement.")
+NO_SAMPLE = Decision("Do you need a pre-production sample?", "No sample is required.", "sample", "other", "waive")
+LOGO = "The logo must be screen printed."
+LASER = "The logo must be laser engraved."
+OPTIONAL = replace(WAIVE_PRINT, prompt="Is screen printing still required for your logo?",
+                   answer="Screen printing is optional.", revisits=LOGO)
+DEC_1 = Decision("What is your required delivery deadline?", "The order must be delivered by 1 December.",
+                 "deadline", "delivery_deadline")
+DEC_15 = replace(DEC_1, prompt="What is your revised delivery deadline?", answer="The deadline has moved to 15 December.",
+                 effect="replace", revisits=DEC_1.answer)
+STOCK = Decision("What kind of order do you need?", "Ready-made stock only.", "customization", "order_type")
+KEEP = replace(STOCK, prompt="Has your position on custom orders changed?", answer="Keep ready-made stock only.",
+               effect="keep", revisits=STOCK.answer)
+
+
+@dataclass(frozen=True)
+class Interview:
+    questions: tuple[Decision, ...] = ()
+    expected: tuple[str, ...] = ()
+    context: str = ""
+    stale: str | None = None
+    tagged: bool = True
+    revise_a_only: bool = False
+
+
+CASES = {
+    "printed": Interview((PRINT,), (PRINT.answer,)),
+    "stale-print-untagged": Interview((PRINT, WAIVE_PRINT), stale=PRINT.answer, tagged=False),
+    "relaxed-finish": Interview((PRINT, WAIVE_PRINT)),
+    "compatible-finish-untagged": Interview((PRINT, MATTE), (PRINT.answer, MATTE.answer), tagged=False),
+    "stale-print-tagged": Interview((PRINT, WAIVE_PRINT), stale=PRINT.answer),
+    "compatible-finish-tagged": Interview((PRINT, MATTE), (PRINT.answer, MATTE.answer)),
+    "separate-texture": Interview((PRINT, ANY_TEXTURE), (PRINT.answer,)),
+    "revoked-by-no": Interview((PRINT, NO_PRINT), stale=PRINT.answer),
+    "current-after-no": Interview((PRINT, NO_PRINT)),
+    "independent-sample": Interview((PRINT, NO_SAMPLE), (PRINT.answer,)),
+    "superseded-deadline": Interview((DEC_1, DEC_15), (DEC_15.answer,), stale=DEC_1.answer),
+    "current-deadline": Interview((DEC_1, DEC_15), (DEC_15.answer,)),
+    "superseded-context": Interview((OPTIONAL,), context=LOGO, stale=LOGO),
+    "waived-context": Interview((OPTIONAL,), context=LOGO),
+    "independent-context": Interview((ANY_TEXTURE,), (LOGO,), context=LOGO),
+    # The three release acceptance cases.
+    "reaffirmed-stock": Interview((STOCK, KEEP), (STOCK.answer,)),
+    "engraving-independent-of-texture": Interview((ANY_TEXTURE,), (LASER,), context=LASER),
+    "per-sku-deadline": Interview((DEC_15,), (DEC_1.answer, DEC_15.answer), context=DEC_1.answer, revise_a_only=True),
+}
+IMAGE_CASES = ("cropped-selector", "complete-selector", "different-readings",
+               "readable-and-unreadable", "readable", "unreadable")
+
+
+def scripted_client(handler):
+    return AsyncOpenAI(
+        api_key="scripted-test", base_url="https://offline.test/v1", max_retries=0,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+
+
+@pytest.mark.parametrize("name", [*CASES, *IMAGE_CASES])
+def test_original_zip_review_matrix(tmp_path, name):
+    database = tmp_path / "case.db"
+    scenario = CASES.get(name, Interview())
+    question_ids = {}
+
+    async def questions(inputs):
+        def serve(request):
+            wire = json.loads(json.loads(request.content)["input"])
+            index = wire["round_number"] - 1
+            result = {"reason": "Check the buyer’s requirements.", "questions": [], "context_requirements": None}
+            if index == 0:
+                result["context_requirements"] = []
+                if scenario.context:
+                    result["context_requirements"].append({
+                        "statement": scenario.context, "quote": scenario.context,
+                        "topic": "deadline" if scenario.revise_a_only else "finish", "option_ids": inputs.selected_option_ids,
+                    })
+            if index < len(scenario.questions):
+                decision = scenario.questions[index]
+                target = None
+                if decision.revisits:
+                    if index == 0:
+                        assert decision.revisits == scenario.context
+                        target = "context:1"
+                    else:
+                        row, = [row for row in wire["requirements"] if row["statement"] == decision.revisits]
+                        target = row["requirement_id"]
+                result["questions"].append({
+                    "prompt": decision.prompt, "why_ask": "Confirm the preference for these selected options.",
+                    "source_ids": [], "option_ids": inputs.selected_option_ids[:1] if scenario.revise_a_only else inputs.selected_option_ids,
+                    "choices": [decision.answer], "topic": decision.topic, "buyer_facet": decision.facet if scenario.tagged else None,
+                    "requirement_ids": [target] if target else [], "choice_effects": [{
+                        "choice": decision.answer, "action": decision.effect, "requirement_id": target,
+                        "statement": decision.answer if decision.effect in ("replace", "add") else None,
+                    }],
+                })
+            return response(request, result)
+
+        async with scripted_client(serve) as sdk:
+            return await generate_questions(inputs, client=sdk)
+
+    async def review(inputs, images):
+        def serve(request):
+            parts = json.loads(request.content)["input"][0]["content"]
+            wire = json.loads(parts[0]["text"])
+            payload = minimal_content(inputs)
+            payload.pop("buyer_requirements")
+            if name in IMAGE_CASES:
+                selector, = [src for src in wire["text_sources"] if src["label"] == "Shared selector value"]
+                assert selector["original_text"] == "720ml"
+                a = wire["selected_options"][0]
+                assert a["image_source_id"] in wire["attached_image_ids"]
+                comparison = payload["comparisons"][0]
+                if name in ("cropped-selector", "complete-selector", "different-readings"):
+                    quote = "20ml" if name == "cropped-selector" else "720ml"
+                    payload["claims"].append(text_claim("selector", selector["source_id"], quote))
+                    comparison["shared_claim_ids"] = ["selector"]
+                if name in ("readable", "readable-and-unreadable", "different-readings"):
+                    payload["claims"].append(image_claim("photo", a["option_id"], a["image_source_id"]))
+                    comparison["values"][0]["claim_ids"] = ["photo"]
+                unreadable = name in ("unreadable", "readable-and-unreadable")
+                conflict = name == "different-readings"
+                payload["findings"].append(finding_selection(
+                    [a["option_id"]], claim_ids=[row["claim_id"] for row in payload["claims"]],
+                    kind="listing_conflict" if conflict else "clarification_needed",
+                    supplier_action="reconcile_sources" if conflict else "confirm_specification",
+                    unknowns=[{"reason": "unreadable", "source_ids": [a["image_source_id"]]}] if unreadable else [],
+                ))
+            elif name == "superseded-deadline":
+                # A full-scope replacement retains the decision ID. The provider cannot supply the old value.
+                payload["buyer_requirements"] = [{
+                    "requirement_id": question_ids[DEC_1.answer], "topic": "deadline",
+                    "input_ref": f"answer:{inputs.answers[0].question_id}", "quote": DEC_1.answer,
+                }]
+            elif scenario.stale:
+                # Try to publish a previous value. Only the server's current set may authorize a claim.
+                stale_id = question_ids[scenario.stale]
+                payload["findings"].append(finding_selection(
+                    inputs.selected_option_ids, topic="deadline" if scenario.stale == DEC_1.answer else "finish",
+                    kind="requirement_unconfirmed", requirement_ids=[stale_id],
+                ))
+            # Empty findings also exercise automatic, scoped supplier checks for each active typed target.
+            return response(request, payload)
+
+        async with scripted_client(serve) as sdk:
+            return await generate_review(inputs, images, client=sdk)
+
+    def check_ready(case, selected, day=15):
+        report = case["report"]
+        assert report["selected_option_ids"] == selected
+        draft = report["supplier_draft"].casefold()
+        assert "47%" not in draft
+        if scenario.revise_a_only:
+            assert len(report["buyer_requirements"]) == 2
+            for index, date in enumerate([day, 1]):
+                row, = [r for r in report["buyer_requirements"] if selected[index] in r["option_ids"]]
+                assert row["option_ids"] == [selected[index]] and f"{date} December" in row["text"]
+                line, = [line for line in draft.splitlines() if f"[option {'ab'[index]}]" in line]
+                assert f"{date} december" in line
+        else:
+            assert sorted(r["text"] for r in report["buyer_requirements"]) == sorted(scenario.expected)
+            for text, term in [(STOCK.answer, "ready-made"), (LASER, "laser engrav"), (PRINT.answer, "screen print"),
+                               (MATTE.answer, "matte"), (DEC_15.answer, "15 december")]:
+                if text in scenario.expected:
+                    assert term in draft
+            if name == "current-deadline":
+                assert "1 december" not in draft
+        if name in ("complete-selector", "readable", "different-readings"):
+            assert report["claims"]
+        if name == "unreadable":
+            assert "could not be read" in report["comparisons"][0]["values"][0]["limitations"][0]
+
+    options = dict(translator=stub, question_generator=questions, review_generator=review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, Path(os.environ.get("PURCHASE_TEST_ZIP", RAW))).json()["snapshot"]
+        context = scenario.context + (" Our private margin is 47%." if scenario.context else "")
+        start = initial_request(snapshot, buyer_context=context)
+        selected = start["selected_option_ids"] = [snapshot["options"][i]["option_id"] for i in (6, 0)]
+        case = ready(client.post("/api/questions", json=start))
+        for index, decision in enumerate(scenario.questions):
+            issued = case["rounds"][-1]["questions"][0]
+            question_ids.update({row["statement"]: row["requirement_id"] for row in case["requirements"]})
+            if decision.revisits:
+                question_ids[decision.revisits] = issued["requirement_ids"][0]
+            command = round_request(case, texts=[decision.answer])
+            if index + 1 < len(scenario.questions):
+                case = ready(client.post("/api/questions/continue", json=command))
+        if not scenario.questions:
+            command = {**reference(case), "operation_id": str(uuid4()), "submission": None}
+        result = client.post("/api/reviews", json=command).json()
+        completed = client.get("/api/case").json()["case"]
+        if scenario.stale or name in ("cropped-selector", "readable-and-unreadable"):
+            assert (result["status"], result["code"]) == ("failed", "invalid_review")
+            assert completed["report"] is None
+        else:
+            assert result["status"] == "ready", result
+            check_ready(completed, selected)
+            if scenario.revise_a_only:
+                edit = round_request(completed, texts=["The deadline has moved to 20 December."])
+                issued = completed["rounds"][0]["questions"][0]
+                edit["submission"]["answers"][0]["requirement_effect"] = {
+                    "action": "replace", "requirement_id": issued["requirement_ids"][0],
+                }
+                edited = ready(client.post("/api/reviews", json=edit))
+                assert edited["revision"] == completed["revision"] + 1
+                check_ready(edited, selected, day=20)
+                completed = edited
+
+    async def unexpected_request(*args):
+        pytest.fail("Loading a saved report requested generation.")
+
+    with TestClient(create_app(
+        database, translator=unexpected_request, question_generator=unexpected_request, review_generator=unexpected_request,
+    )) as client:
+        assert client.get("/api/case").json()["case"] == completed

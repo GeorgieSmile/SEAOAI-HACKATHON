@@ -49,6 +49,19 @@ export interface StartQuestions extends Selection {
   previous_case: CaseVersion | null;
 }
 
+export type RequirementAction = "keep" | "replace" | "waive" | "add";
+
+export interface RequirementEffect {
+  action: RequirementAction;
+  requirement_id: string | null;
+}
+
+interface RequirementTarget {
+  requirement_id: string;
+  statement: string;
+  option_ids: string[];
+}
+
 export interface Question {
   question_id: string;
   buyer_facet?: "order_type" | "decoration_method" | "surface_finish" | "capacity" | "delivery_deadline" | "other" | null;
@@ -57,11 +70,21 @@ export interface Question {
   option_ids: string[];
   source_ids: string[];
   choices: string[];
+  requirement_ids?: string[];
+  requirement_targets?: RequirementTarget[];
+  choice_effects?: (RequirementEffect & { choice: string; statement: string | null })[];
 }
 
 export interface Answer {
   question_id: string;
   answer_text: string | null;
+  requirement_effect?: RequirementEffect | null;
+}
+
+export function sameAnswer(saved: Answer | undefined, submitted: Answer) {
+  return saved?.answer_text === submitted.answer_text
+    && saved.requirement_effect?.action === submitted.requirement_effect?.action
+    && saved.requirement_effect?.requirement_id === submitted.requirement_effect?.requirement_id;
 }
 
 export interface Submission {
@@ -84,6 +107,17 @@ export interface ReviewRequirement {
   quote: string;
   option_ids: string[];
   question_text: string | null;
+}
+
+export interface ResolvedRequirement extends RequirementTarget {
+  status: "active" | "waived" | "unresolved";
+  provenance: {
+    input_ref: string;
+    quote: string | null;
+    question_text: string | null;
+    action: RequirementAction | "unresolved";
+    option_ids: string[];
+  }[];
 }
 
 export type ReviewClaim = {
@@ -164,6 +198,7 @@ interface CaseOperation {
 
 export interface CaseView extends Selection, CaseVersion {
   rounds: QuestionRound[];
+  requirements?: ResolvedRequirement[] | null;
   phase: "preparing_questions" | "awaiting_answers" | "ready_for_review" | "generating_review" | "reviewed" | "failed";
   reason: string | null;
   report: PurchaseReview | null;
@@ -263,7 +298,7 @@ export function requestReview(view: CaseView, submission: Submission | null, ope
   }).then((result) => {
     const saved = view.rounds.find((round) => round.round_id === submission?.round_id)?.answers;
     const changed = submission !== null && (!saved || submission.answers.some((answer) => (
-      saved.find((prior) => prior.question_id === answer.question_id)?.answer_text !== answer.answer_text
+      !sameAnswer(saved.find((prior) => prior.question_id === answer.question_id), answer)
     )));
     return checkReviewResponse(result, view, operationId, changed ? 1 : 0);
   });

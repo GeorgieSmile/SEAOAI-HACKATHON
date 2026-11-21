@@ -168,6 +168,24 @@ The additional original-ZIP checks exercise those three invalid reports and five
 
 The full offline backend suite passed 333 tests. All 30 Chrome tests, frontend typechecking, the production build and whitespace checks passed. The original-ZIP Chrome edit and restart walkthrough again verified the edited draft, dependent answer removal, exact deadline and the three selected SKU images at both desktop and mobile widths.
 
+### Follow-ups scoped to buyer requirements and selected SKUs
+
+The original Website Test.zip reproduced three errors on `1e950d0`. A valid stock-only decision and an independent engraving requirement both failed to publish. A deadline change for A left both dates current for A. The same archive now has these acceptance results through the question and review endpoints.
+
+| Buyer decision | Expected report and supplier draft |
+| --- | --- |
+| Keep ready-made stock only | The original stock requirement stays active. The supplier is asked about ready-made stock. |
+| Require laser engraving in the initial context, then allow any surface texture | Laser engraving stays active for its original SKUs. The supplier is asked about engraving. |
+| Start with 1 December for A and B, then replace A’s deadline with 15 December | A shows only 15 December and B shows only 1 December. Editing A to 20 December changes only A’s report entry and supplier question, including after restart. |
+
+The 24-case endpoint suite passed with the original archive via `PURCHASE_TEST_ZIP` and uses the redacted archive by default. Scripted SDK responses exercise the application’s production request and validation paths. A separate transport check compared transmitted thumbnail bytes with the original archive. No tests used a paid provider.
+
+The production frontend was exercised in Chrome at 1280 × 850 and 390 × 850. A stock-only answer for A affected only A, while custom-order and MOQ questions applied only to B and C. Editing the first answer made all three ready-made, removed the dependent sample answer, and preserved the buyer’s exact delivery-date wording. The copied draft and revision 3 reopened via GET after a backend restart. All three SKU thumbnail hashes matched their original archive members.
+
+Copies of 26 databases written by `1e950d0` reopened twice without provider requests. Seven reports could be reconstructed directly, nine earlier validation failures stayed failed, and ten ambiguous cases retained their inputs and required explicit regeneration. Each explicit regeneration completed with one scripted request and reopened without further requests.
+
+The integrated checks passed 373 backend tests, 31 Chrome tests, frontend typechecking, the production build and whitespace checks.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.
