@@ -88,6 +88,10 @@ The Chrome E2E rerun used the original ZIP, scripted model responses, real HTTP 
 
 All 214 offline backend tests and all 27 Chrome tests passed, along with frontend typechecking, the production build and whitespace checks. No paid requests were made for the review fixes.
 
+A fresh Astra 6.2 high review of `e240ce2` confirmed all three original cases, then found two regressions. A joint finding could append B’s term to a correct A term or falsely deny a term in A’s name. A valid hyphenated UPC copied into a product question was misidentified as the buyer’s phone number.
+
+Both follow-ups were exercised through the report endpoint with the original ZIP and a mocked provider. The mixed-SKU and false-negative claims returned `invalid_review`, while a correct multi-term claim, a true negative, and a question about the UPC returned `reviewed`. The same two invalid and three valid results were verified on databases written by `6f38c3c`, without any provider call on restore. The original-ZIP Chrome edit/restart walkthrough passed again with both sets of fixes. All 240 backend tests passed, including the unchanged Phase 2 question suite.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

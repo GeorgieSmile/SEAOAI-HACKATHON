@@ -98,3 +98,46 @@ def test_comparison_row_can_describe_its_own_cited_sku_name(joint_finding):
     row["summary"] = "Option A's name includes 字母, which describes lettering."
     result = validate(request, content)
     assert result.comparisons[0].values[0].summary == row["summary"]
+
+
+@pytest.mark.parametrize(("statement", "error"), [
+    ("Option A’s name includes 字母 and 贴画.", "original term"),
+    ("Option A’s name does not include 字母.", "absent"),
+    ("Option A's name includes 字母 but not 粉蓝.", "absent"),
+    ("Option A's name includes 字母, but does not include 粉蓝.", "absent"),
+    ("Option A's name does not include 贴画 but includes 字母 and 贴画.", "original term"),
+    ("Option A's name includes 字母 and 粉蓝, while Option B's name does not include 贴画.", "absent"),
+])
+def test_all_name_terms_must_match_their_option_and_polarity(joint_finding, statement, error):
+    request, content, finding = joint_finding
+    names = request.snapshot.option_name_sources()
+    # Cite both SKUs, but omit 字母 from A's quote. An absence claim must still check its full name.
+    a_quote = "粉蓝" if statement == "Option A’s name does not include 字母." else names["v6"].original_text
+    finding["citations"] = [
+        {"source_id": names["v6"].source_id, "quote": a_quote, "image_observation": None},
+        {"source_id": names["v0"].source_id, "quote": names["v0"].original_text, "image_observation": None},
+    ]
+    finding["interpretation"] = statement
+    with pytest.raises(ValueError, match=error):
+        validate(request, content)
+
+
+@pytest.mark.parametrize("statement", [
+    "Option A’s name includes the Chinese words 字母 and 粉蓝.",
+    "Option A's name does not include 贴画 or 黑白.",
+    "Option A's name includes 字母 and 粉蓝, but not 贴画.",
+    "Option A's name includes 字母, but does not include 贴画.",
+    "Option A's name does not include 贴画 but includes 字母 and 粉蓝.",
+    "Option A's name includes 字母 and 粉蓝, while Option B's name includes 贴画 but not 字母.",
+    "Could you confirm whether Option A's name includes 字母 and 贴画?",
+])
+def test_grounded_name_clauses_and_questions_still_pass(joint_finding, statement):
+    request, content, finding = joint_finding
+    names = request.snapshot.option_name_sources()
+    finding["citations"] = [
+        {"source_id": names[option_id].source_id, "quote": names[option_id].original_text, "image_observation": None}
+        for option_id in request.selected_option_ids
+    ]
+    finding["supplier_question"] = statement
+    result = validate(request, content)
+    assert statement in result.supplier_draft

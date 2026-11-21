@@ -341,7 +341,7 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert calls == [inputs]
 
 
-@pytest.mark.parametrize("legacy_issue", ["unlabeled_question", "private_contact", "wrong_name"])
+@pytest.mark.parametrize("legacy_issue", ["unlabeled_question", "private_contact", "private_phone", "product_upc", "wrong_name"])
 def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legacy_issue):
     database = tmp_path / "legacy.db"
     options = dict(translator=stub, question_generator=drafts, review_generator=offline_review)
@@ -350,7 +350,11 @@ def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legac
         start = initial_request(snapshot)
         start["selected_option_ids"] = [snapshot["options"][i]["option_id"] for i in (6, 0)]
         case = ready(client.post("/api/questions", json=start))
-        command = round_request(case, texts=["Private note: Reach cedar914@example.test before sampling.", None])
+        buyer_note = {
+            "product_upc": "Please verify the product UPC 0-36000-29145-2 before sampling.",
+            "private_phone": "Private note: 0812345678.",
+        }.get(legacy_issue, "Private note: Reach cedar914@example.test before sampling.")
+        command = round_request(case, texts=[buyer_note, None])
         original = ready(client.post("/api/reviews", json=command))
 
     # Recreate persisted data accepted by the original Phase 3 code.
@@ -360,9 +364,12 @@ def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legac
         legacy = record.model_copy(deep=True)
         report = legacy.view.report
         finding = report.findings[-1]
-        finding.supplier_question = "Could you confirm the decoration for this option?"
-        if legacy_issue == "private_contact":
-            finding.supplier_question = "Can you send product photos to cedar914@example.test?"
+        question = {
+            "private_contact": "Can you send product photos to cedar914@example.test?",
+            "private_phone": "Can you text 081-234-5678?",
+            "product_upc": "Can you confirm the product UPC 036000291452?",
+        }.get(legacy_issue, "Could you confirm the decoration for this option?")
+        finding.supplier_question = question
         if legacy_issue == "wrong_name":
             name = listing.option_name_sources()[start["selected_option_ids"][1]]
             finding.option_ids = start["selected_option_ids"]
@@ -383,9 +390,9 @@ def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legac
         assert reference(recovered) == reference(original)
         assert recovered["rounds"] == original["rounds"]
         replay = client.post("/api/reviews", json=command).json()
-        if legacy_issue == "unlabeled_question":
+        if legacy_issue in {"unlabeled_question", "product_upc"}:
             assert recovered["phase"] == "reviewed"
-            assert "2. [Option A] Could you confirm the decoration for this option?" in recovered["report"]["supplier_draft"]
+            assert f"2. [Option A] {question}" in recovered["report"]["supplier_draft"]
             assert replay["case"] == recovered
             return
         assert recovered["phase"] == "failed"

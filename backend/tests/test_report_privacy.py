@@ -4,7 +4,7 @@ import pytest
 
 from backend.contracts import ReviewInput
 from backend.report import assemble_review
-from backend.report_models import ReviewContent, ReviewFailed
+from backend.report_models import ReviewContent, ReviewFailed, ReviewReady
 from backend.tests.test_reports import minimal_content, parsed_listing, response, run_review
 
 
@@ -37,6 +37,9 @@ def build_case(listing, buyer_text, supplier_question, *, source="answer"):
     ("context", "I need a sample before ordering.", "Can you send details to samples@example.test?"),
     ("answer", "Call +1 (415) 555-0136 before sending the sample.", "Can you call +1-415-555-0136?"),
     ("context", "Please reach me on 081 234 5678.", "Can you send photos to 0812345678?"),
+    ("answer", "Private note: 0812345678.", "Can you text 081-234-5678?"),
+    ("answer", "Sample callback 020 7946 0958.", "Can you call 02079460958?"),
+    ("answer", "My phone is 081-234-5678.", "Can you confirm product code 0812345678?"),
     ("answer", "Our internal margin target is 43.5% before shipping.", "Could we make 43.5% work?"),
     ("answer", "Internal note: Project Cedar-914 applies to this purchase.", "Can you use Cedar-914 on the sample?"),
     ("context", "Private note: use the Cedar Lotus Launch reference.", "Can you put Cedar Lotus Launch on the sample?"),
@@ -53,6 +56,14 @@ def test_draft_rejects_private_buyer_details_copied_without_the_surrounding_note
     ("Private note: project Cedar-914. Use SKU 316-A.", "Can you confirm SKU 316-A and a 150 × 150 mm box?"),
     ("Reach cedar914@example.test before sampling.", "What business email should we use to request a sample?"),
     ("Call 081-234-5678 before sampling. SKU code 1290472158.", "Can you confirm SKU 1290472158?"),
+    ("Please verify the product UPC 0-36000-29145-2 before sampling.",
+     "Can you confirm the product UPC 0-36000-29145-2?"),
+    ("Please verify the product UPC 0-36000-29145-2 before sampling.", "Can you confirm UPC 036000291452?"),
+    ("Narrow to the barcode 012-345-6789 for the sample.", "Can you confirm that barcode is 0123456789?"),
+    ("Check GTIN-14 000-3600-029-1452 for the carton.", "Can you confirm GTIN-14 00036000291452?"),
+    ("Please reference 020-7946-0958 (SKU number) when ordering.", "Can you confirm SKU 02079460958?"),
+    ("Please call the seller about model number 012-345-6789.", "Can you confirm model 0123456789?"),
+    ("I need the box to fit 190-135-121 mm.", "Can you confirm 190-135-121 mm?"),
 ])
 def test_draft_allows_supplier_questions_about_product_specs(parsed_listing, buyer_text, question):
     request, payload = build_case(parsed_listing, buyer_text, question)
@@ -74,3 +85,13 @@ def test_model_cannot_publish_a_report_that_keeps_leaking_contact_details(parsed
     assert result.code == "invalid_review"
     assert "cedar914@example.test" not in result.message
     assert len(attempts) == 2
+
+
+def test_model_can_publish_a_supplier_question_with_a_reformatted_upc(parsed_listing):
+    question = "Can you confirm the product UPC 036000291452?"
+    request, payload = build_case(parsed_listing, "Please verify the product UPC 0-36000-29145-2 before sampling.", question)
+
+    result = run_review(request, {}, lambda http_request: response(http_request, payload))
+
+    assert isinstance(result, ReviewReady)
+    assert question in result.report.supplier_draft

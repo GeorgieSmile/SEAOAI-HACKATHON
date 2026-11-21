@@ -53,9 +53,10 @@ NAMED_OPTIONS = re.compile(
     r"|(?P<possessive>[A-Z])(?=['’]s\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\b))",
     re.IGNORECASE | re.ASCII,
 )
+SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;])\s+|[\r\n]+")
 CLAUSE_BOUNDARY = re.compile(
-    r"(?<=[.!?;])\s+|[\r\n]+"
-    r"|,\s+(?=(?:(?:and|but)\s+)?(?:would|could|should|do|does|will|can|is|are|you|which|what|how)\b)",
+    SENTENCE_BOUNDARY.pattern
+    + r"|,\s+(?=(?:(?:and|but)\s+)?(?:would|could|should|do|does|will|can|is|are|you|which|what|how)\b)",
     re.IGNORECASE,
 )
 GENERIC_OPTION_PREFIX = re.compile(r"\b(?:an|any|the|which|whichever|this|that|each)\s*$", re.IGNORECASE)
@@ -388,8 +389,10 @@ def _option_references(match: re.Match[str], before: str, after: str) -> tuple[s
     return {letter.upper() for letter in re.findall(r"\b[A-Za-z]\b", option_list)}, after
 
 
-def _named_option_references(text: str) -> Iterator[tuple[set[str], str, str, str]]:
-    for statement in CLAUSE_BOUNDARY.split(text):
+def _named_option_references(
+    text: str, *, boundary: re.Pattern[str] = CLAUSE_BOUNDARY,
+) -> Iterator[tuple[set[str], str, str, str]]:
+    for statement in boundary.split(text):
         for match in NAMED_OPTIONS.finditer(statement):
             before = statement[:match.start()]
             references, after = _option_references(match, before, statement[match.end():])

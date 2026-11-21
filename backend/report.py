@@ -17,6 +17,7 @@ from .ai import (
     OPTION_NAME_BEFORE,
     OPTION_REFERENCES,
     PROMPT_DIRECTORY,
+    SENTENCE_BOUNDARY,
     _InvalidStructuredOutput,
     _ProviderFailure,
     _build_client,
@@ -41,9 +42,14 @@ NAME_INQUIRY = re.compile(
     r"\b(?:whether|if)\b|^\s*(?:does|do|is|are|has|have|what|which|how)\b", re.IGNORECASE,
 )
 NAME_NEGATION = re.compile(r"\b(?:not|never)\b|n['’]t\b", re.IGNORECASE)
+NAME_COORDINATION = re.compile(r"\s*(,\s*(?:(?:and|or|nor|but)\b)?|\b(?:and|or|nor|but)\b|[/&、])\s*", re.IGNORECASE)
+NAME_COORDINATED_PREDICATE = re.compile(
+    r"^\s*(?:(?:do(?:es)?(?:n['’]t|\s+not)?|never)\s+)?" + NAME_PREDICATE.pattern, re.IGNORECASE,
+)
 HAN_CHARACTER = re.compile(r"[\u3400-\u9fff\U00020000-\U000323af]")
 NAME_TERM_AFTER = re.compile(
-    r"^\s*(?:(?:the\s+)?(?:(?:Chinese|original)\s+)?(?:characters?|phrase|term|word(?:ing)?|text)\s+)?"
+    r"^\s*(?:(?P<modifier>not|no|neither|both|rather)\s+)?"
+    r"(?:(?:the\s+)?(?:(?:Chinese|original)\s+)?(?:characters?|phrases?|terms?|words?|wording|text)\s+)?"
     r"[\"“'‘`]*\s*(?P<term>[\w-]+)",
     re.IGNORECASE,
 )
@@ -67,7 +73,21 @@ BUSINESS_FIGURE = re.compile(
 EMAIL_ADDRESS = re.compile(r"[\w.!#$%&'*+/=?^`{|}~+-]+@(?:[\w-]+\.)+[^\W\d_]{2,63}\b")
 PHONE_NUMBER = re.compile(r"(?<!\w)(?:\+[ \t]*)?(?:\(\d{1,4}\)|\d)(?:[ .()\-‐‑–]*\d){6,14}(?!\w)")
 PHONE_INTRO = re.compile(
-    r"(?:\b(?:phone|mobile|tel|call|text|contact|reach|whatsapp)\b|โทร|เบอร์|电话)[^\d.!?;]{0,25}$",
+    r"(?:\b(?:phone|mobile|tel|call|text|contact|reach|whatsapp|(?:internal|private|confidential) notes?)\b"
+    r"|โทร|เบอร์|电话)[^\d.!?;]{0,25}$",
+    re.IGNORECASE,
+)
+PRODUCT_NUMBER_LABEL = (
+    r"(?:upc(?:-[ae])?|ean(?:-?(?:8|13))?|gtin(?:-?(?:8|12|13|14))?|isbn(?:-?(?:10|13))?|"
+    r"bar[ -]?code|sku|asin|model|serial|"
+    r"(?:product|part|item)\s+(?:code|id|number)|dimensions?|measurements?)"
+)
+PRODUCT_NUMBER_INTRO = re.compile(
+    rf"\b{PRODUCT_NUMBER_LABEL}\b(?:\s+(?:code|id|number|no|is)\b\.?)*[\s:#=(\[\-]*$", re.IGNORECASE,
+)
+PRODUCT_NUMBER_SUFFIX = re.compile(
+    rf"^\s*(?:\(\s*{PRODUCT_NUMBER_LABEL}\b|(?:is|as)\s+(?:(?:the|an?)\s+)?(?:product\s+)?{PRODUCT_NUMBER_LABEL}\b"
+    r"|(?:mm|cm|ml|kg|mah|volts?|watts?)\b)",
     re.IGNORECASE,
 )
 LOGGER = logging.getLogger(__name__)
@@ -238,9 +258,17 @@ def _phone_values(text: str, *, require_contact_format: bool = False) -> Iterabl
         if not 7 <= len(digits) <= 15:
             continue
         if require_contact_format:
+            # A matching string is sensitive only when the buyer supplied it as a contact or in a recognizable phone format.
             prefix = text[max(0, match.start() - 60):match.start()]
-            has_separators = len(digits) >= 9 and (number.count(".") >= 2 or re.search(r"[ ()\-‐‑–]", number))
-            if not (number.startswith("+") or has_separators or PHONE_INTRO.search(prefix)):
+            suffix = text[match.end():match.end() + 40]
+            if PRODUCT_NUMBER_INTRO.search(prefix) or PRODUCT_NUMBER_SUFFIX.match(suffix):
+                continue
+            group_sizes = [len(group) for group in re.findall(r"\d+", number)]
+            short_groups = len(group_sizes) >= 3 and all(2 <= size <= 4 for size in group_sizes)
+            area_and_local = (len(group_sizes) == 2 and digits.startswith("0")
+                              and 2 <= group_sizes[0] <= 5 and 5 <= group_sizes[1] <= 8)
+            grouped_phone = len(digits) >= 9 and (short_groups or area_and_local)
+            if not (number.startswith(("+", "(")) or grouped_phone or PHONE_INTRO.search(prefix)):
                 continue
         yield digits
 
@@ -319,8 +347,32 @@ def _original_term(match: re.Match[str] | None) -> str:
     return term if HAN_CHARACTER.search(term) else ""
 
 
-def _validate_name_claims(text: str, wording_by_alias: Mapping[str, list[str]]) -> None:
-    for references, before, after, _ in _named_option_references(normalize("NFKC", text)):
+def _name_predicate_terms(tail: str, predicate: re.Match[str]) -> Iterable[tuple[str, bool]]:
+    """Read the coordinated objects of a name predicate until the prose changes subject."""
+    predicate_negative = bool(NAME_NEGATION.search(tail[:predicate.start()]))
+    parts = NAME_COORDINATION.split(tail[predicate.end():])
+    for separator, phrase in zip(["", *parts[1::2]], parts[::2]):
+        continuation = NAME_COORDINATED_PREDICATE.match(phrase) if separator else None
+        if continuation is not None:
+            predicate_negative = bool(NAME_NEGATION.search(continuation[0]))
+            phrase = phrase[continuation.end():]
+        operand = NAME_TERM_AFTER.match(phrase)
+        term = _original_term(operand)
+        if not term:
+            break
+        modifier = (operand["modifier"] or "").casefold()
+        if modifier in {"no", "neither"}:
+            predicate_negative = True
+        if modifier == "rather":
+            predicate_negative = False
+        absent = predicate_negative or modifier == "not" or separator.casefold().endswith("nor")
+        yield term, absent
+
+
+def _validate_name_claims(
+    text: str, wording_by_alias: Mapping[str, list[str]], full_name_by_alias: Mapping[str, str],
+) -> None:
+    for references, before, after, _ in _named_option_references(normalize("NFKC", text), boundary=SENTENCE_BOUNDARY):
         # Each alias in a sentence has its own words and evidence.
         next_reference = NAMED_OPTIONS.search(after)
         tail = after[:next_reference.start()] if next_reference is not None else after
@@ -328,23 +380,29 @@ def _validate_name_claims(text: str, wording_by_alias: Mapping[str, list[str]]) 
             continue
         predicate = NAME_PREDICATE.search(tail)
         term = _original_term(NAME_TERM_BEFORE.search(before))
-        if predicate is not None and not term and not NAME_NEGATION.search(tail[:predicate.start()]):
-            term = _original_term(NAME_TERM_AFTER.match(tail[predicate.end():]))
         if predicate is None and not term:
             continue
+        terms = [(term, False)] if term else []
+        if predicate is not None:
+            terms.extend(_name_predicate_terms(tail, predicate))
 
         for alias in references:
             wording = wording_by_alias.get(alias)
             if not wording:
                 raise ValueError("Each named option claim about wording needs its own cited SKU name.")
-            if term and not any(term in excerpt for excerpt in wording):
-                raise ValueError("Match every asserted original term to the cited SKU name for that option.")
+            for original_term, absent in terms:
+                if absent:
+                    if original_term in full_name_by_alias[alias]:
+                        raise ValueError("Do not claim an original term is absent when it occurs in that option's full SKU name.")
+                elif not any(original_term in excerpt for excerpt in wording):
+                    raise ValueError("Match every asserted original term to the cited SKU name for that option.")
 
 
 def validate_report_attribution(request: ReviewInput, content: ReviewContent) -> None:
     """Bind identifiable SKU-name claims to each option's own report evidence."""
     names = request.snapshot.option_name_sources()
     aliases = dict(zip(request.selected_option_ids, OPTION_REFERENCES))
+    full_names = {alias: normalize("NFKC", names[option_id].original_text or "") for option_id, alias in aliases.items()}
     alias_by_name_id = {names[option_id].source_id: alias for option_id, alias in aliases.items()}
     for comparison in content.comparisons:
         for value in comparison.values:
@@ -352,8 +410,8 @@ def validate_report_attribution(request: ReviewInput, content: ReviewContent) ->
             alias = aliases.get(value.option_id)
             wording = {}
             if alias and source and source.original_text and source.source_id in value.source_ids:
-                wording[alias] = [normalize("NFKC", source.original_text)]
-            _validate_name_claims(value.summary, wording)
+                wording[alias] = [full_names[alias]]
+            _validate_name_claims(value.summary, wording, full_names)
 
     for finding in content.findings:
         quotes: dict[str, list[str]] = {}
@@ -362,7 +420,7 @@ def validate_report_attribution(request: ReviewInput, content: ReviewContent) ->
             if alias is not None and citation.quote is not None:
                 quotes.setdefault(alias, []).append(normalize("NFKC", citation.quote))
         for text in _finding_prose(finding):
-            _validate_name_claims(text, quotes)
+            _validate_name_claims(text, quotes, full_names)
 
 
 def assemble_review(
