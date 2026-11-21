@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
   ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewClaim, ReviewFinding, ReviewRequirement, Source,
@@ -147,59 +147,63 @@ function FindingCard({ finding, report, context }: {
   const preferences = report.open_preferences.filter((preference) => preference.finding_ids.includes(finding.finding_id));
   return (
     <article className="review-finding" id={findingAnchor(finding.finding_id)}>
-      <header>
+      <div className="finding-body">
         <p className="review-kicker" data-action={finding.action_type}>{actions[finding.action_type]}</p>
         <h3>{finding.title}</h3>
-        <p className="review-scope">
-          <span>{findingKinds[finding.kind]}</span>{" "}
-          {context.selected.filter(id => finding.option_ids.includes(id)).map(id =>
-            <span key={id}>{optionLabel(context.selected, id)}</span>)}
-        </p>
-      </header>
-      <div className="review-finding-content">
-        {requirements.length > 0 && (
-          <div>
-            <h4>Buyer requirement{requirements.length === 1 ? "" : "s"}</h4>
-            {requirements.map((requirement) => (
-              <Requirement key={requirement.requirement_id} requirement={requirement} selected={context.selected} />
-            ))}
+        <p className="finding-next-step">{preferences[0]?.text ?? finding.requested_evidence}</p>
+        <details className="finding-evidence">
+          <summary>See the evidence</summary>
+          <div className="review-finding-content">
+            <p className="review-scope">
+              <span>{findingKinds[finding.kind]}</span>{" "}
+              {context.selected.filter(id => finding.option_ids.includes(id)).map(id =>
+                <span key={id}>{optionLabel(context.selected, id)}</span>)}
+            </p>
+            {requirements.length > 0 && (
+              <div>
+                <h4>Buyer requirement{requirements.length === 1 ? "" : "s"}</h4>
+                {requirements.map((requirement) => (
+                  <Requirement key={requirement.requirement_id} requirement={requirement} selected={context.selected} />
+                ))}
+              </div>
+            )}
+            <div>
+              <h4>Assessment from the evidence</h4>
+              <p>{finding.interpretation}</p>
+              <p>{finding.impact}</p>
+              <p className="review-priority"><strong>Why it’s prioritized</strong> {finding.priority_reason}</p>
+            </div>
+            {finding.claim_ids.length > 0 && (
+              <section aria-label="Source evidence">
+                <h4>Source evidence</h4>
+                <ClaimEvidence claimIds={finding.claim_ids} context={context} />
+              </section>
+            )}
+            {finding.unknowns.length > 0 && (
+              <div>
+                <h4>What’s still unknown</h4>
+                <ul className="review-unknowns">
+                  {finding.unknowns.map((unknown, index) => (
+                    <li key={index}>
+                      <p className="muted">{unknownReasons[unknown.reason]}</p>
+                      <p>{unknown.text}</p>
+                      {unknown.source_ids
+                        .filter((sourceId) => !finding.claim_ids.some((id) => context.claims.get(id)?.source_id === sourceId))
+                        .map((sourceId) => <EvidenceSource key={sourceId} context={context} id={sourceId} />)}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="review-next">
+              <h4>What to do next</h4>
+              {preferences.map((preference) => <p key={preference.preference_id}>{preference.text}</p>)}
+              {finding.supplier_question && <p>{finding.supplier_question}</p>}
+              <p><strong>What to request</strong> {finding.requested_evidence}</p>
+              <p><strong>Evidence limits</strong> {finding.evidence_limits}</p>
+            </div>
           </div>
-        )}
-        <div>
-          <h4>Assessment from the evidence</h4>
-          <p>{finding.interpretation}</p>
-          <p>{finding.impact}</p>
-          <p className="review-priority"><strong>Why it’s prioritized</strong> {finding.priority_reason}</p>
-        </div>
-        {finding.claim_ids.length > 0 && (
-          <section aria-label="Source evidence">
-            <h4>Source evidence</h4>
-            <ClaimEvidence claimIds={finding.claim_ids} context={context} />
-          </section>
-        )}
-        {finding.unknowns.length > 0 && (
-          <div>
-            <h4>What’s still unknown</h4>
-            <ul className="review-unknowns">
-              {finding.unknowns.map((unknown, index) => (
-                <li key={index}>
-                  <p className="muted">{unknownReasons[unknown.reason]}</p>
-                  <p>{unknown.text}</p>
-                  {unknown.source_ids
-                    .filter((sourceId) => !finding.claim_ids.some((id) => context.claims.get(id)?.source_id === sourceId))
-                    .map((sourceId) => <EvidenceSource key={sourceId} context={context} id={sourceId} />)}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        <div className="review-next">
-          <h4>What to do next</h4>
-          {preferences.map((preference) => <p key={preference.preference_id}>{preference.text}</p>)}
-          {finding.supplier_question && <p>{finding.supplier_question}</p>}
-          <p><strong>What to request</strong> {finding.requested_evidence}</p>
-          <p><strong>Evidence limits</strong> {finding.evidence_limits}</p>
-        </div>
+        </details>
       </div>
     </article>
   );
@@ -271,12 +275,17 @@ function Comparisons({ report, snapshot, context }: { report: Review; snapshot: 
   );
 }
 
+function openFinding(hash: string) {
+  const disclosure = document.getElementById(hash.slice(1))?.querySelector<HTMLDetailsElement>(".finding-evidence");
+  if (disclosure) disclosure.open = true;
+}
+
 function FindingLinks({ ids, findings }: { ids: string[]; findings: ReviewFinding[] }) {
   return ids.length > 0 && (
     <ul className="review-finding-links">
       {ids.map((id) => {
         const finding = findings.find((candidate) => candidate.finding_id === id);
-        return finding && <li key={id}><a href={`#${findingAnchor(id)}`}>{finding.title}</a></li>;
+        return finding && <li key={id}><a href={`#${findingAnchor(id)}`} onClick={event => openFinding(event.currentTarget.hash)}>{finding.title}</a></li>;
       })}
     </ul>
   );
@@ -355,6 +364,13 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
 }) {
+  useEffect(() => {
+    const revealTarget = () => openFinding(window.location.hash);
+    revealTarget();
+    window.addEventListener("hashchange", revealTarget);
+    return () => window.removeEventListener("hashchange", revealTarget);
+  }, [report]);
+
   const context = {
     snapshotId: snapshot.snapshot_id,
     selected: report.selected_option_ids,
@@ -371,9 +387,13 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
         <section className="review-findings" aria-labelledby="findings-heading">
           <h2 id="findings-heading">What to resolve</h2>
           {report.findings.length === 0 && <p className="review-panel">No findings were reported. See the coverage and limitations below.</p>}
-          {report.findings.map((finding) => (
-            <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} />
-          ))}
+          {report.findings.length > 0 && (
+            <div className="finding-list">
+              {report.findings.map((finding) => (
+                <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} />
+              ))}
+            </div>
+          )}
         </section>
         <SupplierDraft draft={report.supplier_draft} text={supplierDraft} onChange={onChangeDraft} />
       </div>

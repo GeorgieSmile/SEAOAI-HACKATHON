@@ -151,7 +151,7 @@ test("shows Chinese fallback and separate image availability states without load
   await expect(page.getByText("Seller image unavailable")).toHaveCount(2);
   await expect(page.getByText("Seller image unreadable")).toHaveCount(1);
   await expect(page.getByText("No SKU-specific image")).toHaveCount(1);
-  expect(imageRequests.filter(url => url !== new URL("/proofly-icon.svg", page.url()).href)).toEqual([]);
+  expect(imageRequests.filter(url => url !== new URL("/dilidoo-icon.svg", page.url()).href)).toEqual([]);
 });
 
 test("clears the old selection on upload and ignores the older response", async ({ page }) => {
