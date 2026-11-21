@@ -1,10 +1,11 @@
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from hashlib import sha256
 import json
+from types import MappingProxyType
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from .ai import QuestionGenerationError, validate_question_result
 from .case_models import (
@@ -15,12 +16,17 @@ from .contracts import (
     AnsweredQuestion, AnswerSubmission, IssuedQuestion, IssuedRound, ListingSnapshot, QuestionInput,
     QuestionResult, ReviewInput,
 )
+from .report import build_supplier_draft, validate_report_attribution
+from .report_models import ReviewFailed, ReviewResult
 from .state import Store
 
 
 QuestionGenerator = Callable[[QuestionInput], Awaitable[QuestionResult]]
+ReviewImages = Mapping[str, tuple[str, bytes]]
+ReviewGenerator = Callable[[ReviewInput, ReviewImages], Awaitable[ReviewResult]]
 UserCommand = StartCase | ContinueCase | ReviewCase
-INTERRUPTED = "Question preparation was interrupted. Retry to continue from your saved answers."
+REVIEW_RESULT = TypeAdapter(ReviewResult)
+INVALID_REVIEW = "The review could not be validated. Your answers are saved."
 
 
 class CaseCommandError(Exception):
@@ -39,6 +45,11 @@ def _invalid(message: str, case: CaseView | None) -> CaseCommandError:
 
 def _obsolete(case: CaseView | None) -> CaseCommandError:
     return CaseCommandError("invalid_input", "This request belongs to an earlier case state.", case, status=409)
+
+
+def _interrupted(stage: CaseStage) -> str:
+    action = "Review generation" if stage == "review" else "Question preparation"
+    return f"{action} was interrupted. Retry to continue from your saved answers."
 
 
 def _matches(case: CaseRecord | None, reference: CaseReference | None) -> bool:
@@ -83,7 +94,9 @@ def _apply_submission(case: CaseView, submission: AnswerSubmission) -> CaseView:
     if answers == round.answers:
         return case
     updated = round.model_copy(update={"answers": answers})
-    return case.model_copy(update={"revision": case.revision + 1, "rounds": [*case.rounds[:index], updated], "reason": None})
+    return case.model_copy(update={
+        "revision": case.revision + 1, "rounds": [*case.rounds[:index], updated], "reason": None, "report": None,
+    })
 
 
 def _operation_result(case: CaseView) -> CaseView:
@@ -91,26 +104,47 @@ def _operation_result(case: CaseView) -> CaseView:
     if operation.status == "running":
         raise CaseCommandError("invalid_input", "This operation is still running.", case, status=409)
     if operation.status == "failed":
-        raise CaseCommandError(operation.code or "analysis_failed", operation.message or INTERRUPTED, case)
+        raise CaseCommandError(operation.code or "analysis_failed", operation.message or _interrupted(operation.stage), case)
     return case
 
 
 def _failure(record: CaseRecord, code: str, message: str) -> CaseRecord:
     operation = record.view.last_operation.model_copy(update={"status": "failed", "code": code, "message": message})
-    case = record.view.model_copy(update={"phase": "failed", "reason": None, "last_operation": operation})
-    return CaseRecord(view=case, question_input=record.question_input)
+    case = record.view.model_copy(update={"phase": "failed", "report": None, "reason": None, "last_operation": operation})
+    return record.model_copy(update={"view": case})
 
 
 class CaseWorkflow:
-    def __init__(self, store: Store, generate_questions: QuestionGenerator):
+    def __init__(self, store: Store, generate_questions: QuestionGenerator, generate_review: ReviewGenerator):
         self.store = store
         self.generate_questions = generate_questions
+        self.generate_review = generate_review
 
-    def recover_interrupted(self) -> None:
-        generation, _, record = self.store.workspace()
-        if record is not None and record.view.last_operation.status == "running":
-            interrupted = _failure(record, "analysis_failed", INTERRUPTED)
+    def recover_saved_case(self) -> None:
+        generation, snapshot, record = self.store.workspace()
+        if record is None:
+            return
+        if record.view.last_operation.status == "running":
+            interrupted = _failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
             self._save(generation, record, interrupted)
+            return
+        report = record.view.report
+        if report is None or snapshot is None:
+            return
+        # Reports written by earlier versions may contain unscoped questions or private contact details.
+        inputs = ReviewInput(**_input_fields(snapshot, record.view))
+        try:
+            validate_report_attribution(inputs, report)
+            draft = build_supplier_draft(inputs, report)
+        except ValueError:
+            failed = _failure(record, "invalid_review", INVALID_REVIEW)
+            self._save(generation, record, failed.model_copy(update={"review_input": inputs}))
+            return
+        if report.supplier_draft != draft:
+            updated = report.model_copy(update={"supplier_draft": draft})
+            self._save(generation, record, record.model_copy(update={
+                "view": record.view.model_copy(update={"report": updated}),
+            }))
 
     def reset(self, command: ResetCase) -> None:
         generation, snapshot, current = self.store.workspace()
@@ -155,7 +189,7 @@ class CaseWorkflow:
         case = _apply_submission(previous, command.submission) if command.submission is not None else previous
         unchanged_submission = command.submission is not None and case is previous
         open_round = bool(case.rounds and case.rounds[-1].answers is None)
-        if unchanged_submission:
+        if unchanged_submission and (stage == "continue" or open_round):
             self._save(generation, current, current, command=command, stage=stage)
             return _operation_result(previous)
 
@@ -163,14 +197,20 @@ class CaseWorkflow:
         if stage == "review":
             if open_round:
                 raise _invalid("Submit the open question round before requesting the review.", previous)
+            if case is previous and previous.last_operation.stage == "review" and (
+                previous.report is not None or previous.last_operation.status != "ready"
+            ):
+                self._save(generation, current, current, command=command, stage=stage)
+                return _operation_result(previous)
             review_input = ReviewInput(**_input_fields(snapshot, case))
+            images = self._review_images(review_input)
             case = case.model_copy(update={
-                "phase": "ready_for_review", "reason": case.reason or "Question collection is complete for this review.",
-                "last_operation": CaseOperation(operation_id=operation_id, stage="review", status="ready"),
+                "phase": "generating_review",
+                "last_operation": CaseOperation(operation_id=operation_id, stage="review", status="running"),
             })
             record = CaseRecord(view=case, review_input=review_input)
             self._save(generation, current, record, command=command, stage=stage)
-            return case
+            return await self._run_review(generation, record, images)
 
         if len(case.rounds) == 3:
             case = case.model_copy(update={
@@ -194,14 +234,36 @@ class CaseWorkflow:
         if record is None or not _matches(record, command) or record.view.last_operation.operation_id != str(command.operation_id):
             raise _obsolete(record.view if record is not None else None)
         case = record.view
-        if case.last_operation.status != "failed" or record.question_input is None:
+        if case.last_operation.status != "failed":
             return _operation_result(case)
 
         operation = case.last_operation.model_copy(update={"status": "running", "code": None, "message": None})
+        if record.review_input is not None and operation.stage == "review":
+            images = self._review_images(record.review_input)
+            pending = record.model_copy(update={"view": case.model_copy(update={
+                "phase": "generating_review", "last_operation": operation,
+            })})
+            self._save(generation, record, pending)
+            return await self._run_review(generation, pending, images)
+
+        if record.question_input is None:
+            return _operation_result(case)
         pending_view = case.model_copy(update={"phase": "preparing_questions", "reason": None, "last_operation": operation})
-        pending = CaseRecord(view=pending_view, question_input=record.question_input)
+        pending = record.model_copy(update={"view": pending_view})
         self._save(generation, record, pending)
         return await self._run_questions(generation, pending)
+
+    def _review_images(self, inputs: ReviewInput) -> ReviewImages:
+        sources = {source.source_id: source for source in inputs.snapshot.sources}
+        options = {option.option_id: option for option in inputs.snapshot.options}
+        images = {}
+        for option_id in inputs.selected_option_ids:
+            source_id = options[option_id].image_source_id
+            if source_id is None or sources[source_id].availability != "available" or source_id in images:
+                continue
+            if image := self.store.image(inputs.snapshot.snapshot_id, source_id):
+                images[source_id] = image
+        return MappingProxyType(images)
 
     def _replay(self, current: CaseRecord | None, command: UserCommand, stage: CaseStage) -> CaseView | None:
         binding = self.store.operation_binding(str(command.operation_id))
@@ -262,7 +324,41 @@ class CaseWorkflow:
             settled = _failure(record, "analysis_failed", "Questions could not be prepared. Your answers are saved.")
         finally:
             if settled is None:
-                settled = _failure(record, "analysis_failed", INTERRUPTED)
+                settled = _failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
+            published = self.store.save_case(generation, record, settled)
+
+        if not published:
+            raise _obsolete(None)
+        return _operation_result(settled.view)
+
+    async def _run_review(self, generation: int, record: CaseRecord, images: ReviewImages) -> CaseView:
+        inputs = record.review_input
+        assert inputs is not None
+        settled = None
+        try:
+            raw = await self.generate_review(inputs.model_copy(deep=True), images)
+            result = REVIEW_RESULT.validate_python(raw.model_dump())
+            if isinstance(result, ReviewFailed):
+                if (result.case_id, result.revision) != (inputs.case_id, inputs.revision):
+                    raise ValueError("The review result does not match the submitted case.")
+                settled = _failure(record, result.code, result.message)
+            else:
+                report = result.report
+                if (report.case_id, report.revision, report.snapshot_id, report.selected_option_ids) != (
+                    inputs.case_id, inputs.revision, inputs.snapshot.snapshot_id, inputs.selected_option_ids,
+                ):
+                    raise ValueError("The review does not match the submitted evidence.")
+                operation = record.view.last_operation.model_copy(update={"status": "ready"})
+                settled = CaseRecord(view=record.view.model_copy(update={
+                    "phase": "reviewed", "report": report, "last_operation": operation,
+                }))
+        except (AttributeError, TypeError, ValidationError, ValueError):
+            settled = _failure(record, "invalid_review", INVALID_REVIEW)
+        except Exception:
+            settled = _failure(record, "analysis_failed", "The review could not be generated. Your answers are saved.")
+        finally:
+            if settled is None:
+                settled = _failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
             published = self.store.save_case(generation, record, settled)
 
         if not published:

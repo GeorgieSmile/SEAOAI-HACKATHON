@@ -76,6 +76,65 @@ export interface QuestionRound {
   answers: Answer[] | null;
 }
 
+export interface ReviewRequirement {
+  requirement_id: string;
+  text: string;
+  input_ref: string;
+  quote: string;
+}
+
+export interface ReviewCitation {
+  source_id: string;
+  quote: string | null;
+  image_observation: string | null;
+}
+
+export interface ReviewFinding {
+  finding_id: string;
+  title: string;
+  option_ids: string[];
+  kind: "listing_conflict" | "requirement_unconfirmed" | "clarification_needed" | "evidence_gap";
+  action_type: "decide_preference" | "ask_supplier" | "request_evidence";
+  requirement_ids: string[];
+  citations: ReviewCitation[];
+  interpretation: string;
+  impact: string;
+  priority_reason: string;
+  unknowns: {
+    text: string;
+    reason: "not_found" | "not_reviewed" | "unreadable";
+    source_ids: string[];
+  }[];
+  requested_evidence: string;
+  evidence_limits: string;
+  supplier_question: string | null;
+}
+
+export interface PurchaseReview extends CaseVersion {
+  snapshot_id: string;
+  selected_option_ids: string[];
+  buyer_requirements: ReviewRequirement[];
+  open_preferences: {
+    preference_id: string;
+    text: string;
+    input_refs: string[];
+    finding_ids: string[];
+  }[];
+  comparisons: {
+    label: string;
+    values: { option_id: string; summary: string; source_ids: string[] }[];
+  }[];
+  findings: ReviewFinding[];
+  coverage: {
+    group: "product_match" | "intended_use" | "supporting_evidence";
+    status: "reviewed" | "limited" | "not_assessed";
+    finding_ids: string[];
+    note: string;
+  }[];
+  limitations: string[];
+  supplier_draft: string;
+}
+
 export type CaseStage = "start" | "continue" | "review";
 
 interface CaseOperation {
@@ -90,6 +149,7 @@ export interface CaseView extends Selection, CaseVersion {
   rounds: QuestionRound[];
   phase: "preparing_questions" | "awaiting_answers" | "ready_for_review" | "generating_review" | "reviewed" | "failed";
   reason: string | null;
+  report: PurchaseReview | null;
   last_operation: CaseOperation | null;
 }
 
@@ -155,6 +215,21 @@ export function caseVersion(view: CaseView | null): CaseVersion | null {
   return view ? { case_id: view.case_id, revision: view.revision } : null;
 }
 
+export function currentPurchaseReview(view: CaseView | null): PurchaseReview | null {
+  const report = view?.report;
+  if (view?.phase !== "reviewed" || !report
+    || report.case_id !== view.case_id || report.revision !== view.revision
+    || report.snapshot_id !== view.snapshot_id
+    || !Array.isArray(report.selected_option_ids)
+    || report.selected_option_ids.length !== view.selected_option_ids.length
+    || !report.selected_option_ids.every((id, index) => id === view.selected_option_ids[index])
+    || !Array.isArray(report.findings) || !Array.isArray(report.comparisons)
+    || !Array.isArray(report.buyer_requirements) || !Array.isArray(report.open_preferences)
+    || !Array.isArray(report.coverage) || !Array.isArray(report.limitations)
+    || typeof report.supplier_draft !== "string") return null;
+  return report;
+}
+
 export function startQuestions(payload: StartQuestions) {
   return postCaseCommand("/api/questions", payload);
 }
@@ -168,13 +243,33 @@ export function continueQuestions(view: CaseView, submission: Submission, operat
 export function requestReview(view: CaseView, submission: Submission | null, operationId: string) {
   return postCaseCommand("/api/reviews", {
     ...caseVersion(view), operation_id: operationId, submission,
+  }).then((result) => {
+    const saved = view.rounds.find((round) => round.round_id === submission?.round_id)?.answers;
+    const changed = submission !== null && (!saved || submission.answers.some((answer) => (
+      saved.find((prior) => prior.question_id === answer.question_id)?.answer_text !== answer.answer_text
+    )));
+    return checkReviewResponse(result, view, operationId, changed ? 1 : 0);
   });
 }
 
 export function retryCase(view: CaseView, operationId: string) {
   return postCaseCommand("/api/case/retry", {
     ...caseVersion(view), operation_id: operationId,
-  });
+  }).then((result) => view.last_operation?.stage === "review"
+    ? checkReviewResponse(result, view, operationId, 0) : result);
+}
+
+function checkReviewResponse(result: CaseView, base: CaseView, operationId: string, revisionChange: number) {
+  const resultOperation = result.last_operation?.operation_id;
+  const cached = revisionChange === 0 && currentPurchaseReview(base)
+    && resultOperation === base.last_operation?.operation_id;
+  if (result.phase === "reviewed" && (!currentPurchaseReview(result)
+    || result.case_id !== base.case_id || result.snapshot_id !== base.snapshot_id
+    || result.revision !== base.revision + revisionChange
+    || (resultOperation !== operationId && !cached))) {
+    throw new Error("The purchase review could not be matched to your saved answers. Reload saved progress.");
+  }
+  return result;
 }
 
 export async function resetCase(snapshotId: string, previous: CaseVersion | null) {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { caseVersion, getCurrentCase, resetCase, uploadListing } from "./api";
+import { caseVersion, currentPurchaseReview, getCurrentCase, resetCase, uploadListing } from "./api";
 import type { CaseVersion, ListingSnapshot } from "./api";
 import { Interview } from "./Interview";
 import { Listing, OptionImage } from "./Listing";
@@ -28,7 +28,7 @@ function matchesResetTarget(target: ResetTarget, listing: Awaited<ReturnType<typ
 const workMessages = {
   start: "Preparing your questions…",
   continue: "Saving answers and checking what else to ask…",
-  review: "Saving inputs for the purchase review…",
+  review: "Preparing your purchase review…",
   retry: "Retrying your last request…",
   refresh: "Loading your saved progress…",
 };
@@ -381,12 +381,17 @@ export function App() {
                   {contextTooLong ? "Use 2,000 characters or fewer. " : ""}
                   {contextLength.toLocaleString("en-US")} / 2,000
                 </p>
+                {currentPurchaseReview(interview.view) && !activeInterview && (
+                  <p className="muted">Confirming changes starts a new review with a new supplier draft.</p>
+                )}
                 <button
                   className="button button-primary"
                   type="submit"
                   disabled={resetPrompt || mustReloadInterview || selected.length === 0 || contextTooLong}
                 >
-                  {activeInterview ? "Resume questions" : "Confirm options"}
+                  {activeInterview
+                    ? currentPurchaseReview(activeInterview) ? "Resume purchase review" : "Resume questions"
+                    : "Confirm options"}
                 </button>
               </div>
             </section>

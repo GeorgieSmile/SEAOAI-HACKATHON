@@ -4,12 +4,15 @@ from typing import Annotated, Literal
 from pydantic import Field, UUID4
 
 from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ReviewInput
+from .report_models import PurchaseReview
 
 
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
 OperationId = Annotated[UUID4, Field(strict=False)]
 CaseStage = Literal["start", "continue", "review"]
-CasePhase = Literal["preparing_questions", "awaiting_answers", "ready_for_review", "failed"]
+CasePhase = Literal[
+    "preparing_questions", "awaiting_answers", "ready_for_review", "generating_review", "reviewed", "failed",
+]
 
 
 class CaseReference(ContractModel):
@@ -59,7 +62,7 @@ class CaseView(CaseReference):
     rounds: list[IssuedRound]
     phase: CasePhase
     reason: str | None = None
-    report: None = None
+    report: PurchaseReview | None = None
     last_operation: CaseOperation
 
 

@@ -4,7 +4,7 @@ import logging
 import math
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -12,7 +12,7 @@ from typing import Literal, TypeVar
 from unicodedata import normalize
 
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, AsyncOpenAI
-from openai.types.responses import Response
+from openai.types.responses import Response, ResponseInputParam
 from pydantic import ValidationError
 
 from .contracts import ContractModel, ListingSnapshot, QuestionInput, QuestionResult, Source
@@ -53,9 +53,10 @@ NAMED_OPTIONS = re.compile(
     r"|(?P<possessive>[A-Z])(?=['’]s\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\b))",
     re.IGNORECASE | re.ASCII,
 )
+SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?;])\s+|[\r\n]+")
 CLAUSE_BOUNDARY = re.compile(
-    r"(?<=[.!?;])\s+|[\r\n]+"
-    r"|,\s+(?=(?:(?:and|but)\s+)?(?:would|could|should|do|does|will|can|is|are|you|which|what|how)\b)",
+    SENTENCE_BOUNDARY.pattern
+    + r"|,\s+(?=(?:(?:and|but)\s+)?(?:would|could|should|do|does|will|can|is|are|you|which|what|how)\b)",
     re.IGNORECASE,
 )
 GENERIC_OPTION_PREFIX = re.compile(r"\b(?:an|any|the|which|whichever|this|that|each)\s*$", re.IGNORECASE)
@@ -192,12 +193,13 @@ def _apply_translations(
 async def _request_structured(
     *,
     client: AsyncOpenAI,
-    payload: str,
+    payload: str | ResponseInputParam,
     prompt: str,
     schema_name: str,
     schema: type[StructuredOutput],
     validate: Callable[[StructuredOutput], ValidatedOutput],
     deadline_seconds: float,
+    max_output_tokens: int = 4_096,
 ) -> ValidatedOutput:
     output_format = {
         "type": "json_schema",
@@ -220,6 +222,7 @@ async def _request_structured(
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     break
+                started = loop.time()
                 try:
                     response = await client.responses.create(
                         model=TRANSLATION_MODEL,
@@ -227,12 +230,13 @@ async def _request_structured(
                         instructions=instructions,
                         input=payload,
                         text={"format": output_format},
-                        max_output_tokens=4096,
+                        max_output_tokens=max_output_tokens,
                         store=False,
                         truncation="disabled",
                         timeout=remaining,
                     )
                 except APIStatusError as error:
+                    LOGGER.info("OpenAI %s attempt %d returned HTTP %d", schema_name, attempt + 1, error.status_code)
                     if error.code in QUOTA_ERRORS:
                         raise _ProviderFailure(quota_message, retryable=False) from None
                     if error.status_code == 408:
@@ -253,6 +257,13 @@ async def _request_structured(
                     failure = malformed
                     continue
 
+                usage = response.usage
+                LOGGER.info(
+                    "OpenAI %s attempt %d model=%s status=%s elapsed=%.2fs input=%s output=%s reasoning=%s",
+                    schema_name, attempt + 1, getattr(response, "model", None), response.status, loop.time() - started,
+                    getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None),
+                    getattr(getattr(usage, "output_tokens_details", None), "reasoning_tokens", None),
+                )
                 if response.error is not None:
                     error_code = getattr(response.error, "code", None)
                     if not isinstance(error_code, str):
@@ -378,6 +389,17 @@ def _option_references(match: re.Match[str], before: str, after: str) -> tuple[s
     return {letter.upper() for letter in re.findall(r"\b[A-Za-z]\b", option_list)}, after
 
 
+def _named_option_references(
+    text: str, *, boundary: re.Pattern[str] = CLAUSE_BOUNDARY,
+) -> Iterator[tuple[set[str], str, str, str]]:
+    for statement in boundary.split(text):
+        for match in NAMED_OPTIONS.finditer(statement):
+            before = statement[:match.start()]
+            references, after = _option_references(match, before, statement[match.end():])
+            if references:
+                yield references, before, after, statement
+
+
 def _validate_named_options(
     text: str,
     *,
@@ -390,45 +412,40 @@ def _validate_named_options(
 ) -> set[str]:
     """Check scope for all named options and evidence for identifiable claims."""
     mentioned = set()
-    for statement in CLAUSE_BOUNDARY.split(text):
-        for match in NAMED_OPTIONS.finditer(statement):
-            before = statement[:match.start()]
-            references, after = _option_references(match, before, statement[match.end():])
-            if not references:
+    for references, before, after, statement in _named_option_references(text):
+        if not references.issubset(allowed):
+            raise QuestionGenerationError(
+                "invalid_questions", "Use only the option references covered by this question or reason."
+            )
+        mentioned.update(references)
+
+        seller_attribution = LISTING_CLAIM.search(before)
+        linked_to_seller = seller_attribution and CLAIM_LINK.search(before)
+        name_after = OPTION_NAME_AFTER.match(after)
+        name_before = OPTION_NAME_BEFORE.search(before)
+        if buyer_text:
+            # A buyer's question or requirement can mention an unverified fact.
+            # A causal clause presents its premise as evidence even inside a question.
+            first_person = re.match(r"\s*(?:I|we)\b", before, re.IGNORECASE)
+            preference = statement.rstrip().endswith("?") or (first_person and not seller_attribution and not name_before)
+            if preference and not GIVEN_FACT.search(before):
                 continue
-            if not references.issubset(allowed):
-                raise QuestionGenerationError(
-                    "invalid_questions", "Use only the option references covered by this question or reason."
-                )
-            mentioned.update(references)
 
-            seller_attribution = LISTING_CLAIM.search(before)
-            linked_to_seller = seller_attribution and CLAIM_LINK.search(before)
-            name_after = OPTION_NAME_AFTER.match(after)
-            name_before = OPTION_NAME_BEFORE.search(before)
-            if buyer_text:
-                # A buyer's question or requirement can mention an unverified fact.
-                # A causal clause presents its premise as evidence even inside a question.
-                first_person = re.match(r"\s*(?:I|we)\b", before, re.IGNORECASE)
-                preference = statement.rstrip().endswith("?") or (first_person and not seller_attribution and not name_before)
-                if preference and not GIVEN_FACT.search(before):
-                    continue
+        if name_after or name_before:
+            supported = names
+        elif not (linked_to_seller or OPTION_CLAIM_AFTER.match(after)):
+            continue
+        elif SHARED_SELECTOR.search(statement):
+            supported = shared
+        elif seller_attribution and listing:
+            supported = listing | evidence
+        else:
+            supported = evidence
 
-            if name_after or name_before:
-                supported = names
-            elif not (linked_to_seller or OPTION_CLAIM_AFTER.match(after)):
-                continue
-            elif SHARED_SELECTOR.search(statement):
-                supported = shared
-            elif seller_attribution and listing:
-                supported = listing | evidence
-            else:
-                supported = evidence
-
-            if not references.issubset(supported):
-                raise QuestionGenerationError(
-                    "invalid_questions", "Match each named option claim to cited text for that option."
-                )
+        if not references.issubset(supported):
+            raise QuestionGenerationError(
+                "invalid_questions", "Match each named option claim to cited text for that option."
+            )
     return mentioned
 
 
