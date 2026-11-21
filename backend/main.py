@@ -20,9 +20,10 @@ from .ai import (
 )
 from .archive import IntakeError, MAX_ZIP_BYTES, MiB
 from .case_models import ContinueCase, ResetCase, RetryCase, ReviewCase, StartCase
-from .case_workflow import CaseCommandError, CaseWorkflow, QuestionGenerator
+from .case_workflow import CaseCommandError, CaseWorkflow, QuestionGenerator, ReviewGenerator
 from .contracts import ContractModel, IntakeFailed, IntakeReady, ListingSnapshot
 from .intake import ParsedListing, parse_listing
+from .report import build_review_client, generate_review
 from .state import Store
 
 
@@ -116,7 +117,7 @@ def _translation(original: ListingSnapshot, output: ListingSnapshot) -> ListingS
 
 def create_app(
     db_path: Path | str | None = None, *, translator: Translator | None = None,
-    question_generator: QuestionGenerator | None = None,
+    question_generator: QuestionGenerator | None = None, review_generator: ReviewGenerator | None = None,
 ) -> FastAPI:
     database = Path(db_path if db_path is not None else os.environ.get("PURCHASE_DATABASE_PATH", DEFAULT_DATABASE))
 
@@ -128,22 +129,26 @@ def create_app(
         app.state.parse_task = None
         client = None
         question_client = None
+        review_client = None
         try:
             if translator is None:
                 client = build_translation_client()
             app.state.translate = translator if translator is not None else partial(translate_listing, client=client)
             if question_generator is None:
                 question_client = build_question_client()
-            app.state.question_workflow = CaseWorkflow(
+            if review_generator is None:
+                review_client = build_review_client()
+            app.state.case_workflow = CaseWorkflow(
                 store, question_generator if question_generator is not None else partial(generate_questions, client=question_client),
+                review_generator if review_generator is not None else partial(generate_review, client=review_client),
             )
-            app.state.question_workflow.recover_interrupted()
+            app.state.case_workflow.recover_interrupted()
             yield
         finally:
             try:
                 if app.state.parse_task is not None:
                     await asyncio.gather(app.state.parse_task, return_exceptions=True)
-                await asyncio.gather(*(sdk.close() for sdk in (client, question_client) if sdk is not None))
+                await asyncio.gather(*(sdk.close() for sdk in (client, question_client, review_client) if sdk is not None))
             finally:
                 store.close()
 
@@ -288,23 +293,23 @@ def create_app(
 
     @application.post("/api/questions")
     async def start_questions(command: StartCase):
-        return {"status": "ready", "case": await application.state.question_workflow.start(command)}
+        return {"status": "ready", "case": await application.state.case_workflow.start(command)}
 
     @application.post("/api/questions/continue")
     async def continue_questions(command: ContinueCase):
-        return {"status": "ready", "case": await application.state.question_workflow.submit(command, "continue")}
+        return {"status": "ready", "case": await application.state.case_workflow.submit(command, "continue")}
 
     @application.post("/api/reviews")
-    async def prepare_review(command: ReviewCase):
-        return {"status": "ready", "case": await application.state.question_workflow.submit(command, "review")}
+    async def review_case(command: ReviewCase):
+        return {"status": "ready", "case": await application.state.case_workflow.submit(command, "review")}
 
     @application.post("/api/case/retry")
     async def retry_case(command: RetryCase):
-        return {"status": "ready", "case": await application.state.question_workflow.retry(command)}
+        return {"status": "ready", "case": await application.state.case_workflow.retry(command)}
 
     @application.post("/api/case/reset")
     async def reset_case(command: ResetCase):
-        application.state.question_workflow.reset(command)
+        application.state.case_workflow.reset(command)
         return {"snapshot": None, "case": None}
 
     return application

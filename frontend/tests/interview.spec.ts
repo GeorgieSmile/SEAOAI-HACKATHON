@@ -27,7 +27,7 @@ function view(overrides: Partial<CaseView> = {}): CaseView {
   return {
     case_id: "test-case", revision: 0, snapshot_id: snapshot.snapshot_id,
     selected_option_ids: ["v0", "v1", "v6"], buyer_context: "Resale in Thailand.",
-    phase: "awaiting_answers", rounds: [firstRound], reason: null,
+    phase: "awaiting_answers", rounds: [firstRound], reason: null, report: null,
     last_operation: operation("start", "ready"), ...overrides,
   };
 }

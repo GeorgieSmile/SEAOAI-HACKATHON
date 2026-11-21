@@ -11,7 +11,7 @@ import pytest
 from backend.ai import QuestionGenerationError
 from backend.contracts import QuestionDraft, QuestionResult
 from backend.main import create_app
-from backend.state import Store
+from backend.tests.offline_server import offline_review
 from backend.tests.test_imports import INVENTORY, RAW, _image_url, _upload, stub
 
 
@@ -64,25 +64,21 @@ def ready(response):
     return payload["case"]
 
 
-def saved_review(database):
-    store = Store(database)
-    try:
-        _, _, record = store.workspace()
-        assert record is not None and record.review_input is not None
-        return record.review_input
-    finally:
-        store.close()
-
-
-def test_zero_question_case_persists_a_report_handoff_with_no_answers(tmp_path):
+def test_zero_question_case_generates_and_recovers_the_same_report_with_no_answers(tmp_path):
     database = tmp_path / "case.db"
     generation_requests = []
+    review_requests = []
 
     async def no_questions(request):
         generation_requests.append(request)
         return QuestionResult(reason="Your context covers the remaining preferences.", questions=[])
 
-    with TestClient(create_app(database, translator=stub, question_generator=no_questions)) as client:
+    async def generate_review(request, images):
+        review_requests.append(request)
+        return await offline_review(request, images)
+
+    app_options = dict(translator=stub, question_generator=no_questions, review_generator=generate_review)
+    with TestClient(create_app(database, **app_options)) as client:
         snapshot = _upload(client, RAW).json()["snapshot"]
         start = initial_request(snapshot, buyer_context="  Intended for resale.  ")
         start["selected_option_ids"].reverse()
@@ -93,31 +89,44 @@ def test_zero_question_case_persists_a_report_handoff_with_no_answers(tmp_path):
         assert ready(client.post("/api/questions", json=start)) == case
 
         review = {"operation_id": str(uuid4()), **reference(case), "submission": None}
-        handed_off = ready(client.post("/api/reviews", json=review))
-        assert reference(handed_off) == reference(case)
-        assert handed_off["last_operation"]["stage"] == "review"
-        assert handed_off["last_operation"]["status"] == "ready"
-        assert handed_off["report"] is None
-        assert "review_input" not in handed_off
-        assert ready(client.post("/api/reviews", json=review)) == handed_off
+        reviewed = ready(client.post("/api/reviews", json=review))
+        assert reference(reviewed) == reference(case)
+        assert reviewed["last_operation"]["stage"] == "review"
+        assert reviewed["last_operation"]["status"] == "ready"
+        assert reviewed["phase"] == "reviewed"
+        assert reviewed["report"]["selected_option_ids"] == start["selected_option_ids"]
+        assert "review_input" not in reviewed
+        assert ready(client.post("/api/reviews", json=review)) == reviewed
+        alias = {**review, "operation_id": str(uuid4())}
+        assert ready(client.post("/api/reviews", json=alias)) == reviewed
         assert len(generation_requests) == 1
 
-    handoff = saved_review(database)
-    assert handoff.snapshot.snapshot_id == snapshot["snapshot_id"]
-    assert handoff.selected_option_ids == start["selected_option_ids"]
-    assert handoff.buyer_context == start["buyer_context"]
-    assert handoff.answers == []
+    with TestClient(create_app(database, **app_options)) as client:
+        assert client.get("/api/case").json() == {"snapshot": snapshot, "case": reviewed}
+        assert ready(client.post("/api/reviews", json=alias)) == reviewed
+        assert ready(client.post("/api/reviews", json=review)) == reviewed
+    inputs, = review_requests
+    assert inputs.snapshot.snapshot_id == snapshot["snapshot_id"]
+    assert inputs.selected_option_ids == start["selected_option_ids"]
+    assert inputs.buyer_context == start["buyer_context"]
+    assert inputs.answers == []
 
 
 def test_answers_follow_issued_order_limit_rounds_and_discard_an_edited_branch(tmp_path):
     database = tmp_path / "case.db"
     generation_requests = []
+    review_requests = []
 
     async def questionnaire(request):
         generation_requests.append(request)
         return await drafts(request)
 
-    with TestClient(create_app(database, translator=stub, question_generator=questionnaire)) as client:
+    async def generate_review(request, images):
+        review_requests.append(request)
+        return await offline_review(request, images)
+
+    with TestClient(create_app(database, translator=stub, question_generator=questionnaire,
+                               review_generator=generate_review)) as client:
         snapshot = _upload(client).json()["snapshot"]
         one = ready(client.post("/api/questions", json=initial_request(snapshot)))
         first_round = one["rounds"][0]
@@ -167,16 +176,23 @@ def test_answers_follow_issued_order_limit_rounds_and_discard_an_edited_branch(t
         empty_review = {"operation_id": str(uuid4()), **reference(edited), "submission": None}
         assert client.post("/api/reviews", json=empty_review).status_code == 422
         review = round_request(edited, texts=["   "])
-        handed_off = ready(client.post("/api/reviews", json=review))
-        assert handed_off["revision"] == 5
-        assert handed_off["phase"] == "ready_for_review"
+        reviewed = ready(client.post("/api/reviews", json=review))
+        assert reviewed["revision"] == 5
+        assert reviewed["phase"] == "reviewed"
         assert [item.round_number for item in generation_requests] == [1, 2, 3, 2]
 
-    handoff = saved_review(database)
-    assert handoff.case_id == edited["case_id"]
-    assert handoff.revision == 5
-    assert [item.question_text for item in handoff.answers] == [*PROMPTS[1], *PROMPTS[2]]
-    assert [item.answer_text for item in handoff.answers] == ["Applied graphics are acceptable.", None, None]
+        next_edit = round_request(reviewed, 0, texts=["Ready-made options are required.", None])
+        updated = ready(client.post("/api/questions/continue", json=next_edit))
+        assert updated["revision"] == 6
+        assert updated["report"] is None
+        assert client.post("/api/reviews", json=review).status_code == 409
+        assert client.get("/api/case").json()["case"] == updated
+
+    inputs, = review_requests
+    assert inputs.case_id == edited["case_id"]
+    assert inputs.revision == 5
+    assert [item.question_text for item in inputs.answers] == [*PROMPTS[1], *PROMPTS[2]]
+    assert [item.answer_text for item in inputs.answers] == ["Applied graphics are acceptable.", None, None]
 
 
 def test_client_cannot_supply_unissued_answers_or_evidence(tmp_path):
@@ -214,6 +230,7 @@ def test_client_cannot_supply_unissued_answers_or_evidence(tmp_path):
 def test_round_and_answer_capacity_is_fifteen_without_a_fourth_call(tmp_path):
     database = tmp_path / "case.db"
     requested_rounds = []
+    review_requests = []
 
     async def five_questions(request):
         requested_rounds.append(request.round_number)
@@ -226,7 +243,12 @@ def test_round_and_answer_capacity_is_fifteen_without_a_fourth_call(tmp_path):
             for number in range(1, 6)
         ])
 
-    with TestClient(create_app(database, translator=stub, question_generator=five_questions)) as client:
+    async def generate_review(request, images):
+        review_requests.append(request)
+        return await offline_review(request, images)
+
+    with TestClient(create_app(database, translator=stub, question_generator=five_questions,
+                               review_generator=generate_review)) as client:
         snapshot = _upload(client).json()["snapshot"]
         case = ready(client.post("/api/questions", json=initial_request(snapshot)))
         for number in range(1, 4):
@@ -237,10 +259,10 @@ def test_round_and_answer_capacity_is_fifteen_without_a_fourth_call(tmp_path):
         ready(client.post("/api/reviews", json={"operation_id": str(uuid4()), **reference(case), "submission": None}))
         assert requested_rounds == [1, 2, 3]
 
-    handoff = saved_review(database)
-    assert len(handoff.answers) == len({item.question_id for item in handoff.answers}) == 15
-    assert handoff.revision == 3
-    assert all(answer.answer_text is None for answer in handoff.answers)
+    inputs, = review_requests
+    assert len(inputs.answers) == len({item.question_id for item in inputs.answers}) == 15
+    assert inputs.revision == 3
+    assert all(answer.answer_text is None for answer in inputs.answers)
 
 
 @pytest.mark.parametrize("defect", ["too-many-questions", "image-reference", "wrong-sku-attribution"])
@@ -362,7 +384,8 @@ def test_in_flight_question_cannot_publish_into_a_superseding_state(tmp_path, ac
                 await release.wait()
             return await drafts(request)
 
-        app = create_app(tmp_path / "case.db", translator=stub, question_generator=slow_first_selection)
+        app = create_app(tmp_path / "case.db", translator=stub, question_generator=slow_first_selection,
+                         review_generator=offline_review)
         async with app.router.lifespan_context(app):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 snapshot = (await _upload(client)).json()["snapshot"]

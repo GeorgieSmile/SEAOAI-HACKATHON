@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { currentPurchaseReview } from "./api";
 import type { CaseView, ListingSnapshot, Question, QuestionRound, Submission } from "./api";
 import { OptionImage } from "./Listing";
+import { PurchaseReview } from "./PurchaseReview";
 
 const MAX_ANSWER_LENGTH = 1_000;
 
@@ -158,6 +160,7 @@ export function Interview({
   const [drafts, setDrafts] = useState<Record<string, string | null>>({});
   const [editingRound, setEditingRound] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [draftEdit, setDraftEdit] = useState<{ revision: number; text: string } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const openRound = view?.rounds.find((round) => round.answers === null);
   const edited = view?.rounds.find((round) => round.round_id === editingRound);
@@ -165,12 +168,16 @@ export function Interview({
   const running = view?.last_operation?.status === "running";
   const locked = busy || blocked || running || needsRefresh;
   const failed = view?.last_operation?.status === "failed";
+  const report = currentPurchaseReview(view);
+  const reportInvalid = view?.phase === "reviewed" && !report;
+  const showReport = Boolean(report && !hidden && !activeRound && !locked);
   const reviewPrepared = view?.phase === "ready_for_review"
     && view.last_operation?.stage === "review" && view.last_operation.status === "ready";
+  const reviewFailed = failed && view?.last_operation?.stage === "review";
 
   useEffect(() => {
     if (!hidden) heading.current?.focus();
-  }, [hidden, activeRound?.round_id]);
+  }, [hidden, activeRound?.round_id, showReport]);
 
   function answerValue(round: QuestionRound, id: string): Draft {
     return Object.hasOwn(drafts, id) ? drafts[id] : savedAnswer(round, id);
@@ -227,106 +234,128 @@ export function Interview({
     }
   }
 
+  const history = view && view.rounds.some((round) => round.answers !== null && round.round_id !== edited?.round_id) && (
+    <section aria-labelledby="history-title" className="interview-history">
+      <h2 id="history-title" tabIndex={-1}>Saved answers</h2>
+      {view.rounds
+        .filter((round) => round.answers !== null && round.round_id !== edited?.round_id)
+        .map((round) => <RoundHistory round={round} key={round.round_id} disabled={locked}
+          onEdit={() => {
+            setNotice("");
+            setEditingRound(round.round_id);
+          }} />)}
+    </section>
+  );
+
   return (
     <section className="interview-shell" aria-labelledby="interview-title" hidden={hidden}>
       <div className="interview-header">
         <h1 id="interview-title" tabIndex={-1} ref={heading}>
-          {reviewPrepared && !edited ? "Review inputs ready" : "Clarify your purchase"}
+          {showReport ? "Before you order" : reviewPrepared && !edited ? "Review inputs ready" : "Clarify your purchase"}
         </h1>
-        <button className="button button-secondary" type="button" disabled={!onChangeSelection} onClick={onChangeSelection}>
-          Change options or context
-        </button>
+        <div className="interview-actions">
+          {showReport && history && <a className="button button-secondary" href="#history-title"
+            onClick={() => document.getElementById("history-title")?.focus()}>Edit answers</a>}
+          <button className="button button-secondary" type="button" disabled={!onChangeSelection} onClick={onChangeSelection}>
+            Change options or context
+          </button>
+        </div>
       </div>
 
-      <div className="interview-layout">
-        <div className="interview-main">
-          {busy && <p className="interview-status" role="status">{workingMessage}</p>}
-          {notice && !busy && <p className="interview-status" role="status">{notice}</p>}
-          {(error || (failed && !busy)) && (
-            <p className="interview-error" role="alert">
-              {error || view?.last_operation?.message || "Could not prepare the next step."}
-            </p>
-          )}
-          {(running || needsRefresh) && !busy && (
-            <div className="interview-status">
-              <p>{running ? "Your last request is still running." : "Reload your saved progress before submitting again."}</p>
-              <button className="button button-secondary" type="button" disabled={blocked} onClick={onRefresh}>
-                Reload saved progress
-              </button>
-            </div>
-          )}
-          {view && view.rounds.some((round) => round.answers !== null && round.round_id !== edited?.round_id) && (
-            <section aria-labelledby="history-title" className="interview-history">
-              <h3 id="history-title">Saved answers</h3>
-              {view.rounds
-                .filter((round) => round.answers !== null && round.round_id !== edited?.round_id)
-                .map((round) => <RoundHistory round={round} key={round.round_id} disabled={locked}
-                  onEdit={() => {
-                    setNotice("");
-                    setEditingRound(round.round_id);
-                  }} />)}
-            </section>
-          )}
-          {activeRound && (
-            <form className="interview-round" onSubmit={(event) => {
-              event.preventDefault();
-              void submitAnswers("continue");
-            }}>
-              <h3>{edited ? "Edit round" : "Round"} {activeRound.round_number} of 3</h3>
-              <p className="round-reason">{activeRound.reason}</p>
-              {edited && <p className="muted">Changing these answers can replace later rounds.</p>}
-              {!edited && <p className="muted">Answer what you know. You can leave any question blank.</p>}
-              <div className="interview-questions">
-                {activeRound.questions.map((question) => (
-                  <QuestionField
-                    key={question.question_id}
-                    question={question}
-                    value={answerValue(activeRound, question.question_id)}
-                    disabled={locked}
-                    showScope={question.option_ids.length < selected.length}
-                    optionLabels={question.option_ids.map((id) => {
-                      const option = snapshot.options.find((candidate) => candidate.option_id === id);
-                      return option?.name_en ?? option?.name_original ?? id;
-                    })}
-                    onChange={(answer) => setAnswer(question.question_id, answer)}
-                  />
-                ))}
-              </div>
-              <div className="interview-actions">
-                <button type="submit" className="button button-primary" disabled={locked || invalidAnswer}>Continue</button>
-                <button className="button button-secondary" type="button" disabled={locked || invalidAnswer}
-                  onClick={() => void submitAnswers("review")}>
-                  View purchase review
+      {showReport && report && view ? (
+        <>
+          <PurchaseReview key={report.revision} report={report} snapshot={snapshot} rounds={view.rounds}
+            supplierDraft={draftEdit?.revision === report.revision ? draftEdit.text : report.supplier_draft}
+            onChangeDraft={(text) => setDraftEdit({ revision: report.revision, text })} />
+          {history}
+        </>
+      ) : (
+        <div className="interview-layout">
+          <div className="interview-main">
+            {busy && <p className="interview-status" role="status">{workingMessage}</p>}
+            {notice && !busy && <p className="interview-status" role="status">{notice}</p>}
+            {(error || (failed && !busy)) && (
+              <p className="interview-error" role="alert">
+                {error || view?.last_operation?.message || "Could not prepare the next step."}
+              </p>
+            )}
+            {reportInvalid && !busy && !error && (
+              <p className="interview-error" role="alert">The purchase review could not be matched to your saved answers.</p>
+            )}
+            {(running || needsRefresh || reportInvalid) && !busy && (
+              <div className="interview-status">
+                <p>{running ? "Your last request is still running." : "Reload your saved progress before submitting again."}</p>
+                <button className="button button-secondary" type="button" disabled={blocked} onClick={onRefresh}>
+                  Reload saved progress
                 </button>
-                {edited && <button className="button button-secondary" type="button"
-                  disabled={locked} onClick={cancelEdit}>Cancel edit</button>}
               </div>
-            </form>
-          )}
-          {!activeRound && !busy && (view?.reason || reviewPrepared) && (
-            <p className="interview-status" role={reviewPrepared ? "status" : undefined}>
-              {view?.reason ?? "Your selected options and saved answers are ready for the purchase review."}
-            </p>
-          )}
-          {!activeRound && !reviewPrepared && !locked && view && (failed || view.phase === "ready_for_review") && (
-            <div className="interview-actions">
-              <button className="button button-primary" type="button"
-                onClick={() => void onSubmit(null, "review")}>View purchase review</button>
-            </div>
-          )}
-          {failed && !locked && (
-            <div className="interview-actions">
-              <button className="button button-secondary" type="button" onClick={onRetry}>Retry last request</button>
-            </div>
-          )}
-          {!view && !locked && error && (
-            <div className="interview-actions">
-              <button className="button button-primary" type="button" onClick={onStartAgain}>Try again</button>
-            </div>
-          )}
+            )}
+            {history}
+            {activeRound && (
+              <form className="interview-round" onSubmit={(event) => {
+                event.preventDefault();
+                void submitAnswers("continue");
+              }}>
+                <h3>{edited ? "Edit round" : "Round"} {activeRound.round_number} of 3</h3>
+                <p className="round-reason">{activeRound.reason}</p>
+                {edited && <p className="muted">{report
+                  ? "Changing these answers replaces the purchase review and supplier draft. Later rounds may change."
+                  : "Changing these answers can replace later rounds."}</p>}
+                {!edited && <p className="muted">Answer what you know. You can leave any question blank.</p>}
+                <div className="interview-questions">
+                  {activeRound.questions.map((question) => (
+                    <QuestionField
+                      key={question.question_id}
+                      question={question}
+                      value={answerValue(activeRound, question.question_id)}
+                      disabled={locked}
+                      showScope={question.option_ids.length < selected.length}
+                      optionLabels={question.option_ids.map((id) => {
+                        const option = snapshot.options.find((candidate) => candidate.option_id === id);
+                        return option?.name_en ?? option?.name_original ?? id;
+                      })}
+                      onChange={(answer) => setAnswer(question.question_id, answer)}
+                    />
+                  ))}
+                </div>
+                <div className="interview-actions">
+                  <button type="submit" className="button button-primary" disabled={locked || invalidAnswer}>Continue</button>
+                  <button className="button button-secondary" type="button" disabled={locked || invalidAnswer}
+                    onClick={() => void submitAnswers("review")}>
+                    View purchase review
+                  </button>
+                  {edited && <button className="button button-secondary" type="button"
+                    disabled={locked} onClick={cancelEdit}>Cancel edit</button>}
+                </div>
+              </form>
+            )}
+            {!activeRound && !busy && (view?.reason || reviewPrepared) && (
+              <p className="interview-status" role={reviewPrepared ? "status" : undefined}>
+                {view?.reason ?? "Your selected options and saved answers are ready for the purchase review."}
+              </p>
+            )}
+            {!activeRound && !locked && view && ((failed && !reviewFailed) || view.phase === "ready_for_review") && (
+              <div className="interview-actions">
+                <button className="button button-primary" type="button"
+                  onClick={() => void onSubmit(null, "review")}>View purchase review</button>
+              </div>
+            )}
+            {failed && !locked && (
+              <div className="interview-actions">
+                <button className={`button ${reviewFailed ? "button-primary" : "button-secondary"}`} type="button" onClick={onRetry}>
+                  {reviewFailed ? "Retry purchase review" : "Retry last request"}
+                </button>
+              </div>
+            )}
+            {!view && !locked && error && (
+              <div className="interview-actions">
+                <button className="button button-primary" type="button" onClick={onStartAgain}>Try again</button>
+              </div>
+            )}
+          </div>
+          <InterviewSelection snapshot={snapshot} selected={selected} context={context} />
         </div>
-        <InterviewSelection snapshot={snapshot} selected={selected} context={context} />
-      </div>
+      )}
     </section>
   );
 }
