@@ -194,7 +194,7 @@ def test_unqualified_text_substring_cannot_be_used_to_create_a_conflict(example,
     request, images = example
     data = request.model_dump()
     selector = next(source for source in data["snapshot"]["sources"] if source["source_id"] == "capacity-selector")
-    selector.update(original_text=source_text, text_en=None)
+    selector.update(label="Product attribute", original_text=source_text, text_en=None)
     request = ReviewInput.model_validate(data)
     content = populated_content(request)
 
@@ -216,8 +216,9 @@ def test_visual_artwork_and_sku_wording_cannot_be_promoted_to_a_conflict(joint_f
         assemble(request, images, content)
 
 
-@pytest.mark.parametrize("placement", ["shared_comparison", "sku_cell", "finding"])
-@pytest.mark.parametrize("quote", ["720ml", "720"])
+@pytest.mark.parametrize(("placement", "quote"), [
+    ("shared_comparison", "720ml"), ("sku_cell", "720ml"), ("sku_cell", "720"), ("finding", "720ml"),
+])
 def test_standalone_text_capacity_cannot_support_a_weight_topic(example, placement, quote):
     request, images = example
     content = minimal_content(request, "weight")
@@ -239,3 +240,83 @@ def test_standalone_text_capacity_cannot_support_a_weight_topic(example, placeme
 
     with pytest.raises(ValueError, match="standalone text measurement with its matching topic"):
         assemble(request, images, content)
+
+
+def test_shared_selector_uses_the_complete_value_in_the_capacity_comparison(example):
+    request, images = example
+    content = minimal_content(request)
+    content["claims"] = [text_claim("selector", "capacity-selector", "20ml")]
+    content["comparisons"][0]["shared_claim_ids"] = ["selector"]
+
+    with pytest.raises(ValueError, match="complete shared selector value"):
+        assemble(request, images, content)
+
+    content["claims"][0]["quote"] = "720ml"
+    rendered = assemble(request, images, content)
+    assert rendered.comparisons[0].shared_claim_ids == ["selector"]
+    assert rendered.claims[0].quote == "720ml"
+    assert rendered.claims[0].display_text == "Shared selector (source translation): 720 ml"
+
+
+@pytest.mark.parametrize(("source_text", "partial", "complete"), [
+    ("Holds 720 ml.", "20 ml", "720 ml"),
+    ("容量: 720ml", "20ml", "720ml"),
+    ("Capacity: 1,720 ml.", "720 ml", "1,720 ml"),
+    ("Capacity: 0.75 L.", "75 L", "0.75 L"),
+    ("Volume: 1e3 ml.", "3 ml", "1e3 ml"),
+    ("Temperature: −20°C.", "20°C", "−20°C"),
+    ("Labels read 720 ml and 20 ml.", "0 ml", "20 ml"),
+])
+def test_text_excerpt_keeps_numeric_tokens_even_in_prose(example, source_text, partial, complete):
+    request, images = example
+    data = request.model_dump()
+    data["snapshot"]["sources"].append({
+        "source_id": "seller-spec", "kind": "listing_text", "label": "Product attribute", "option_ids": [],
+        "availability": "available", "original_text": source_text, "text_en": None, "image_file": None, "url": None,
+    })
+    request = ReviewInput.model_validate(data)
+    content = minimal_content(request, "temperature_use" if "°C" in source_text else "capacity")
+    content["claims"] = [text_claim("spec", "seller-spec", partial)]
+    content["comparisons"][0]["shared_claim_ids"] = ["spec"]
+
+    with pytest.raises(ValueError, match="whole numbers"):
+        assemble(request, images, content)
+
+    content["claims"][0]["quote"] = complete
+    rendered = assemble(request, images, content)
+    assert rendered.claims[0].quote == complete
+    assert rendered.claims[0].display_text == "Shared listing text (open source for context)"
+
+
+@pytest.mark.parametrize("source_text", ["Capacity: 720–750 ml", "Capacity is not 750 ml"])
+def test_numeric_excerpt_does_not_display_apart_from_its_qualifiers(example, source_text):
+    request, images = example
+    data = request.model_dump()
+    data["snapshot"]["sources"].append({
+        "source_id": "sku-capacity", "kind": "listing_text", "label": "Product attribute", "option_ids": ["v0"],
+        "availability": "available", "original_text": source_text, "text_en": None, "image_file": None, "url": None,
+    })
+    request = ReviewInput.model_validate(data)
+    content = minimal_content(request)
+    content["claims"] = [text_claim("capacity", "sku-capacity", "750 ml", "v0")]
+    content["comparisons"][0]["values"][0]["claim_ids"] = ["capacity"]
+    content["findings"] = [finding_selection(["v0"], claim_ids=["capacity"])]
+
+    rendered = assemble(request, images, content)
+
+    assert rendered.comparisons[0].values[0].summary == "SKU listing text (open source for context)"
+    citation, = rendered.findings[0].citations
+    assert (citation.source_id, citation.quote) == ("sku-capacity", "750 ml")
+    assert "750 ml" not in rendered.supplier_draft
+
+
+def test_sku_wording_cannot_quote_only_part_of_a_model_number(joint_finding):
+    request, images, content = joint_finding
+    content["claims"][0]["quote"] = "16"
+
+    with pytest.raises(ValueError, match="whole numbers"):
+        assemble(request, images, content)
+
+    content["claims"][0]["quote"] = "316-字母"
+    rendered = assemble(request, images, content)
+    assert rendered.comparisons[0].values[0].summary == "SKU wording excerpt: “316-字母”"

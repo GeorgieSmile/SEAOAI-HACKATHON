@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 
 from .contracts import Option, Source
-from .report_models import Comparison, Coverage, CoverageSelection, ReviewContent, SentReviewEvidence
+from .report_models import Comparison, Coverage, CoverageSelection, ReviewSelection, SentReviewEvidence
 
 
 def _count(count: int, singular: str) -> str:
@@ -32,8 +32,9 @@ def thumbnail_limitations(
 
 
 def render_coverage(
-    row: CoverageSelection, content: ReviewContent, comparisons: list[Comparison],
+    row: CoverageSelection, content: ReviewSelection, comparisons: list[Comparison],
     aliases: Mapping[str, str], sources: Mapping[str, Source], sent: SentReviewEvidence,
+    *, requirement_topics: set[str],
 ) -> Coverage:
     if row.group == "product_match":
         evidence_topics = [
@@ -43,12 +44,12 @@ def render_coverage(
             note = f"The comparison cites listing evidence for {', '.join(evidence_topics)}."
         else:
             note = "The comparison has no cited listing evidence for the selected options."
-        if not content.buyer_requirements:
+        if not requirement_topics:
             note += " No buyer requirement was linked for checking product fit."
         elif row.status != "reviewed":
             note += " Whether the delivered options meet the linked buyer requirements still needs confirmation."
     elif row.group == "intended_use":
-        use_requirements = [req for req in content.buyer_requirements if req.topic == "temperature_use"]
+        use_requirements = "temperature_use" in requirement_topics
         if use_requirements:
             note = "The review includes the buyer’s stated use or temperature conditions."
         else:

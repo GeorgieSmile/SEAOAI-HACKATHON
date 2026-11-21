@@ -117,12 +117,15 @@ def add_official_sources(parsed: ParsedListing) -> ParsedListing:
 
 def build_listing(product: Product, resolve_image: Callable[[str], ImageResult]) -> ParsedListing:
     options = []
+    linked_option_id = None
     sources = [_text_source("product-title", "Product title", product.title, [])]
     images: dict[str, ImageData] = {}
     limitations = []
 
     for selector in product.selectors:
         option_id = f"opt-{sha256(selector.key.encode()).hexdigest()[:24]}"
+        if selector.key == product.linked_key:
+            linked_option_id = option_id
         sources.append(_text_source(f"{option_id}-name", "SKU name", selector.name, [option_id]))
         image_id = None
         if selector.image_url is None:
@@ -154,7 +157,7 @@ def build_listing(product: Product, resolve_image: Callable[[str], ImageResult])
 
     return ParsedListing(
         ListingSnapshot(
-            snapshot_id=str(uuid4()), title=product.title, options=options,
+            snapshot_id=str(uuid4()), title=product.title, options=options, linked_option_id=linked_option_id,
             sources=sources, limitations=limitations,
         ),
         images,

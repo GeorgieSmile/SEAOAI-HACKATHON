@@ -2,15 +2,18 @@
 
 import argparse
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 
 import uvicorn
 
+from backend.brief import correction_from_text
 from backend.case_workflow import ReviewImages
 from backend.contracts import ListingSnapshot, QuestionInput, QuestionResult, ReviewInput
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
-from backend.report_models import ReviewContent, ReviewReady
+from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewReady
+from backend.supplier_targets import OrderTarget, parse_arrival_date, supplier_target_from_answer
 
 
 ORDER_PROMPT = "Would you consider a custom order?"
@@ -38,23 +41,61 @@ async def offline_translation(snapshot: ListingSnapshot) -> ListingSnapshot:
 async def offline_questions(inputs: QuestionInput) -> QuestionResult:
     scope = {"option_ids": inputs.selected_option_ids, "source_ids": []}
     if inputs.round_number == 1:
+        context = inputs.buyer_context.strip()
+        structured = []
+        for statement in re.split(r"(?<=[.!?])\s+", context):
+            order = supplier_target_from_answer(statement, "customization", "order_type")
+            if isinstance(order, OrderTarget):
+                topic, facet = "customization", "order_type"
+            elif re.match(r"All (?:two|three|options) must arrive by ", statement, re.IGNORECASE) and parse_arrival_date(
+                statement.split(" by ", 1)[-1]
+            ):
+                topic, facet = "deadline", "delivery_deadline"
+            else:
+                break
+            structured.append({
+                "statement": statement, "quote": statement, "option_ids": inputs.selected_option_ids,
+                "topic": topic, "buyer_facet": facet,
+            })
+        else:
+            if structured:
+                return QuestionResult.model_validate({
+                    "reason": "Review the saved order and delivery requirements.",
+                    "context_requirements": structured, "questions": [],
+                })
         return QuestionResult.model_validate({
             "reason": "Identify buyer requirements that would affect which options to review.",
+            "context_requirements": [{
+                "statement": context, "quote": context, "option_ids": inputs.selected_option_ids,
+                "topic": "other", "status": "unresolved",
+            }] if context else [],
             "questions": [
                 {**scope, "prompt": ORDER_PROMPT,
                  "why_ask": "This determines whether the review should include custom orders.",
-                 "choices": [READY_MADE, CUSTOM_ORDER]},
+                 "topic": "customization", "buyer_facet": "order_type", "requirement_ids": [],
+                 "choices": [READY_MADE, CUSTOM_ORDER], "choice_effects": [
+                     {"choice": label, "action": "add", "requirement_id": None, "statement": label}
+                     for label in (READY_MADE, CUSTOM_ORDER)
+                 ]},
                 {**scope, "prompt": "What purchase deadline should the review consider?",
-                 "why_ask": "Your deadline affects which timing details to confirm.", "choices": []},
+                 "why_ask": "Your deadline affects which timing details to confirm.",
+                 "topic": "deadline", "buyer_facet": "delivery_deadline", "requirement_ids": [],
+                 "choices": [], "choice_effects": []},
             ],
         })
-    if inputs.round_number == 2 and inputs.answers[0].answer_text == CUSTOM_ORDER:
+    if inputs.round_number == 2 and inputs.answers and inputs.answers[0].answer_text == CUSTOM_ORDER:
         return QuestionResult.model_validate({
             "reason": "Clarify the buyer's custom-order requirements.",
             "questions": [
                 {**scope, "prompt": "Would you need to approve a sample before production?",
                  "why_ask": "This determines whether to request a sample approval step.",
-                 "choices": ["A sample is required", "No sample is required"]},
+                 "topic": "sample", "buyer_facet": "other", "requirement_ids": [],
+                 "choices": ["A sample is required", "No sample is required"], "choice_effects": [
+                     {"choice": "A sample is required", "action": "add", "requirement_id": None,
+                      "statement": "A sample is required"},
+                     {"choice": "No sample is required", "action": "waive", "requirement_id": None,
+                      "statement": None},
+                 ]},
             ],
         })
     return QuestionResult(reason="The scripted interview has no further questions.", questions=[])
@@ -121,27 +162,53 @@ def scripted_report(inputs: ReviewInput, attached_image_ids: set[str]) -> dict:
         source = next(s for s in inputs.snapshot.sources if s.source_id == image_id)
         reason = "not_reviewed" if source.availability == "available" else "unreadable"
         findings[1]["unknowns"] = [{"reason": reason, "source_ids": [image_id]}]
-    return {
-        "contract_version": 2, "claims": claims, "buyer_requirements": requirements, "open_preferences": [],
-        "comparisons": [{"topic": "capacity", "shared_claim_ids": shared_claim_ids, "values": values}], "findings": findings,
+    if inputs.requirements is not None:
+        requirements = []
+        findings[0].update(requirement_ids=[], supplier_action="confirm_specification")
+        for row in inputs.requirements:
+            if row.status != "active":
+                continue
+            if row.topic == "customization" and row.option_ids == selected:
+                findings[0]["requirement_ids"].append(row.requirement_id)
+                continue
+            findings.append({
+                "finding_id": f"confirm-{row.requirement_id}", "option_ids": row.option_ids,
+                "topic": row.topic, "kind": "requirement_unconfirmed", "action_type": "ask_supplier",
+                "requirement_ids": [row.requirement_id], "claim_ids": [], "unknowns": [],
+                "supplier_action": "confirm_specification",
+            })
+    content = {
+        "claims": claims,
+        "comparisons": [{"topic": "capacity", "shared_claim_ids": shared_claim_ids, "values": values}],
         "coverage": [
             {"group": "product_match", "status": "limited", "finding_ids": ["decoration"]},
             {"group": "intended_use", "status": "not_assessed", "finding_ids": []},
             {"group": "supporting_evidence", "status": "limited", "finding_ids": ["option-sample"]},
         ],
     }
+    if inputs.requirements is None:
+        return {**content, "contract_version": 2, "buyer_requirements": requirements, "open_preferences": [], "findings": findings}
+    return {
+        **content, "contract_version": 3,
+        "findings": [{**finding, "decision_id": None} for finding in findings],
+    }
 
 
 async def offline_review(inputs: ReviewInput, images: ReviewImages) -> ReviewReady:
     evidence = review_sent_evidence(inputs, images)
-    content = ReviewContent.model_validate(scripted_report(inputs, set(evidence.attached_image_ids)))
+    schema = ReviewContent if inputs.requirements is None else CanonicalReviewContent
+    content = schema.model_validate(scripted_report(inputs, set(evidence.attached_image_ids)))
     return ReviewReady(report=assemble_review(inputs, content, sent_evidence=evidence),
                        content=content, sent_evidence=evidence)
 
 
+async def offline_brief(text, snapshot, selected, option_id):
+    return correction_from_text(text, snapshot, selected, option_id)[0]
+
+
 def run(database: Path, port: int) -> None:
     app = create_app(database, translator=offline_translation, question_generator=offline_questions,
-                     review_generator=offline_review)
+                     review_generator=offline_review, brief_generator=offline_brief)
     uvicorn.run(app, host="127.0.0.1", port=port)
 
 

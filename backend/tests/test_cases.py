@@ -64,6 +64,29 @@ def ready(response):
     return payload["case"]
 
 
+def confirm_command(case, operation_id=None):
+    return {**reference(case), "operation_id": operation_id or str(uuid4()), "confirm": True}
+
+
+def reopen_brief(client, case):
+    payload = {**reference(case), "operation_id": str(uuid4()), "submission": None}
+    return ready(client.post("/api/brief", json=payload))
+
+
+def finish_review(client, command):
+    """Save a changed brief using its real endpoint, then explicitly confirm the saved revision."""
+    if command.get("submission") is not None or command.get("order_clarification") is not None:
+        prepared = client.post("/api/brief", json={**command, "operation_id": str(uuid4())})
+        if prepared.status_code != 200 or prepared.json()["status"] != "ready":
+            return prepared
+        case = prepared.json()["case"]
+        if case["phase"] != "ready_for_review":
+            return prepared
+    else:
+        case = command
+    return client.post("/api/reviews", json=confirm_command(case, command["operation_id"]))
+
+
 def test_zero_question_case_generates_and_recovers_the_same_report_with_no_answers(tmp_path):
     database = tmp_path / "case.db"
     generation_requests = []
@@ -89,7 +112,7 @@ def test_zero_question_case_generates_and_recovers_the_same_report_with_no_answe
         assert ready(client.post("/api/questions", json=start)) == case
 
         review = {"operation_id": str(uuid4()), **reference(case), "submission": None}
-        reviewed = ready(client.post("/api/reviews", json=review))
+        reviewed = ready(finish_review(client, review))
         assert reference(reviewed) == reference(case)
         assert reviewed["last_operation"]["stage"] == "review"
         assert reviewed["last_operation"]["status"] == "ready"
@@ -97,15 +120,15 @@ def test_zero_question_case_generates_and_recovers_the_same_report_with_no_answe
         assert reviewed["report"]["selected_option_ids"] == start["selected_option_ids"]
         assert "review_input" not in reviewed
         assert "saved_review" not in reviewed
-        assert ready(client.post("/api/reviews", json=review)) == reviewed
+        assert ready(finish_review(client, review)) == reviewed
         alias = {**review, "operation_id": str(uuid4())}
-        assert ready(client.post("/api/reviews", json=alias)) == reviewed
+        assert ready(finish_review(client, alias)) == reviewed
         assert len(generation_requests) == 1
 
     with TestClient(create_app(database, **app_options)) as client:
         assert client.get("/api/case").json() == {"snapshot": snapshot, "case": reviewed}
-        assert ready(client.post("/api/reviews", json=alias)) == reviewed
-        assert ready(client.post("/api/reviews", json=review)) == reviewed
+        assert ready(finish_review(client, alias)) == reviewed
+        assert ready(finish_review(client, review)) == reviewed
     inputs, = review_requests
     assert inputs.snapshot.snapshot_id == snapshot["snapshot_id"]
     assert inputs.selected_option_ids == start["selected_option_ids"]
@@ -156,7 +179,7 @@ def test_answers_follow_issued_order_limit_rounds_and_discard_an_edited_branch(t
         same = round_request(three, 0, texts=["  Screen print if available.  ", None])
         assert ready(client.post("/api/questions/continue", json=same)) == three
         assert ready(client.post("/api/questions/continue", json=same)) == three
-        assert ready(client.post("/api/reviews", json={**same, "operation_id": str(uuid4())})) == three
+        assert ready(finish_review(client, {**same, "operation_id": str(uuid4())})) == three
 
         capped = ready(client.post("/api/questions/continue", json=round_request(three)))
         assert capped["phase"] == "ready_for_review"
@@ -175,9 +198,9 @@ def test_answers_follow_issued_order_limit_rounds_and_discard_an_edited_branch(t
         assert client.post("/api/questions/continue", json=discarded).status_code == 422
 
         empty_review = {"operation_id": str(uuid4()), **reference(edited), "submission": None}
-        assert client.post("/api/reviews", json=empty_review).status_code == 422
+        assert finish_review(client, empty_review).status_code == 422
         review = round_request(edited, texts=["   "])
-        reviewed = ready(client.post("/api/reviews", json=review))
+        reviewed = ready(finish_review(client, review))
         assert reviewed["revision"] == 5
         assert reviewed["phase"] == "reviewed"
         assert [item.round_number for item in generation_requests] == [1, 2, 3, 2]
@@ -186,7 +209,7 @@ def test_answers_follow_issued_order_limit_rounds_and_discard_an_edited_branch(t
         updated = ready(client.post("/api/questions/continue", json=next_edit))
         assert updated["revision"] == 6
         assert updated["report"] is None
-        assert client.post("/api/reviews", json=review).status_code == 409
+        assert finish_review(client, review).status_code == 409
         assert client.get("/api/case").json()["case"] == updated
 
     inputs, = review_requests
@@ -257,7 +280,7 @@ def test_round_and_answer_capacity_is_fifteen_without_a_fourth_call(tmp_path):
             assert len(case["rounds"][-1]["questions"]) == 5
             case = ready(client.post("/api/questions/continue", json=round_request(case)))
         assert case["phase"] == "ready_for_review"
-        ready(client.post("/api/reviews", json={"operation_id": str(uuid4()), **reference(case), "submission": None}))
+        ready(finish_review(client, {"operation_id": str(uuid4()), **reference(case), "submission": None}))
         assert requested_rounds == [1, 2, 3]
 
     inputs, = review_requests
@@ -400,8 +423,10 @@ def test_in_flight_question_cannot_publish_into_a_superseding_state(tmp_path, ac
                     alias = {**start, "operation_id": str(uuid4()), "previous_case": reference(case)}
                     assert (await client.post("/api/questions", json=alias)).status_code == 409
                     if action == "review":
-                        review = {"operation_id": str(uuid4()), **reference(case), "submission": None}
-                        review_ready = ready(await client.post("/api/reviews", json=review))
+                        prepared = ready(await client.post("/api/brief", json={
+                            **reference(case), "operation_id": str(uuid4()), "submission": None,
+                        }))
+                        review_ready = ready(await client.post("/api/reviews", json=confirm_command(prepared)))
                         assert review_ready["last_operation"]["stage"] == "review"
                     elif action == "replace":
                         replacement = initial_request(snapshot, buyer_context="second", previous_case=reference(case))

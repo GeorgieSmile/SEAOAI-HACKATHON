@@ -293,8 +293,9 @@ test("a deliberate replacement cannot be overwritten by a slow saved listing res
   await expect(page.getByText("Newly imported listing")).toBeVisible();
 });
 
-test("imports a TTP product link and offers ZIP recovery after a live failure", async ({ page }) => {
+test("offers ZIP recovery when a TTP Cargo link fails", async ({ page }) => {
   const link = "https://taobao.ttpcargo.com/product?provider=1688&itemId=123";
+  await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ contentType: "image/png", body: tinyPng }));
   await page.route("**/api/imports", (route) => {
     if (route.request().headers()["content-type"] === "application/json") {
       expect(route.request().postDataJSON()).toEqual({ url: link });
@@ -310,3 +311,30 @@ test("imports a TTP product link and offers ZIP recovery after a live failure", 
   await expect(page.getByRole("checkbox")).toHaveCount(snapshot.options.length);
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+const linkedProducts = [
+  ["1688", "itemId=1035537244639&provider=1688&skuId=6048851312288"],
+  ["Taobao", "skuId=6156598687347&provider=taobao&itemId=1003065116802"],
+  ["Tmall", "provider=tmall&itemId=988441343788&skuId=5985509084995"],
+];
+
+for (const [provider, query] of linkedProducts) {
+  test(`shows the ${provider} option from the link and lets the buyer confirm it`, async ({ page }) => {
+    const url = "https://taobao.ttpcargo.com/product?" + query;
+    const target = snapshot.options[1]!;
+    await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ contentType: "image/png", body: tinyPng }));
+    await page.route("**/api/imports", (route) => {
+      expect(route.request().postDataJSON()).toEqual({ url });
+      return route.fulfill({ json: { status: "ready", snapshot: { ...snapshot, linked_option_id: target.option_id } } });
+    });
+    await startWithoutListing(page);
+    await page.getByLabel("TTP Cargo product link").fill(url);
+    await page.getByRole("button", { name: "Import link" }).click();
+    const linked = page.getByRole("checkbox", { name: /From your link/i });
+    await expect(linked).toHaveValue(target.option_id);
+    await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Confirm options" })).toBeDisabled();
+    await linked.check();
+    await expect(page.getByRole("button", { name: "Confirm options" })).toBeEnabled();
+  });
+}

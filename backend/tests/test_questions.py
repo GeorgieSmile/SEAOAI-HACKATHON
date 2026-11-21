@@ -44,8 +44,14 @@ def plan(**overrides):
         "option_ids": ["v1", "v0"],
         "source_ids": ["capacity-selector"],
         "choices": [],
+        "topic": "capacity",
+        "requirement_ids": [],
+        "choice_effects": [],
     }
-    return {"reason": "Check requirements that affect the order.", "questions": [{**question, **overrides}]}
+    return {
+        "reason": "Check requirements that affect the order.", "context_requirements": [],
+        "questions": [{**question, **overrides}],
+    }
 
 
 def api_response(request, output, *, status="completed"):
@@ -104,7 +110,8 @@ def test_questions_send_only_relevant_text_and_keep_answer_history(request_input
         "round_number": 2,
         "revision": 1,
         "answers": [
-            {"question_id": "issued-1", "question_text": "How will it be used?", "answer_text": "For tea."},
+            {"question_id": "issued-1", "question_text": "How will it be used?", "answer_text": "For tea.",
+             "buyer_facet": "other"},
             {"question_id": "issued-2", "question_text": "Which color works?", "answer_text": None},
         ],
     })
@@ -126,6 +133,14 @@ def test_questions_send_only_relevant_text_and_keep_answer_history(request_input
     assert body["store"] is False
     assert "tools" not in body
     assert body["text"]["format"]["strict"] is True
+    draft_schema = body["text"]["format"]["schema"]["$defs"]["QuestionDraft"]
+    assert "buyer_facet" in draft_schema["required"]
+    facet_schema = draft_schema["properties"]["buyer_facet"]
+    assert "default" not in facet_schema
+    assert {"type": "null"} in facet_schema["anyOf"]
+    assert {"type": "string", "enum": [
+        "order_type", "decoration_method", "surface_finish", "capacity", "delivery_deadline", "other",
+    ]} in facet_schema["anyOf"]
     assert body["max_output_tokens"] == 4096
     payload = json.loads(body["input"])
     assert payload["round_number"] == 2
@@ -158,6 +173,125 @@ def test_round_four_is_rejected_before_provider_request(request_input):
     assert invalid.value.retryable is False
 
 
+def test_first_provider_response_can_save_context_without_issuing_a_question(request_input):
+    stock = "Ready-made stock only."
+    decoration = "The logo needs to be laser engraved."
+    request_input = request_input.model_copy(update={
+        "buyer_context": f"{stock} {decoration} Internal margin target: 43.5%.",
+    })
+    payload = {
+        "reason": "The relevant purchase constraints are clear.",
+        "questions": [],
+        "context_requirements": [
+            {"statement": stock, "quote": stock, "topic": "customization", "option_ids": request_input.selected_option_ids},
+            {
+                "statement": decoration, "quote": decoration, "topic": "finish", "option_ids": request_input.selected_option_ids,
+                "supplier_target": {"kind": "decoration_method", "method": "laser_engraving", "intent": "require"},
+            },
+        ],
+    }
+
+    def serve(request):
+        wire = json.loads(request.content)
+        schema = wire["text"]["format"]["schema"]
+        assert "context_requirements" in schema["required"]
+        assert {"topic", "status", "buyer_facet", "supplier_target", "quote"} <= set(
+            schema["$defs"]["ContextRequirement"]["required"],
+        )
+        return api_response(request, payload)
+
+    result = run_questions(request_input, serve)
+    assert result.questions == []
+    assert [row.quote for row in result.context_requirements] == [stock, decoration]
+
+
+@pytest.mark.parametrize("context", [
+    "The logo does not need to be laser engraved.",
+    "The logo must not be laser engraved.",
+    "The logo needs to be laser engraved if Cedar-914 reaches its target margin.",
+])
+def test_provider_cannot_turn_negated_or_conditional_engraving_into_a_supplier_requirement(request_input, context):
+    request_input = request_input.model_copy(update={"buyer_context": context})
+    payload = {
+        "reason": "Review the buyer's decoration requirements.",
+        "questions": [],
+        "context_requirements": [{
+            "statement": context, "quote": context, "topic": "finish", "option_ids": request_input.selected_option_ids,
+            "supplier_target": {"kind": "decoration_method", "method": "laser_engraving", "intent": "require"},
+        }],
+    }
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, payload))
+    assert invalid.value.code == "invalid_questions"
+    assert "Cedar-914" not in str(invalid.value)
+
+
+@pytest.mark.parametrize(("context", "excerpt"), [
+    ("We do not need a stock-only order.", "need a stock-only order."),
+    ("The logo for Option A must be laser engraved.", "The logo for Option A must be laser engraved."),
+])
+def test_context_proposals_cannot_clip_buyer_polarity_or_expand_explicit_scope(request_input, context, excerpt):
+    request_input = request_input.model_copy(update={"buyer_context": context})
+    payload = {
+        "reason": "The relevant purchase constraints are clear.",
+        "questions": [],
+        "context_requirements": [{
+            "statement": excerpt, "quote": excerpt, "topic": "finish", "option_ids": request_input.selected_option_ids,
+        }],
+    }
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, payload))
+    assert invalid.value.code == "invalid_questions"
+
+
+def test_followup_provider_sees_ordered_answer_scope_and_current_ids(request_input):
+    original = "Ready-made stock only."
+    question_id = "submitted-sample-question"
+    request_input = QuestionInput.model_validate({
+        **request_input.model_dump(),
+        "round_number": 2,
+        "revision": 1,
+        "buyer_context": original,
+        "answers": [{"question_id": question_id, "question_text": "Do you need a sample?", "answer_text": None}],
+        "answer_option_ids": {question_id: ["v1"]},
+        "requirements": [{
+            "requirement_id": "saved-stock-decision", "statement": original, "status": "active",
+            "topic": "customization", "buyer_facet": "order_type", "option_ids": ["v1"],
+            "provenance": [{
+                "input_ref": "context", "quote": original, "question_text": None,
+                "action": "add", "option_ids": ["v1"], "context_start": 0,
+            }],
+        }],
+    })
+    output = plan(
+        prompt="Is ready-made stock still the only option you will accept?",
+        why_ask="Your decision changes which order terms we should confirm.",
+        option_ids=["v1"], source_ids=[], topic="customization", buyer_facet="order_type",
+        requirement_ids=["saved-stock-decision"], choices=["Keep ready-made stock only."],
+        choice_effects=[{
+            "choice": "Keep ready-made stock only.", "action": "keep",
+            "requirement_id": "saved-stock-decision", "statement": None,
+        }],
+    )
+    output["context_requirements"] = None
+    attempts = []
+
+    def serve(request):
+        wire = json.loads(json.loads(request.content)["input"])
+        assert wire["requirements"][0]["requirement_id"] == "saved-stock-decision"
+        assert wire["answers"][0]["question_id"] == question_id
+        assert wire["answers"][0]["option_ids"] == ["v1"]
+        attempts.append(request)
+        if len(attempts) == 1:
+            return api_response(request, {**output, "questions": [{**output["questions"][0], "option_ids": ["v0"]}]})
+        return api_response(request, output)
+
+    result = run_questions(request_input, serve)
+    assert len(attempts) == 2
+    assert result.questions[0].option_ids == ["v1"]
+    assert result.questions[0].requirement_ids == ["saved-stock-decision"]
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -174,6 +308,7 @@ def test_round_four_is_rejected_before_provider_request(request_input):
         {"choices": ["The image shows a large cup."]},
         {"choices": ["Blue", "BLUE "]},
         {"choices": ["Not sure / Skip"]},
+        {"buyer_facet": "arbitrary-topic"},
         {"question_id": "invented"},
     ],
 )
@@ -201,8 +336,10 @@ def test_correction_rejects_excess_or_repeated_questions(request_input, defect):
     elif defect == "same_round":
         output["questions"].append({**question, "prompt": "do YOU require a minimum capacity "})
     else:
+        output["context_requirements"] = None
         request_input = QuestionInput.model_validate({
             **request_input.model_dump(),
+            "requirements": [],
             "round_number": 2,
             "revision": 1,
             "answers": [{

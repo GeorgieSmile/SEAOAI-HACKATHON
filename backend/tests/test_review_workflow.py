@@ -20,7 +20,7 @@ from backend.report import generate_review
 from backend.report_models import ReviewFailed
 from backend.state import Store
 from backend.tests.offline_server import offline_review
-from backend.tests.test_cases import drafts, initial_request, ready, reference, round_request
+from backend.tests.test_cases import confirm_command, finish_review, drafts, initial_request, ready, reference, reopen_brief, round_request
 from backend.tests.test_imports import INVENTORY, RAW, _copy_zip, _image_url, _upload, stub
 from backend.tests.test_reports import finding_selection, minimal_content, response as provider_response
 
@@ -52,7 +52,9 @@ def test_late_review_cannot_publish_after_inputs_change(tmp_path, action):
                 start = initial_request(snapshot, buyer_context="Original buyer context")
                 start["selected_option_ids"] = [third["option_id"], first["option_id"]]
                 case = ready(await client.post("/api/questions", json=start))
-                command = round_request(case, texts=["Original preference", None])
+                submission = round_request(case, texts=["Original preference", None])
+                prepared = ready(await client.post("/api/brief", json=submission))
+                command = confirm_command(prepared)
                 blocked = asyncio.create_task(client.post("/api/reviews", json=command))
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 try:
@@ -63,10 +65,10 @@ def test_late_review_cannot_publish_after_inputs_change(tmp_path, action):
                     assert pending["report"] is None
                     assert pending["rounds"][0]["answers"][0]["answer_text"] == "Original preference"
                     assert (await client.post("/api/reviews", json=command)).status_code == 409
-                    alias = {**reference(pending), "operation_id": str(uuid4()), "submission": None}
+                    alias = confirm_command(pending)
                     assert (await client.post("/api/reviews", json=alias)).status_code == 409
                     assert (await client.post("/api/case/retry", json=retry_request(pending))).status_code == 409
-                    invalid_key = {**command, "submission": None}
+                    invalid_key = {**command, "confirm": False}
                     assert (await client.post("/api/reviews", json=invalid_key)).status_code == 422
                     assert len(calls) == 1
 
@@ -106,7 +108,8 @@ def test_late_review_cannot_publish_after_inputs_change(tmp_path, action):
                         assert (await client.get(_image_url(snapshot, first))).status_code == 200
                     else:
                         edit = round_request(pending, texts=["Updated preference", None])
-                        current = ready(await client.post("/api/reviews", json=edit))
+                        revised = ready(await client.post("/api/brief", json=edit))
+                        current = ready(await client.post("/api/reviews", json=confirm_command(revised)))
                         assert current["case_id"] == case["case_id"]
                         assert current["revision"] == 2
                         assert current["report"]["revision"] == 2
@@ -163,7 +166,7 @@ def test_review_failure_preserves_answers_and_retries_original_input(tmp_path, d
         snapshot = _upload(client, RAW).json()["snapshot"]
         case = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context="Private note")))
         command = round_request(case, texts=["Keep this saved answer", None])
-        response = client.post("/api/reviews", json=command)
+        response = finish_review(client, command)
         assert response.status_code == 200
         assert response.json()["status"] == "failed"
         assert response.json()["case_id"] == case["case_id"]
@@ -177,7 +180,8 @@ def test_review_failure_preserves_answers_and_retries_original_input(tmp_path, d
         assert failed["last_operation"]["operation_id"] == command["operation_id"]
         assert failed["report"] is None
         assert failed["rounds"][0]["answers"] == command["submission"]["answers"]
-        assert client.post("/api/reviews", json=command).json() == response.json()
+        confirmation = confirm_command(failed, command["operation_id"])
+        assert client.post("/api/reviews", json=confirmation).json() == response.json()
         assert len(failed_calls) == 1
 
     async def recovered_adapter(inputs, images):
@@ -195,7 +199,7 @@ def test_review_failure_preserves_answers_and_retries_original_input(tmp_path, d
         assert reviewed["last_operation"]["operation_id"] == command["operation_id"]
         assert reviewed["rounds"] == failed["rounds"]
         assert ready(client.post("/api/case/retry", json=retry)) == reviewed
-        assert ready(client.post("/api/reviews", json=command)) == reviewed
+        assert ready(client.post("/api/reviews", json=confirmation)) == reviewed
         assert successful_calls == failed_calls
 
 
@@ -215,7 +219,7 @@ def test_report_does_not_attach_missing_or_unselected_images(tmp_path):
         snapshot = _upload(client, _copy_zip(change)).json()["snapshot"]
         first, second, third, fourth = snapshot["options"][:4]
         case = ready(client.post("/api/questions", json=initial_request(snapshot)))
-        reviewed = ready(client.post("/api/reviews", json=round_request(case)))
+        reviewed = ready(finish_review(client, round_request(case)))
         assert reviewed["phase"] == "reviewed"
         assert client.get(_image_url(snapshot, first)).status_code == 404
         assert client.get(_image_url(snapshot, second)).status_code == 404
@@ -247,7 +251,9 @@ def test_cancelled_review_releases_reservation_without_restart(tmp_path):
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 snapshot = (await _upload(client)).json()["snapshot"]
                 case = ready(await client.post("/api/questions", json=initial_request(snapshot)))
-                command = round_request(case, texts=["Already saved", None])
+                submission = round_request(case, texts=["Already saved", None])
+                prepared = ready(await client.post("/api/brief", json=submission))
+                command = confirm_command(prepared)
                 blocked = asyncio.create_task(client.post("/api/reviews", json=command))
                 await asyncio.wait_for(entered.wait(), timeout=5)
                 blocked.cancel()
@@ -271,7 +277,7 @@ import os
 import sys
 from fastapi.testclient import TestClient
 from backend.main import create_app
-from backend.tests.test_cases import _upload, drafts, initial_request, ready, round_request, stub
+from backend.tests.test_cases import _upload, drafts, finish_review, initial_request, ready, round_request, stub
 
 async def stop_mid_review(inputs, images):
     os._exit(23)
@@ -280,7 +286,7 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
                            review_generator=stop_mid_review)) as client:
     listing = _upload(client).json()['snapshot']
     case = ready(client.post('/api/questions', json=initial_request(listing)))
-    client.post('/api/reviews', json=round_request(case, texts=['Already saved', None]))
+    finish_review(client, round_request(case, texts=['Already saved', None]))
 """, str(database)], check=False, timeout=15)
     assert process.returncode == 23
 
@@ -348,12 +354,13 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert restored["phase"] == "ready_for_review"
         assert restored["report"] is None
         assert restored["last_operation"]["stage"] == "review"
+        assert restored["requirements"] == []
         assert calls == []
         command = {**reference(restored), "operation_id": str(uuid4()), "submission": None}
-        reviewed = ready(client.post("/api/reviews", json=command))
+        reviewed = ready(finish_review(client, command))
         assert reviewed["phase"] == "reviewed"
         assert reviewed["revision"] == restored["revision"]
-        assert calls == [inputs]
+        assert calls == [inputs.model_copy(update={"requirements": []})]
 
 
 def _replace_saved_case(database, change):
@@ -408,7 +415,7 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
         start["selected_option_ids"] = start["selected_option_ids"][:2]
         case = ready(client.post("/api/questions", json=start))
         issued, = case["rounds"][0]["questions"]
-        response = client.post("/api/reviews", json=round_request(case, texts=[answer]))
+        response = finish_review(client, round_request(case, texts=[answer]))
         assert response.status_code == 200
         assert response.json()["code"] == "invalid_review"
         saved = client.get("/api/case").json()["case"]
@@ -448,6 +455,40 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
         assert len(requests) == 3
 
 
+def test_saved_review_is_bound_to_the_issued_question_facet(tmp_path):
+    database = tmp_path / "case.db"
+
+    async def ask_about_decoration(inputs):
+        return QuestionResult(reason="Check the requested decoration.", questions=[QuestionDraft(
+            prompt="How should the artwork be applied?", why_ask="The method affects this order.",
+            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[], buyer_facet="decoration_method",
+        )])
+
+    options = dict(translator=stub, question_generator=ask_about_decoration, review_generator=offline_review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        asking = ready(client.post("/api/questions", json=initial_request(snapshot)))
+        reviewed = ready(finish_review(client, round_request(asking, texts=["Screen printing is required."])))
+        assert reviewed["phase"] == "reviewed"
+        assert reviewed["rounds"][0]["questions"][0]["buyer_facet"] == "decoration_method"
+
+    async def unexpected_generation(*_):
+        pytest.fail("Reopening a report must not request generation.")
+
+    options["review_generator"] = unexpected_generation
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+
+    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update(
+        buyer_facet="surface_finish",
+    ))
+    with TestClient(create_app(database, **options)) as client:
+        saved = client.get("/api/case").json()["case"]
+        assert saved["last_operation"]["code"] == "invalid_review"
+        assert saved["report"] is None
+        assert saved["rounds"][0]["answers"] == reviewed["rounds"][0]["answers"]
+
+
 @pytest.mark.parametrize("damage, expected_code", [
     ("legacy", "review_regeneration_required"),
     ("missing_envelope", "invalid_review"),
@@ -470,7 +511,7 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
         start["selected_option_ids"] = [snapshot["options"][i]["option_id"] for i in (6, 0)]
         case = ready(client.post("/api/questions", json=start))
         command = round_request(case, texts=["  Keep the deadline exactly.  ", None])
-        original = ready(client.post("/api/reviews", json=command))
+        original = ready(finish_review(client, command))
 
     def change_report(record):
         saved_review = record["saved_review"]
@@ -526,9 +567,13 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
             assert recovered["phase"] == "failed"
             assert recovered["report"] is None
             assert recovered["last_operation"]["code"] == expected_code
-            assert client.post("/api/reviews", json=command).json()["code"] == expected_code
-            alias = {**reference(recovered), "operation_id": str(uuid4()), "submission": None}
-            assert client.post("/api/reviews", json=alias).json()["code"] == expected_code
+            original_confirm = confirm_command(recovered, command["operation_id"])
+            alias = confirm_command(recovered)
+            if expected_code == "review_regeneration_required":
+                assert client.post("/api/reviews", json=alias).status_code == 422
+            else:
+                assert client.post("/api/reviews", json=original_confirm).json()["code"] == expected_code
+                assert client.post("/api/reviews", json=alias).json()["code"] == expected_code
 
     retries = []
 
@@ -537,13 +582,27 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
         return await offline_review(inputs, images)
 
     with TestClient(create_app(database, **{**options, "review_generator": review})) as client:
-        reviewed = ready(client.post("/api/case/retry", json=retry_request(recovered)))
+        if damage == "legacy":
+            confirmation = confirm_command(reopen_brief(client, recovered))
+            reviewed = ready(client.post("/api/reviews", json=confirmation))
+        else:
+            reviewed = ready(client.post("/api/case/retry", json=retry_request(recovered)))
         assert reviewed["rounds"] == original["rounds"]
         assert reference(reviewed) == reference(original)
         assert reviewed["phase"] == "reviewed"
-        assert reviewed["last_operation"]["operation_id"] == original["last_operation"]["operation_id"]
-        assert reviewed["report"] == original["report"]
-        assert ready(client.post("/api/case/retry", json=retry_request(recovered))) == reviewed
+        expected_operation = confirmation["operation_id"] if damage == "legacy" else original["last_operation"]["operation_id"]
+        assert reviewed["last_operation"]["operation_id"] == expected_operation
+        if damage == "legacy":
+            assert reviewed["report"]["buyer_requirements"] == []
+            assert [item["status"] for item in reviewed["requirements"]] == ["unresolved", "unresolved"]
+            assert [item["provenance"][0]["quote"] for item in reviewed["requirements"]] == ["  Keep the deadline exactly.  ", None]
+            assert reviewed["report"]["open_preferences"]
+        else:
+            assert reviewed["report"] == original["report"]
+        if damage == "legacy":
+            assert ready(client.post("/api/reviews", json=confirmation)) == reviewed
+        else:
+            assert ready(client.post("/api/case/retry", json=retry_request(recovered))) == reviewed
         (inputs,) = retries
         assert [answer.answer_text for answer in inputs.answers] == ["  Keep the deadline exactly.  ", None]
 

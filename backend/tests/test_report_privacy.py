@@ -303,6 +303,339 @@ def test_a_later_sample_answer_does_not_replace_a_custom_order_answer(parsed_lis
     assert {requirement.requirement_id for requirement in rendered.buyer_requirements} == {"order", "sample"}
 
 
+@pytest.mark.parametrize("facet", [None, "other"])
+def test_uncertain_delivery_date_does_not_replace_stock_requirement(parsed_listing, facet):
+    request = build_case(parsed_listing, "Ready-made only")
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "delivery", "question_text": "Are you sure about the delivery date?",
+        "answer_text": "I'm undecided and will have to check.", "buyer_facet": facet,
+    })
+    data["answer_option_ids"]["delivery"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("order", "issued-1", "Ready-made only")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "order", action="confirm_ready_made")]
+
+    rendered = assemble(request, {}, payload)
+
+    assert rendered.buyer_requirements[0].quote == "Ready-made only"
+    assert "Please answer for ready-made stock." in rendered.supplier_draft
+
+
+@pytest.mark.parametrize(("topic", "original", "question", "answer", "removed"), [
+    ("finish", "Screen printing is required.", "Is screen printing required?", "No.", "screen printing"),
+    ("finish", "Screen printing is required.",
+     "Is screen printing required, or are applied graphics acceptable?", "Decals could work.", "screen printing"),
+    ("finish", "A matte finish is required.", "Which finish do you need?", "Whatever works.", "matte finish"),
+    ("capacity", "I require 720 ml.", "Do you require an exact capacity for Option A?", "No.", "720 ml"),
+    ("customization", "Custom orders are acceptable.", "Would you consider custom production for Option A?",
+     "No.", "minimum order quantity"),
+])
+def test_untagged_direct_followup_withholds_old_direction(parsed_listing, topic, original, question, answer, removed):
+    request = build_case(parsed_listing, original)
+    data = request.model_dump()
+    data["answers"].append({"question_id": "recheck", "question_text": question, "answer_text": answer})
+    data["answer_option_ids"]["recheck"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, topic)
+    payload["buyer_requirements"] = [buyer_selection("old", "issued-1", original, topic=topic)]
+    payload["findings"] = [finding_selection(request.selected_option_ids, topic=topic, requirement_ids=["old"])]
+
+    with pytest.raises(ValueError, match="current buyer input"):
+        assemble(request, {}, payload)
+
+    payload["buyer_requirements"] = []
+    payload["findings"][0]["requirement_ids"] = []
+    payload["open_preferences"] = [{
+        "preference_id": "recheck", "topic": topic, "input_refs": ["answer:issued-1", "answer:recheck"],
+        "finding_ids": [payload["findings"][0]["finding_id"]],
+    }]
+    rendered = assemble(request, {}, payload)
+    assert rendered.buyer_requirements == []
+    assert rendered.open_preferences[0].input_refs == ["answer:issued-1", "answer:recheck"]
+    assert rendered.supplier_draft
+    assert removed not in rendered.supplier_draft
+
+
+@pytest.mark.parametrize(("question", "answer"), [
+    ("Would you consider a custom order sample before placing the order?", "No."),
+    ("Would you consider a custom order?", None),
+])
+def test_untagged_skipped_or_independent_question_retains_old_direction(parsed_listing, question, answer):
+    original = "Custom orders are acceptable."
+    request = build_case(parsed_listing, original)
+    data = request.model_dump()
+    data["answers"].append({"question_id": "recheck", "question_text": question, "answer_text": answer})
+    data["answer_option_ids"]["recheck"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("old", "issued-1", original)]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "old")]
+
+    rendered = assemble(request, {}, payload)
+
+    assert rendered.buyer_requirements[0].quote == original
+    assert "minimum order quantity" in rendered.supplier_draft
+
+
+@pytest.mark.parametrize("context", [
+    "The logo must be screen printed.",
+    "We want the artwork to be applied with a silk mesh stencil.",
+])
+def test_waiver_withholds_an_earlier_unclassified_requirement_on_the_same_topic(parsed_listing, context):
+    request = build_case(parsed_listing, context, source="context")
+    data = request.model_dump()
+    data["answers"][0].update(
+        question_text="Do you still need the same production method?",
+        answer_text="Screen printing is optional.", buyer_facet="decoration_method",
+    )
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [{
+        "requirement_id": "old", "topic": "finish", "input_ref": "context", "quote": context,
+    }]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "old", action="confirm_specification")]
+
+    with pytest.raises(ValueError, match="current buyer input"):
+        assemble(request, {}, payload)
+
+    payload["buyer_requirements"] = []
+    payload["findings"][0]["requirement_ids"] = []
+    rendered = assemble(request, {}, payload)
+    assert "the decoration process and finish" in rendered.supplier_draft
+    assert context not in rendered.supplier_draft
+
+    data["answers"][0].update(
+        question_text="What surface texture do you want?", answer_text="Any finish is acceptable.",
+        buyer_facet="surface_finish",
+    )
+    request = ReviewInput.model_validate(data)
+    payload["buyer_requirements"] = [{
+        "requirement_id": "print", "topic": "finish", "input_ref": "context", "quote": context,
+    }]
+    payload["findings"][0]["requirement_ids"] = ["print"]
+    rendered = assemble(request, {}, payload)
+    assert rendered.buyer_requirements[0].quote == context
+    assert "with screen printing?" not in rendered.supplier_draft
+
+
+def test_unclassified_requirement_keeps_unaffected_skus_and_independent_topics(example):
+    request, images = example
+    context = "The logo must be screen printed. Check whether the gift box fits our display shelf."
+    data = request.model_dump()
+    data["buyer_context"] = context
+    data["answers"] = [{
+        "question_id": "recheck", "question_text": "Do you still need the same production method?",
+        "answer_text": "Screen printing is optional.", "buyer_facet": "decoration_method",
+    }]
+    data["answer_option_ids"] = {"recheck": ["v0"]}
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [
+        {"requirement_id": "logo", "topic": "finish", "input_ref": "context", "quote": context},
+        {"requirement_id": "box", "topic": "packaging", "input_ref": "context", "quote": context},
+    ]
+    payload["findings"] = [
+        {**stock_finding(["v0"], action="confirm_specification"), "finding_id": "finish-a"},
+        {**stock_finding(["v1", "v6"], "logo", action="confirm_specification"), "finding_id": "finish-bc"},
+        finding_selection(["v0"], topic="packaging", requirement_ids=["box"], finding_id="packaging-a"),
+    ]
+
+    rendered = assemble(request, images, payload)
+
+    assert [row.option_ids for row in rendered.buyer_requirements] == [["v1", "v6"], ["v0", "v1", "v6"]]
+    assert "screen printing" not in rendered.findings[0].supplier_question
+    assert "the delivered packaging" in rendered.findings[2].supplier_question
+
+
+@pytest.mark.parametrize("facet", [None, "decoration_method"])
+def test_omitted_finish_waiver_prevents_old_requirement_and_printing_request(parsed_listing, facet):
+    printing = "Screen printing is required."
+    request = build_case(parsed_listing, printing)
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "alternative", "question_text": "Could the decoration be made another way?",
+        "answer_text": "Any finish is acceptable", "buyer_facet": facet,
+    })
+    data["answer_option_ids"]["alternative"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("printing", "issued-1", printing, topic="finish")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "printing", action="confirm_specification")]
+    requests = []
+
+    def serve(http_request):
+        requests.append(http_request)
+        return response(http_request, payload)
+
+    result = run_review(request, {}, serve)
+    assert isinstance(result, ReviewFailed)
+    assert result.code == "invalid_review"
+    assert len(requests) == 2
+
+    payload["buyer_requirements"] = []
+    payload["findings"][0]["requirement_ids"] = []
+    rendered = assemble(request, {}, payload)
+    assert rendered.buyer_requirements == []
+    assert "the decoration process and finish" in rendered.supplier_draft
+    assert "screen printing" not in rendered.supplier_draft
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+def test_matte_texture_and_printing_method_remain_independent_requirements(parsed_listing, tagged):
+    printing = "Screen printing is required."
+    matte = "A matte texture is required."
+    request = build_case(parsed_listing, printing)
+    data = request.model_dump()
+    data["answers"][0]["buyer_facet"] = "decoration_method" if tagged else None
+    data["answers"].append({
+        "question_id": "texture", "question_text": "Which finish should the surface have?",
+        "answer_text": matte, "buyer_facet": "surface_finish" if tagged else None,
+    })
+    data["answer_option_ids"]["texture"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [
+        buyer_selection("printing", "issued-1", printing, topic="finish"),
+        buyer_selection("matte", "texture", matte, topic="finish"),
+    ]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "printing", "matte", action="confirm_specification")]
+
+    rendered = assemble(request, {}, payload)
+
+    assert [row.quote for row in rendered.buyer_requirements] == [printing, matte]
+    assert rendered.findings[0].requirement_ids == ["printing", "matte"]
+    assert "the decoration process and finish" in rendered.supplier_draft
+    assert "with screen printing?" in rendered.supplier_draft
+    assert "with a matte finish?" in rendered.supplier_draft
+    assert matte not in rendered.supplier_draft
+
+
+@pytest.mark.parametrize("also_printing", [False, True])
+def test_legacy_broad_finish_waiver_withholds_prior_surface_direction(parsed_listing, also_printing):
+    matte = "A matte finish is required."
+    printing = "Screen printing is required."
+    request = build_case(parsed_listing, matte)
+    data = request.model_dump()
+    data["buyer_context"] = printing if also_printing else ""
+    data["answers"].append({
+        "question_id": "texture", "question_text": "Which surface texture do you need?",
+        "answer_text": "Any finish is acceptable.",
+    })
+    data["answer_option_ids"]["texture"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("matte", "issued-1", matte, topic="finish")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, action="confirm_specification")]
+
+    with pytest.raises(ValueError, match="current buyer input"):
+        assemble(request, {}, payload)
+
+    if also_printing:
+        payload["buyer_requirements"] = [{
+            "requirement_id": "printing", "topic": "finish", "input_ref": "context", "quote": printing,
+        }]
+        with pytest.raises(ValueError, match="current buyer input"):
+            assemble(request, {}, payload)
+
+    payload["buyer_requirements"] = []
+    rendered = assemble(request, {}, payload)
+    assert rendered.buyer_requirements == []
+    assert "the decoration process and finish" in rendered.supplier_draft
+    assert "with a matte finish?" not in rendered.supplier_draft
+    assert "with screen printing?" not in rendered.supplier_draft
+
+
+@pytest.mark.parametrize(("later_facet", "a_printing"), [("decoration_method", False), ("surface_finish", True)])
+def test_finish_waiver_uses_the_issued_facet_and_only_its_sku(example, later_facet, a_printing):
+    request, images = example
+    printing = "Screen printing is required."
+    matte = "A matte finish is required."
+    data = request.model_dump()
+    data["buyer_context"] = matte
+    data["answers"] = [
+        {"question_id": "original", "question_text": "How must the graphic be applied?",
+         "answer_text": printing, "buyer_facet": "decoration_method"},
+        {"question_id": "later", "question_text": "Can Option A work another way?",
+         "answer_text": "Any finish is acceptable", "buyer_facet": later_facet},
+    ]
+    data["answer_option_ids"] = {"original": request.selected_option_ids, "later": ["v0"]}
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [
+        buyer_selection("printing", "original", printing, topic="finish"),
+        {"requirement_id": "matte", "topic": "finish", "input_ref": "context", "quote": matte},
+    ]
+    payload["findings"] = [
+        {**stock_finding(["v0"], "printing" if a_printing else "matte", action="confirm_specification"),
+         "finding_id": "option-a"},
+        {**stock_finding(["v1", "v6"], "printing", "matte", action="confirm_specification"), "finding_id": "options-bc"},
+    ]
+
+    rendered = assemble(request, images, payload)
+    assert rendered.buyer_requirements[0].option_ids == (request.selected_option_ids if a_printing else ["v1", "v6"])
+    assert rendered.buyer_requirements[1].option_ids == (["v1", "v6"] if a_printing else request.selected_option_ids)
+    assert ("with screen printing?" in rendered.findings[0].supplier_question) is a_printing
+    assert ("with a matte finish?" in rendered.findings[0].supplier_question) is (not a_printing)
+    assert "with screen printing?" in rendered.findings[1].supplier_question
+    assert "with a matte finish?" in rendered.findings[1].supplier_question
+
+    payload["buyer_requirements"].append(buyer_selection("waiver", "later", "Any finish is acceptable", topic="finish"))
+    with pytest.raises(ValueError, match="explicitly allows any finish"):
+        assemble(request, images, payload)
+
+
+def test_finish_waiver_answered_to_unrelated_question_cannot_become_a_requirement(parsed_listing):
+    request = build_case(parsed_listing, "Ready-made only")
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "deadline", "question_text": "When do you need delivery?",
+        "answer_text": "Any finish is acceptable.", "buyer_facet": "other",
+    })
+    data["answer_option_ids"]["deadline"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("order", "issued-1", "Ready-made only")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "order")]
+    assert "ready-made stock" in assemble(request, {}, payload).supplier_draft
+
+    payload["buyer_requirements"].append(buyer_selection("waiver", "deadline", "Any finish is acceptable.", topic="finish"))
+    with pytest.raises(ValueError, match="explicitly allows any finish"):
+        assemble(request, {}, payload)
+
+
+def test_tagged_conditional_method_answer_withholds_old_direction_without_exposing_private_terms(parsed_listing):
+    printing = "Screen printing is required."
+    request = build_case(parsed_listing, printing)
+    data = request.model_dump()
+    data["answers"].append({
+        "question_id": "alternative", "question_text": "Would something else work?",
+        "answer_text": "Another method might work, subject to our private 43.5% margin target.",
+        "buyer_facet": "decoration_method",
+    })
+    data["answer_option_ids"]["alternative"] = request.selected_option_ids
+    request = ReviewInput.model_validate(data)
+    payload = minimal_content(request, "finish")
+    payload["buyer_requirements"] = [buyer_selection("printing", "issued-1", printing, topic="finish")]
+    payload["findings"] = [stock_finding(request.selected_option_ids, "printing", action="confirm_specification")]
+
+    with pytest.raises(ValueError, match="current buyer input"):
+        assemble(request, {}, payload)
+
+    payload["buyer_requirements"] = []
+    payload["findings"][0]["requirement_ids"] = []
+    payload["open_preferences"] = [{
+        "preference_id": "method", "topic": "finish", "input_refs": ["answer:issued-1", "answer:alternative"],
+        "finding_ids": [payload["findings"][0]["finding_id"]],
+    }]
+    rendered = assemble(request, {}, payload)
+    assert rendered.open_preferences[0].input_refs == ["answer:issued-1", "answer:alternative"]
+    assert "the decoration process and finish" in rendered.supplier_draft
+    assert "screen printing" not in rendered.supplier_draft
+    assert "43.5%" not in rendered.supplier_draft
+
+
 def test_exact_capacity_requirement_yields_controlled_seller_question(parsed_listing):
     request = build_case(parsed_listing, "I require 720.0 mL.")
     payload = minimal_content(request, "capacity")

@@ -1,10 +1,10 @@
 import { useCallback, useRef, useState } from "react";
 import {
-  caseVersion, continueQuestions, getCurrentCase, requestReview, retryCase, startQuestions,
+  caseVersion, continueQuestions, getCurrentCase, prepareBrief, requestReview, resumeQuestions, retryCase, saveBriefEdit, startQuestions,
 } from "./api";
-import type { CaseStage, CaseVersion, CaseView, Selection, Submission } from "./api";
+import type { BriefEdit, CaseStage, CaseVersion, CaseView, OrderClarification, Selection, Submission } from "./api";
 
-type Work = "start" | "continue" | "review" | "retry" | "refresh";
+type Work = "start" | "continue" | "brief" | "review" | "retry" | "refresh";
 type BindOperation = (payload: unknown, base: CaseVersion | null, stage: CaseStage) => string;
 type CaseCommand = (bindOperation: BindOperation, isCurrent: () => boolean) => Promise<CaseView | null>;
 
@@ -87,7 +87,7 @@ export function useInterviewSession() {
 
   async function run(
     stage: Exclude<Work, "refresh">, snapshotId: string, execute: CaseCommand,
-    autoReview: boolean, retryId?: string,
+    retryId?: string,
   ) {
     const request = ++activeRequest.current;
     const isCurrent = () => activeRequest.current === request;
@@ -104,23 +104,11 @@ export function useInterviewSession() {
     setError("");
     setNeedsRefresh(false);
     try {
-      let result = await execute(bind, isCurrent);
+      const result = await execute(bind, isCurrent);
       if (!isCurrent() || !result) return null;
       setView(result);
       unconfirmedOperation.current = null;
       lastSent.current = null;
-      if (autoReview && result.phase === "ready_for_review"
-        && result.last_operation?.stage !== "review") {
-        setWork("review");
-        expected = caseVersion(result);
-        id = operationId(JSON.stringify(["review", [expected, null]]));
-        lastSent.current = { id, stage: "review", base: expected };
-        result = await requestReview(result, null, id);
-        if (!isCurrent()) return null;
-        setView(result);
-        unconfirmedOperation.current = null;
-        lastSent.current = null;
-      }
       return result;
     } catch (actionError) {
       if (!isCurrent()) return null;
@@ -163,25 +151,45 @@ export function useInterviewSession() {
       if (!isCurrent() || !acceptSavedVersion(previous, caseVersion(view))) return null;
       const payload = { ...selection, previous_case: caseVersion(previous) };
       return startQuestions({ ...payload, operation_id: bind(payload, payload.previous_case, "start") });
-    }, true);
+    });
   }
 
-  function submit(current: CaseView, submission: Submission | null, stage: "continue" | "review") {
+  function submit(
+    current: CaseView, submission: Submission | null, stage: "continue" | "brief", clarification?: OrderClarification,
+  ) {
     if (pending.current || needsRefresh || requiresReload || (stage === "continue" && !submission)) return Promise.resolve(null);
     return run(stage, current.snapshot_id, (bind) => {
       const version = caseVersion(current);
-      const id = bind([version, submission], version, stage);
+      const id = bind([version, submission, clarification], version, stage);
       return stage === "continue" && submission
         ? continueQuestions(current, submission, id)
-        : requestReview(current, submission, id);
-    }, stage === "continue");
+        : prepareBrief(current, submission, id, clarification);
+    });
+  }
+
+  function confirm(current: CaseView) {
+    if (pending.current || needsRefresh || requiresReload) return;
+    void run("review", current.snapshot_id, (bind) =>
+      requestReview(current, bind(null, caseVersion(current), "review")));
+  }
+
+  function edit(current: CaseView, change: BriefEdit) {
+    if (pending.current || needsRefresh || requiresReload) return Promise.resolve(null);
+    return run("brief", current.snapshot_id, (bind) =>
+      saveBriefEdit(current, change, bind(change, caseVersion(current), "brief")));
+  }
+
+  function resume(current: CaseView) {
+    if (pending.current || needsRefresh || requiresReload) return;
+    void run("continue", current.snapshot_id, (bind) =>
+      resumeQuestions(current, bind(null, caseVersion(current), "continue")));
   }
 
   function retry(current: CaseView) {
     const operation = current.last_operation;
     if (pending.current || needsRefresh || requiresReload || operation?.status !== "failed") return;
     void run("retry", current.snapshot_id, (bind) => retryCase(current, bind(null, caseVersion(current), operation.stage)),
-      operation.stage !== "review", operation.operation_id);
+      operation.operation_id);
   }
 
   async function refresh(snapshotId: string) {
@@ -209,5 +217,5 @@ export function useInterviewSession() {
     }
   }
 
-  return { view, work, error, needsRefresh, requiresReload, restore, start, submit, retry, refresh, suspend };
+  return { view, work, error, needsRefresh, requiresReload, restore, start, submit, confirm, edit, resume, retry, refresh, suspend };
 }

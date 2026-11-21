@@ -646,6 +646,13 @@ fieldset {
   accent-color: var(--green);
 }
 
+.question-choice-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: .875rem;
+}
+
 .skip-choice { color: var(--muted); }
 
 .free-answer {
@@ -677,6 +684,22 @@ fieldset {
 }
 
 .free-answer button[aria-pressed="true"] { background: var(--tint); border-color: #4e7a66; }
+
+.free-answer-effect { display: grid; gap: 5px; }
+
+.free-answer-effect select {
+  width: 100%;
+  min-width: 0;
+  min-height: 43px;
+  padding: 6px 8px;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid #aab8ad;
+  border-radius: 7px;
+  font: inherit;
+}
+
+.free-answer-effect select:disabled { color: var(--muted); }
 
 .interview-actions {
   display: flex;
@@ -852,6 +875,42 @@ fieldset {
 .comparison-mobile-option { display: none; }
 .comparison-limitations { margin: 8px 0 0; padding-inline-start: 18px; font-size: .875rem; }
 
+.requirement-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.requirement-option {
+  flex: 1 1 240px;
+  min-width: 0;
+  padding: 13px;
+  background: #f5f5f1;
+  border-radius: 8px;
+}
+
+.requirement-option h3 { font-size: 1rem; }
+.requirement-option-name, .requirement-option > p { margin-block: 3px 8px; font-size: .875rem; }
+.requirement-decisions-list, .requirement-history { list-style: none; padding: 0; margin: 0; }
+.requirement-decisions-list { display: grid; gap: 6px; }
+.requirement-decision { border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.requirement-decision summary { padding: 7px 9px; cursor: pointer; }
+.requirement-status { color: var(--muted); font-size: .82rem; font-weight: 700; }
+.requirement-status.is-active { color: var(--green); }
+.requirement-status.is-unresolved { color: #7e4415; }
+.requirement-statement { display: block; margin-left: 14px; }
+.requirement-history { padding: 0 9px 9px 23px; font-size: .875rem; }
+.requirement-history li + li { margin-top: 8px; }
+.requirement-history blockquote { margin: 3px 0 0; padding-left: 8px; border-left: 2px solid var(--line); white-space: pre-wrap; }
+
+.order-clarification-option { margin-top: 6px; }
+.order-clarification-quotes { display: grid; gap: 8px; margin-block: 12px; }
+.order-clarification-quotes blockquote { margin: 0; padding-left: 12px; border-left: 2px solid var(--line); white-space: pre-wrap; }
+.order-clarification-quotes footer { font-size: .85rem; color: var(--muted); }
+.order-clarification form { display: grid; justify-items: start; gap: 14px; margin-top: 12px; }
+.order-clarification .interview-question { width: 100%; }
+
 .review-no-comparisons { margin-top: 12px; }
 .review-no-comparisons ul { margin-bottom: 0; padding-left: 20px; }
 
@@ -914,7 +973,6 @@ fieldset {
   .review-comparison td + td { border-top: 1px solid var(--line); }
   .comparison-mobile-option { display: block; color: var(--green); font-size: .84rem; font-weight: 750; margin-bottom: 3px; }
 }
-
 .link-import { flex: 1 0 100%; min-width: 0; }
 .link-import label { display: block; margin-bottom: 6px; font-weight: 650; }
 .link-controls { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -931,6 +989,9 @@ fieldset {
 @media (max-width: 520px) {
   .link-controls > * { width: 100%; }
 }
+
+.linked-option { display: block; color: var(--green); font-size: .85rem; }
+
 
 /* DiliDoo! workspace */
 .selection-jump { display: none; }
@@ -1028,3 +1089,35 @@ fieldset {
 @media (max-width: 400px) {
   .header-actions .button { padding-inline: 9px; font-size: .875rem; }
 }
+
+.buying-brief, .brief-editor, .brief-preview, .brief-changes {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brief-editor label { display: grid; gap: 6px; min-width: 0; }
+.brief-editor textarea, .brief-editor select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--paper, white);
+  color: inherit;
+  font: inherit;
+}
+
+.brief-changes { margin-block: 8px; overflow-wrap: anywhere; }
+.brief-changes ul { margin: 0; padding-inline-start: 20px; }
+.brief-changes li + li { margin-top: 6px; }
+.brief-changes li span { display: block; }
+.brief-preview > button { justify-self: start; }
+
+
+.brief-summary { display: grid; gap: 12px; justify-items: start; }
+.brief-summary ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.brief-summary li { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.brief-summary small { color: var(--muted); }
+.brief-shared { margin-bottom: 12px; }
+.brief-shared h3 { margin-bottom: 8px; }
