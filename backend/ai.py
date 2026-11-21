@@ -47,9 +47,35 @@ LISTING_CLAIM = re.compile(
     re.IGNORECASE,
 )
 NAMED_OPTIONS = re.compile(
-    r"\boptions?\s+([ABC](?:\s*(?:,\s*(?:and\s+)?|and\s+|or\s+|/\s*)[ABC])*)\b",
+    r"\b(?:(?P<kind>options?|SKUs?|variants?)\s+"
+    r"(?P<letters>[A-Z](?:\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+|[/&]\s*)"
+    r"(?:(?:options?|SKUs?|variants?)\s+)?[A-Z])*)\b"
+    r"|(?P<possessive>[A-Z])(?=['’]s\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\b))",
+    re.IGNORECASE | re.ASCII,
+)
+CLAUSE_BOUNDARY = re.compile(
+    r"(?<=[.!?;])\s+|[\r\n]+"
+    r"|,\s+(?=(?:(?:and|but)\s+)?(?:would|could|should|do|does|will|can|is|are|you|which|what|how)\b)",
     re.IGNORECASE,
 )
+GENERIC_OPTION_PREFIX = re.compile(r"\b(?:an|any|the|which|whichever|this|that|each)\s*$", re.IGNORECASE)
+ARTICLE_FOLLOWED_BY_NOUN = re.compile(
+    r"^\s+\w+\s+(?:is|are|has|have|can|could|will|would|may|might|must|needs?|wants?|chooses?|requested)\b",
+    re.IGNORECASE,
+)
+OPTION_NAME_AFTER = re.compile(
+    r"^\s*(?:['’]s?\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\b"
+    r"|(?:uses?|includes?|contains?)\b[^,.;?!]*\b(?:wording|names?)\b)",
+    re.IGNORECASE,
+)
+OPTION_NAME_BEFORE = re.compile(r"\b(?:names?|wording|labels?)\s+(?:for|of)\s*$", re.IGNORECASE)
+OPTION_CLAIM_AFTER = re.compile(
+    r"^\s*(?:(?:uses?|has|have|lists?|shows?|contains?|offers?|specifies?|confirms?|describes?|says?|reads?)\b(?!\s+to\b)"
+    r"|(?:is|are)\s+(?:listed|described|advertised|labelled|labeled)\b)",
+    re.IGNORECASE,
+)
+CLAIM_LINK = re.compile(r"\b(?:for|of|about|on|regarding|that)\s*$", re.IGNORECASE)
+SHARED_SELECTOR = re.compile(r"\bshared selector\b", re.IGNORECASE)
 GROUP_EVIDENCE_CLAIM = re.compile(
     r"\b(?:both|all|each)\s+(?:(?:of|the|selected|confirmed)\s+)*"
     r"(?:options?|SKUs?|variants?)\s+"
@@ -325,19 +351,71 @@ def _normalized_question_text(text: str) -> str:
     return " ".join(normalize("NFKC", text).casefold().split()).rstrip(" ?!.")
 
 
-def _named_option_references(text: str) -> set[str]:
-    return {
-        label
-        for match in NAMED_OPTIONS.finditer(text)
-        for label in re.findall(r"\b[ABC]\b", match[1].upper())
-    }
+def _validate_named_options(
+    text: str,
+    *,
+    allowed: set[str],
+    evidence: set[str],
+    names: set[str],
+    shared: set[str],
+    listing: set[str],
+) -> set[str]:
+    """Check explicit option references and return those attributed to scoped evidence."""
+    attributed = set()
+    for statement in CLAUSE_BOUNDARY.split(text):
+        for match in NAMED_OPTIONS.finditer(statement):
+            before = statement[:match.start()]
+            after = statement[match.end():]
+            letters = re.findall(r"\b[A-Za-z]\b", match["letters"] or match["possessive"])
+            if letters[-1] == "a" and ARTICLE_FOLLOWED_BY_NOUN.match(after):
+                if len(letters) == 1 and match["kind"].casefold() == "option" and GENERIC_OPTION_PREFIX.search(before):
+                    continue
+                # A joined clause may start with an article, as in "Option B and a buyer can...".
+                if len(letters) > 1 and re.search(r"(?:,|\band\b|\bor\b)\s+a$", match["letters"]):
+                    letters.pop()
+            references = {letter.upper() for letter in letters}
+            if not references.issubset(allowed):
+                raise QuestionGenerationError(
+                    "invalid_questions", "Use only the option references covered by this question or reason."
+                )
+
+            seller_attribution = LISTING_CLAIM.search(before)
+            linked_to_seller = seller_attribution and CLAIM_LINK.search(before)
+            uses_scoped_evidence = True
+            if OPTION_NAME_AFTER.match(after) or OPTION_NAME_BEFORE.search(before):
+                supported = names
+            elif not (linked_to_seller or OPTION_CLAIM_AFTER.match(after)):
+                continue
+            elif SHARED_SELECTOR.search(statement):
+                supported = shared
+                uses_scoped_evidence = False
+            elif seller_attribution and listing:
+                supported = listing | evidence
+                uses_scoped_evidence = False
+                attributed.update(references.intersection(evidence))
+            else:
+                supported = evidence
+
+            if not references.issubset(supported):
+                raise QuestionGenerationError(
+                    "invalid_questions", "Match each named option claim to cited text for that option."
+                )
+            if uses_scoped_evidence:
+                attributed.update(references)
+    return attributed
 
 
 def validate_question_result(request: QuestionInput, result: QuestionResult) -> None:
     """Check the draft against the same allowed evidence and history sent to the model."""
     selected = set(request.selected_option_ids)
+    references = dict(zip(request.selected_option_ids, OPTION_REFERENCES))
     seen_prompts = {_normalized_question_text(answer.question_text) for answer in request.answers}
     sources = _question_sources(request)
+    name_sources = request.snapshot.option_name_sources()
+    round_evidence = set()
+    round_names = set()
+    round_shared = set()
+    round_listing = set()
 
     if IMAGE_CLAIM.search(result.reason):
         raise QuestionGenerationError("invalid_questions", "Base the reason on text and buyer input only.")
@@ -357,7 +435,12 @@ def validate_question_result(request: QuestionInput, result: QuestionResult) -> 
             )
         if len(set(question.source_ids)) != len(question.source_ids):
             raise QuestionGenerationError("invalid_questions", "Question source IDs must be unique.")
-        partial_evidence_scope = set()
+        question_refs = {references[option_id] for option_id in option_ids}
+        evidence_refs = set()
+        name_refs = set()
+        shared_refs = set()
+        listing_refs = set()
+        partial_refs = set()
         for source_id in question.source_ids:
             source = sources.get(source_id)
             if source is None or (source.option_ids and not option_ids.intersection(source.option_ids)):
@@ -365,26 +448,53 @@ def validate_question_result(request: QuestionInput, result: QuestionResult) -> 
                     "invalid_questions", "Cite only supplied text sources in the question's option scope."
                 )
             covered_options = option_ids.intersection(source.option_ids)
-            if covered_options != option_ids:
-                partial_evidence_scope.update(covered_options)
+            covered_refs = {references[option_id] for option_id in covered_options}
+            evidence_refs.update(covered_refs)
+            if covered_refs != question_refs:
+                partial_refs.update(covered_refs)
+            if source.label == "Shared selector value":
+                shared_refs.update(covered_refs)
+            if source.kind == "listing_text" and not source.option_ids:
+                listing_refs.update(question_refs)
+            name_refs.update(
+                references[option_id] for option_id in covered_options
+                if source_id == name_sources[option_id].source_id
+            )
 
-        if partial_evidence_scope and partial_evidence_scope != option_ids:
-            covered_references = {
-                reference
-                for reference, option_id in zip(OPTION_REFERENCES, request.selected_option_ids)
-                if option_id in partial_evidence_scope
-            }
-            named = _named_option_references(question.why_ask)
-            public_text = (question.why_ask, question.prompt, *question.choices)
-            if (
-                not named
-                or not named.issubset(covered_references)
-                or any(GROUP_EVIDENCE_CLAIM.search(text) for text in public_text)
-            ):
+        needs_partial_attribution = bool(partial_refs and partial_refs != question_refs)
+        scoped_evidence = partial_refs if needs_partial_attribution else evidence_refs
+        public_text = (question.prompt, *question.choices, question.why_ask)
+        attribution_scope = {
+            "allowed": question_refs,
+            "evidence": scoped_evidence,
+            "names": name_refs,
+            "shared": shared_refs,
+            "listing": listing_refs,
+        }
+        why_attributed = _validate_named_options(question.why_ask, **attribution_scope)
+        for text in (question.prompt, *question.choices):
+            _validate_named_options(text, **attribution_scope)
+        for text in public_text:
+            if needs_partial_attribution and GROUP_EVIDENCE_CLAIM.search(text):
                 raise QuestionGenerationError(
-                    "invalid_questions",
-                    "Explicitly name the supported options in why_ask without applying partial SKU evidence to the group.",
+                    "invalid_questions", "Do not apply partial SKU evidence to the group."
                 )
+            if IMAGE_CLAIM.search(text):
+                raise QuestionGenerationError(
+                    "invalid_questions", "Do not describe images in questions, reasons, or choices."
+                )
+            if not question.source_ids and LISTING_CLAIM.search(text):
+                raise QuestionGenerationError(
+                    "invalid_questions", "A claim about the listing must cite a supplied text source."
+                )
+        if needs_partial_attribution and not why_attributed.intersection(partial_refs):
+            raise QuestionGenerationError(
+                "invalid_questions", "Explicitly name the options supported by partial SKU evidence in why_ask."
+            )
+        round_evidence.update(scoped_evidence)
+        round_names.update(name_refs)
+        round_shared.update(shared_refs)
+        round_listing.update(listing_refs)
 
         choices = {_normalized_question_text(choice) for choice in question.choices}
         if len(choices) != len(question.choices) or choices.intersection(
@@ -394,15 +504,10 @@ def validate_question_result(request: QuestionInput, result: QuestionResult) -> 
                 "invalid_questions", "Use distinct answer choices and leave skipping to the buyer controls."
             )
 
-        for text in (question.prompt, question.why_ask, *question.choices):
-            if IMAGE_CLAIM.search(text):
-                raise QuestionGenerationError(
-                    "invalid_questions", "Do not describe images in questions, reasons, or choices."
-                )
-            if not question.source_ids and LISTING_CLAIM.search(text):
-                raise QuestionGenerationError(
-                    "invalid_questions", "A claim about the listing must cite a supplied text source."
-                )
+    _validate_named_options(
+        result.reason, allowed=set(references.values()), evidence=round_evidence,
+        names=round_names, shared=round_shared, listing=round_listing,
+    )
 
 
 async def generate_questions(

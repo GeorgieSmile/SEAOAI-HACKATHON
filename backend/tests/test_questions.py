@@ -242,6 +242,126 @@ def test_correctly_attributed_partial_evidence_can_motivate_group_question(reque
     assert result == QuestionResult.model_validate(output)
 
 
+def test_rejects_reviewers_wrong_sku_name_attribution(request_input):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v6"]})
+    assert [option.name_original for option in request_input.snapshot.options if option.option_id in {"v0", "v6"}] == [
+        "暮色316-贴画粉蓝", "暮色316-字母粉蓝",
+    ]
+    output = plan(
+        option_ids=["v0"],
+        source_ids=["name-v0"],
+        prompt="Would you accept applied-picture artwork on Option B?",
+        why_ask="Option B's name describes applied-picture artwork.",
+    )
+
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+@pytest.mark.parametrize(("field", "text"), [
+    ("prompt", "Would you accept this finish on SKU B?"),
+    ("prompt", "Would finish affect your decision for Options A/b?"),
+    ("prompt", "Would finish affect your decision for options A and b?"),
+    ("why_ask", "option B's name describes applied-picture artwork."),
+    ("why_ask", "B’s name describes applied-picture artwork."),
+    ("choices", "I would accept this artwork on Variant B."),
+    ("reason", "Option B's name describes applied-picture artwork."),
+    ("reason", "Option D has a known finish."),
+])
+def test_every_public_field_checks_its_named_options(request_input, field, text):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v0", "v6"]})
+    output = plan(
+        option_ids=["v0"],
+        source_ids=["name-v0"],
+        prompt="Would you accept applied-picture artwork on Option A?",
+        why_ask="Option A's name describes applied-picture artwork.",
+    )
+    if field == "reason":
+        output["reason"] = text
+    else:
+        output["questions"][0][field] = [text] if field == "choices" else text
+
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+@pytest.mark.parametrize("field", ["prompt", "choices", "reason"])
+def test_grouped_question_cannot_attribute_partial_sku_evidence_to_the_other_option(request_input, field):
+    output = plan(
+        prompt="Would you accept this finish for Options A/B?",
+        why_ask="Option B's name uses applied-picture wording. The process needs confirmation.",
+        source_ids=["name-v0", "customization-menu", "capacity-selector"],
+    )
+    claim = "Option A's name describes applied-picture artwork."
+    if field == "reason":
+        output["reason"] = claim
+    else:
+        output["questions"][0][field] = [claim] if field == "choices" else (
+            f"{claim} Would you accept it?"
+        )
+
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+def test_shared_selector_evidence_does_not_establish_an_option_name(request_input):
+    output = plan(why_ask="Option A's name describes applied-picture artwork.")
+
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+def test_lowercase_a_is_still_a_reference_when_it_names_the_option(request_input):
+    output = plan(
+        option_ids=["v0"],
+        source_ids=["name-v0"],
+        why_ask="The option a is listed with applied-picture artwork.",
+    )
+    with pytest.raises(ai.QuestionGenerationError) as invalid:
+        run_questions(request_input, lambda request: api_response(request, output))
+    assert invalid.value.code == "invalid_questions"
+
+
+def test_corrected_named_reference_follows_selection_order_without_misreading_an_article(request_input):
+    request_input = request_input.model_copy(update={"selected_option_ids": ["v6", "v0"]})
+    draft = plan(
+        option_ids=["v0"],
+        source_ids=["name-v0"],
+        why_ask="SKU B's name describes applied-picture artwork.",
+        prompt="Would you accept this artwork on an option a buyer can choose in advance?",
+        choices=["I would accept this artwork on Option B."],
+    )
+    wrong = plan(**{**draft["questions"][0], "why_ask": "SKU A's name describes applied-picture artwork."})
+    attempts = iter([wrong, draft])
+    result = run_questions(request_input, lambda request: api_response(request, next(attempts)))
+    assert result == QuestionResult.model_validate(draft)
+
+
+def test_valid_grouped_option_choice_and_separately_scoped_shared_claim(request_input):
+    output = plan(
+        prompt="Is screen printing required for Options A/B?",
+        why_ask="Option B's name uses applied-picture wording. The shared selector lists 720 ml for Options A and B.",
+        source_ids=["name-v0", "capacity-selector"],
+        choices=["Only for Option A.", "For Options A and B."],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+
+def test_valid_unscoped_seller_claim_can_accompany_a_neutral_option_comparison(request_input):
+    output = plan(
+        prompt="The seller lists general customization services, would you consider them for Options A/B?",
+        why_ask="The seller lists a general customization menu relevant to your decision about Option B.",
+        source_ids=["customization-menu"],
+    )
+    result = run_questions(request_input, lambda request: api_response(request, output))
+    assert result == QuestionResult.model_validate(output)
+
+
 @pytest.mark.parametrize(
     ("mode", "retryable", "attempts"),
     [("timeout", True, 1), ("503", True, 2), ("retry-after", True, 1),

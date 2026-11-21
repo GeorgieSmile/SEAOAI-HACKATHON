@@ -243,20 +243,33 @@ def test_round_and_answer_capacity_is_fifteen_without_a_fourth_call(tmp_path):
     assert all(answer.answer_text is None for answer in handoff.answers)
 
 
-@pytest.mark.parametrize("defect", ["too-many-questions", "image-reference"])
+@pytest.mark.parametrize("defect", ["too-many-questions", "image-reference", "wrong-sku-attribution"])
 def test_invalid_provider_questions_leave_the_issue_retryable(tmp_path, defect):
     async def invalid(request):
         base = await drafts(request)
         if defect == "too-many-questions":
             return base.model_copy(update={"questions": base.questions * 3})
-        selected_images = {option.image_source_id for option in request.snapshot.options if option.option_id in request.selected_option_ids}
-        draft = base.questions[0].model_copy(update={"source_ids": [next(iter(selected_images))]})
+        option_a = request.selected_option_ids[0]
+        if defect == "wrong-sku-attribution":
+            draft = base.questions[0].model_copy(update={
+                "option_ids": [option_a],
+                "source_ids": [request.snapshot.option_name_sources()[option_a].source_id],
+                "why_ask": "Option B's name describes applied-picture artwork.",
+            })
+        else:
+            image = next(option.image_source_id for option in request.snapshot.options if option.option_id == option_a)
+            draft = base.questions[0].model_copy(update={"source_ids": [image]})
         return base.model_copy(update={"questions": [draft]})
 
     database = tmp_path / "case.db"
     with TestClient(create_app(database, translator=stub, question_generator=invalid)) as client:
         snapshot = _upload(client).json()["snapshot"]
-        failure = client.post("/api/questions", json=initial_request(snapshot)).json()
+        start = initial_request(snapshot)
+        if defect == "wrong-sku-attribution":
+            by_name = {option["name_original"]: option["option_id"] for option in snapshot["options"]}
+            start["selected_option_ids"] = [by_name["暮色316-贴画粉蓝"], by_name["暮色316-字母粉蓝"]]
+        failure = client.post("/api/questions", json=start).json()
+        assert failure["status"] == "failed"
         assert failure["code"] == "invalid_questions"
         case = client.get("/api/case").json()["case"]
         assert case["phase"] == "failed"
@@ -264,6 +277,7 @@ def test_invalid_provider_questions_leave_the_issue_retryable(tmp_path, defect):
         assert case["revision"] == 0
 
     with TestClient(create_app(database, translator=stub, question_generator=drafts)) as client:
+        assert client.get("/api/case").json()["case"] == case
         retry = {"operation_id": case["last_operation"]["operation_id"], **reference(case)}
         resumed = ready(client.post("/api/case/retry", json=retry))
         assert resumed["rounds"][0]["round_number"] == 1
