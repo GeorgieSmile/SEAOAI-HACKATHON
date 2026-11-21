@@ -144,6 +144,52 @@ def test_import_accepts_explicit_sku_images_without_sku_card_wrappers(tmp_path):
             assert sha256(photo.content).hexdigest() == expected["image_sha256"]
 
 
+def test_import_accepts_sku_card_labels_for_preceding_radios(tmp_path):
+    def change(entries):
+        document = BeautifulSoup(entries["listing.html"].decode(), "html.parser")
+        for card in document.find_all("div", class_="item-parent"):
+            control = card.find("input")
+            label = card.find("label")
+            label["for"] = control["id"]
+            card.insert_before(control.extract())
+            label.insert_after(label.find("img").extract())
+        entries["listing.html"] = document.encode()
+
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        result = _upload(client, _copy_zip(change)).json()
+        assert result["status"] == "ready"
+        snapshot = result["snapshot"]
+        for option, expected in zip(snapshot["options"], INVENTORY["options"], strict=True):
+            photo = client.get(_image_url(snapshot, option))
+            assert photo.status_code == 200
+            assert sha256(photo.content).hexdigest() == expected["image_sha256"]
+
+
+@pytest.mark.parametrize("conflict", ["different-label", "multiple-labels", "multiple-radios"])
+def test_import_rejects_sku_cards_with_conflicting_ownership(conflict, tmp_path):
+    def change(entries):
+        document = BeautifulSoup(entries["listing.html"].decode(), "html.parser")
+        first, second = document.find_all("div", class_="item-parent", limit=2)
+        first_control, second_control = first.find("input"), second.find("input")
+        label = first.find("label")
+        label.insert_after(label.find("img").extract())
+        if conflict == "different-label":
+            label["for"] = second_control["id"]
+        else:
+            label["for"] = first_control["id"]
+            if conflict == "multiple-labels":
+                first.insert_before(first_control.extract())
+                first.append(document.new_tag("label", attrs={"for": second_control["id"]}))
+            else:
+                first.append(second_control.extract())
+                second.find("label")["for"] = second_control["id"]
+        entries["listing.html"] = document.encode()
+
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        result = _upload(client, _copy_zip(change)).json()
+        assert (result["status"], result.get("code")) == ("failed", "unsupported_layout")
+
+
 @pytest.mark.parametrize("axis", ["parent", "child"])
 def test_import_rejects_image_labels_linked_to_a_different_control(axis, tmp_path):
     def change(entries, *, valid_label):

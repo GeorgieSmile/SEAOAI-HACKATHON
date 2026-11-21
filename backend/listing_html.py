@@ -21,6 +21,7 @@ MAX_JSON_CHARS = 65_536
 MAX_JSON_DEPTH = 24
 VOID_TAGS = frozenset("area base br col embed hr img input link meta param source track wbr".split())
 SKU_MAP_FIELD = re.compile(r'"skuMap"\s*:\s*')
+OPTION_CARD_CLASSES = frozenset({"item-parent", "item-child"})
 
 
 def _unsupported(message: str) -> IntakeError:
@@ -218,6 +219,22 @@ def _selectors(group: Tag, kind: str) -> list[Selector]:
             identity = id(container)
             container_keys[identity] = None if identity in container_keys else key
 
+    for label in group.find_all("label", attrs={"for": True}):
+        target = label["for"]
+        if not target:
+            continue
+        key = control_keys.get(target)
+        for container in (label, *label.parents):
+            if container is group:
+                break
+            if OPTION_CARD_CLASSES.isdisjoint(container.get("class", [])):
+                continue
+            # Explicit label ownership extends to sibling images in the card.
+            # A label may supply missing ownership, but cannot resolve a conflict.
+            identity = id(container)
+            if container_keys.setdefault(identity, key) != key:
+                container_keys[identity] = None
+
     images = {}
     for image in group.find_all("img", attrs={"data-sku": True}):
         key = _source_text(image["data-sku"])
@@ -232,7 +249,7 @@ def _selectors(group: Tag, kind: str) -> list[Selector]:
             classes = container.get("class", [])
             if owner is not None and owner != key:
                 raise _unsupported("A saved SKU image disagrees with the selector that contains it.")
-            if ("item-parent" in classes or "item-child" in classes) and (
+            if not OPTION_CARD_CLASSES.isdisjoint(classes) and (
                 owner != key or f"item-{kind}" not in classes
             ):
                 raise _unsupported("A saved SKU image is in an ambiguous option card.")
