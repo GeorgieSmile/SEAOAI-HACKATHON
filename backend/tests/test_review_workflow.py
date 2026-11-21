@@ -448,6 +448,40 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
         assert len(requests) == 3
 
 
+def test_saved_review_is_bound_to_the_issued_question_facet(tmp_path):
+    database = tmp_path / "case.db"
+
+    async def ask_about_decoration(inputs):
+        return QuestionResult(reason="Check the requested decoration.", questions=[QuestionDraft(
+            prompt="How should the artwork be applied?", why_ask="The method affects this order.",
+            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[], buyer_facet="decoration_method",
+        )])
+
+    options = dict(translator=stub, question_generator=ask_about_decoration, review_generator=offline_review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        asking = ready(client.post("/api/questions", json=initial_request(snapshot)))
+        reviewed = ready(client.post("/api/reviews", json=round_request(asking, texts=["Screen printing is required."])))
+        assert reviewed["phase"] == "reviewed"
+        assert reviewed["rounds"][0]["questions"][0]["buyer_facet"] == "decoration_method"
+
+    async def unexpected_generation(*_):
+        pytest.fail("Reopening a report must not request generation.")
+
+    options["review_generator"] = unexpected_generation
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+
+    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update(
+        buyer_facet="surface_finish",
+    ))
+    with TestClient(create_app(database, **options)) as client:
+        saved = client.get("/api/case").json()["case"]
+        assert saved["last_operation"]["code"] == "invalid_review"
+        assert saved["report"] is None
+        assert saved["rounds"][0]["answers"] == reviewed["rounds"][0]["answers"]
+
+
 @pytest.mark.parametrize("damage, expected_code", [
     ("legacy", "review_regeneration_required"),
     ("missing_envelope", "invalid_review"),

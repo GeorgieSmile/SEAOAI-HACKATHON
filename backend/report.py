@@ -20,7 +20,7 @@ from .ai import (
     _build_client,
     _request_structured,
 )
-from .contracts import Option, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
+from .contracts import BuyerFacet, Option, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
 from .intake import IMAGE_MIME
 from .report_coverage import render_coverage, thumbnail_limitations
 from .report_models import (
@@ -51,7 +51,7 @@ from .report_models import (
 )
 
 
-REVIEW_PROMPT_VERSION = "purchase-review-v3"
+REVIEW_PROMPT_VERSION = "purchase-review-v4"
 REVIEW_PROMPT = (PROMPT_DIRECTORY / f"{REVIEW_PROMPT_VERSION}.txt").read_text(encoding="utf-8")
 REVIEW_DEADLINE_SECONDS = 90
 REVIEW_MAX_OUTPUT_TOKENS = 12_288
@@ -90,6 +90,9 @@ TEXT_READING = re.compile(
     r"(?P<unit>ml|l|fl\s*oz|mm|cm|in|g|kg|oz|lb|°c|°f)",
     re.IGNORECASE,
 )
+NUMBER_TOKEN = re.compile(
+    r"[+\-−＋－]?(?:\d+(?:[.,．，٫٬\u00a0\u202f\u2009]\d+)*|[.．٫]\d+)(?:[eE][+\-−]?\d+)?"
+)
 UNIT_ALIASES = {unit.casefold().replace(" ", ""): unit for unit in UNIT_TOPICS}
 UNIT_FACTORS = {
     "ml": ("ml", "1"), "L": ("ml", "1000"), "fl oz": ("fl oz", "1"),
@@ -106,8 +109,19 @@ VISIBLE_DETAILS = {
     "protective_insert_visible": ("packaging", "A protective insert is visible"),
     "markings_visible": ("sku_wording", "Markings are visible"),
 }
-BUYER_TARGETS = {
-    "customization": {
+BUYER_FACET_TOPICS: dict[BuyerFacet, str] = {
+    "order_type": "customization",
+    "decoration_method": "finish",
+    "surface_finish": "finish",
+    "capacity": "capacity",
+}
+FINISH_FACETS: tuple[BuyerFacet, ...] = ("decoration_method", "surface_finish")
+SUPPLIER_TARGET_FACETS: dict[str, tuple[BuyerFacet, ...]] = {
+    "capacity": ("capacity",),
+    "finish": FINISH_FACETS,
+}
+BUYER_TARGETS: dict[BuyerFacet, dict[str, str]] = {
+    "order_type": {
         "ready-made only": "ready_made",
         "ready-made stock only": "ready_made",
         "ready-made options only": "ready_made",
@@ -119,7 +133,7 @@ BUYER_TARGETS = {
         "i can accept custom orders": "custom_order",
         "i would consider a custom order": "custom_order",
     },
-    "finish": {
+    "decoration_method": {
         "screen printing is required": "screen_printing_required",
         "i require screen printing": "screen_printing_required",
         "i need screen printing": "screen_printing_required",
@@ -132,21 +146,25 @@ BUYER_TARGETS = {
         "do not use screen printing": "screen_printing_avoided",
         "no screen printing": "screen_printing_avoided",
     },
-    "capacity": {},
 }
-RELATED_QUESTION_PREFIXES = {
-    "customization": (
-        "would you consider a custom order", "would you consider custom production",
-        "are custom orders acceptable", "do you accept custom orders",
-        "would you prefer ready-made", "do you require ready-made",
-        "has your position on custom orders changed",
-    ),
-    "finish": (
-        "what finish", "which finish", "what decoration", "which decoration",
-        "is screen printing required", "do you require screen printing", "are applied graphics acceptable",
-    ),
-    "capacity": ("what capacity", "which capacity", "do you require an exact capacity", "do you have an exact capacity"),
+FLEXIBLE_FINISH = {"any finish is acceptable", "any finish works", "no finish preference"}
+FLEXIBLE_DECORATION_METHOD = {
+    "any decoration method is acceptable", "any decoration process is acceptable", "screen printing is optional",
 }
+NEUTRAL_DECORATION_METHOD = {"i do not require screen printing", "screen printing is not required"}
+REQUIRED_SURFACE_FINISH = re.compile(
+    r"i (?:need|require) (?:a )?(?P<requested>matte|glossy) (?:finish|texture)"
+    r"|(?:a )?(?P<stated>matte|glossy) (?:finish|texture) (?:is required|only)",
+)
+LEGACY_ORDER_RECHECKS = {
+    "are custom orders acceptable?",
+    "has your position on custom orders changed?",
+    "would you consider a custom order?",
+    "would you consider custom production?",
+}
+LEGACY_UNDECIDED = re.compile(
+    r"(?:(?:i am|i'm) )?(?:undecided|not sure)(?: and (?:i )?will have to check)?",
+)
 EXACT_BUYER_CAPACITY = re.compile(
     r"(?:(?:i (?:need|require) |exactly )(?P<first>[0-9]+(?:\.[0-9]+)?\s*(?:ml|l|fl oz))"
     r"|(?P<second>[0-9]+(?:\.[0-9]+)?\s*(?:ml|l|fl oz)) (?:is required|only))",
@@ -313,6 +331,20 @@ def _measurement(claim: ImageMeasurementClaim) -> str:
     return f"{value} {claim.unit}"
 
 
+def _quote_keeps_whole_numbers(quote: str, original: str) -> bool:
+    split_positions = {
+        position for number in NUMBER_TOKEN.finditer(original)
+        for position in range(number.start() + 1, number.end())
+    }
+    # The same words can occur more than once, with a valid occurrence after a truncated one.
+    start = original.find(quote)
+    while start != -1:
+        if start not in split_positions and start + len(quote) not in split_positions:
+            return True
+        start = original.find(quote, start + 1)
+    return False
+
+
 def _render_claim(
     claim: SourcedClaim, source: Source, option_by_id: Mapping[str, Option], sent: SentReviewEvidence,
 ) -> DisplayClaim:
@@ -338,6 +370,12 @@ def _render_claim(
     expected_scope = [] if _is_shared_source(source) else source.option_ids
     if claim.option_ids != expected_scope or not set(claim.option_ids).issubset(option_by_id):
         raise ValueError("A text claim must use the owning SKU or an empty scope for shared text.")
+    is_excerpt = claim.quote != source.original_text
+    if is_excerpt:
+        if source.label == "Shared selector value":
+            raise ValueError("Quote the complete shared selector value.")
+        if not _quote_keeps_whole_numbers(claim.quote, source.original_text):
+            raise ValueError("Quote whole numbers from the source, including any sign and separators.")
 
     if source.kind == "official_guidance":
         label = "Official guidance"
@@ -349,8 +387,12 @@ def _render_claim(
         label = "SKU wording"
     else:
         label = "SKU listing text"
-    if claim.quote != source.original_text:
-        return DisplayTextClaim(**claim.model_dump(), display_text=f"{label} excerpt: “{claim.quote}”")
+    if is_excerpt:
+        if source.label not in SKU_NAME_SOURCE_LABELS and NUMBER_TOKEN.search(claim.quote):
+            display_text = f"{label} (open source for context)"
+        else:
+            display_text = f"{label} excerpt: “{claim.quote}”"
+        return DisplayTextClaim(**claim.model_dump(), display_text=display_text)
     wording = source.original_text
     if source.text_en is not None:
         label = f"{label} (source translation)"
@@ -358,11 +400,17 @@ def _render_claim(
     return DisplayTextClaim(**claim.model_dump(), display_text=f"{label}: {wording}")
 
 
+def _image_claim_topic(claim: SourcedClaim) -> str | None:
+    if isinstance(claim, ImageMeasurementClaim):
+        return UNIT_TOPICS[claim.unit]
+    if isinstance(claim, ImageDetailClaim):
+        return VISIBLE_DETAILS[claim.detail][0]
+    return None
+
+
 def _check_claim_topic(claim: SourcedClaim, source: Source, topic: str) -> None:
-    if isinstance(claim, ImageMeasurementClaim) and UNIT_TOPICS[claim.unit] != topic:
-        raise ValueError("Use a thumbnail measurement with its matching topic.")
-    if isinstance(claim, ImageDetailClaim) and VISIBLE_DETAILS[claim.detail][0] != topic:
-        raise ValueError("Use a thumbnail detail with its matching topic.")
+    if (image_topic := _image_claim_topic(claim)) is not None and image_topic != topic:
+        raise ValueError("Use a thumbnail observation with its matching topic.")
     if isinstance(claim, TextClaim) and source.original_text is not None:
         # Check the structured source, including when the selected excerpt is only part of a standalone field.
         reading = _reading(claim.model_copy(update={"quote": source.original_text}), source)
@@ -452,7 +500,8 @@ def _scoped_sources(source_ids: Iterable[str], sources: Mapping[str, Source], sc
 
 
 def _render_unknown(
-    selection: UnknownSelection, finding: FindingSelection, sources: Mapping[str, Source], sent: set[str]
+    selection: UnknownSelection, finding: FindingSelection, sources: Mapping[str, Source], sent: set[str],
+    observed_image_topics: set[tuple[str, str]],
 ) -> Unknown:
     scoped = _scoped_sources(selection.source_ids, sources, set(finding.option_ids))
     # A source-specific unknown can cover only part of the finding. Source links retain that narrower scope.
@@ -471,6 +520,8 @@ def _render_unknown(
             for source in scoped
         ):
             raise ValueError("Use unreadable for missing or unreadable sources, or for an attached image that is illegible.")
+        if any((source.source_id, finding.topic) in observed_image_topics for source in scoped):
+            raise ValueError("Do not report both a readable observation and unreadable evidence for the same thumbnail and topic.")
         if all(source.availability == "missing" for source in scoped):
             text = f"The referenced source is missing, so {topic} could not be checked there."
         else:
@@ -479,25 +530,36 @@ def _render_unknown(
 
 
 @dataclass(frozen=True)
-class _BuyerInput:
-    text: str | None
-    option_ids: list[str]
-    question: PreferenceQuestion | None = None
-
-
-@dataclass(frozen=True)
 class _BuyerTarget:
     kind: str
     measurement: str | None = None
 
 
+@dataclass(frozen=True)
+class _BuyerPosition:
+    facet: BuyerFacet | None = None
+    target: _BuyerTarget | None = None
+    flexible: bool = False
+
+
+@dataclass(frozen=True)
+class _BuyerInput:
+    text: str | None
+    option_ids: list[str]
+    position: _BuyerPosition
+    question: PreferenceQuestion | None = None
+
+
 def _buyer_inputs(request: ReviewInput) -> dict[str, _BuyerInput]:
-    inputs = {"context": _BuyerInput(request.buyer_context, request.selected_option_ids)}
+    inputs = {"context": _BuyerInput(
+        request.buyer_context, request.selected_option_ids, _buyer_position(request.buyer_context, None),
+    )}
     for answer in request.answers:
         option_ids = request.answer_option_ids.get(answer.question_id, [])
         inputs[f"answer:{answer.question_id}"] = _BuyerInput(
             answer.answer_text,
             option_ids,
+            _buyer_position(answer.answer_text, answer.buyer_facet, question_text=answer.question_text),
             PreferenceQuestion(
                 question_id=answer.question_id, question_text=answer.question_text, option_ids=option_ids,
             ) if option_ids else None,
@@ -506,66 +568,92 @@ def _buyer_inputs(request: ReviewInput) -> dict[str, _BuyerInput]:
 
 
 def _normalize_buyer_text(text: str) -> str:
-    return " ".join(normalize("NFKC", text).casefold().split()).removesuffix(".")
+    return " ".join(normalize("NFKC", text).casefold().replace("’", "'").split()).removesuffix(".")
 
 
-def _buyer_target(topic: str, text: str) -> _BuyerTarget | None:
-    # Directional language is recognized only from complete, supported buyer statements.
+def _buyer_position(
+    text: str | None, facet: BuyerFacet | None, *, question_text: str = "",
+) -> _BuyerPosition:
+    if not text or not text.strip():
+        return _BuyerPosition(facet)
     wording = _normalize_buyer_text(text)
-    if target := BUYER_TARGETS[topic].get(wording):
-        return _BuyerTarget(target)
-    if topic == "capacity" and (match := EXACT_BUYER_CAPACITY.fullmatch(wording)) is not None:
+    if wording in FLEXIBLE_FINISH:
+        return _BuyerPosition(facet if facet is None or facet in FINISH_FACETS else "other", flexible=True)
+    if wording in FLEXIBLE_DECORATION_METHOD:
+        return _BuyerPosition("decoration_method", flexible=True)
+    if wording in NEUTRAL_DECORATION_METHOD:
+        return _BuyerPosition("decoration_method")
+    # Directional targets come only from complete, supported buyer statements.
+    for target_facet, statements in BUYER_TARGETS.items():
+        if target := statements.get(wording):
+            return _BuyerPosition(target_facet, _BuyerTarget(target))
+    if (match := REQUIRED_SURFACE_FINISH.fullmatch(wording)) is not None:
+        finish = match["requested"] or match["stated"]
+        return _BuyerPosition("surface_finish", _BuyerTarget(f"{finish}_finish_required"))
+    if (match := EXACT_BUYER_CAPACITY.fullmatch(wording)) is not None:
         reading = TEXT_READING.fullmatch(match["first"] or match["second"])
         assert reading is not None
         value = Decimal(reading["value"])
         if 0 < value <= 1_000_000:
             unit = UNIT_ALIASES["".join(reading["unit"].split())]
-            return _BuyerTarget("capacity_required", f"{value.normalize():f} {unit}")
-    return None
+            return _BuyerPosition("capacity", _BuyerTarget("capacity_required", f"{value.normalize():f} {unit}"))
+    # Legacy issued rounds carry no facet. The complete known stock/custom question and a
+    # standalone expression of uncertainty can withhold an older order direction in its scope.
+    if (facet is None and LEGACY_UNDECIDED.fullmatch(wording)
+            and _normalize_buyer_text(question_text) in LEGACY_ORDER_RECHECKS):
+        return _BuyerPosition("order_type")
+    return _BuyerPosition(facet)
 
 
 def _current_buyer_inputs(
-    inputs: Mapping[str, _BuyerInput], content: ReviewContent,
-) -> dict[tuple[str, str], tuple[str, _BuyerTarget | None]]:
-    selected_topics = {(row.topic, row.input_ref) for row in content.buyer_requirements}
-    selected_topics.update((row.topic, ref) for row in content.open_preferences for ref in row.input_refs)
-    current = {}
+    inputs: Mapping[str, _BuyerInput],
+) -> dict[tuple[BuyerFacet, str], str]:
+    current: dict[tuple[BuyerFacet, str], str] = {}
     for ref, entry in inputs.items():
-        if not entry.text or not entry.text.strip() or not entry.option_ids:
+        if not entry.text or not entry.text.strip():
             continue
-        question = _normalize_buyer_text(entry.question.question_text) if entry.question is not None else ""
-        for topic, question_prefixes in RELATED_QUESTION_PREFIXES.items():
-            target = _buyer_target(topic, entry.text)
-            # A related later response can make an earlier target stale. Its question wording
-            # and the model's topic selection never establish a new target.
-            if target is not None or (topic, ref) in selected_topics or question.startswith(question_prefixes):
-                for option_id in entry.option_ids:
-                    current[topic, option_id] = (ref, target)
+        facet = entry.position.facet
+        if facet is None and entry.position.flexible:
+            # Older answers with a broad finish waiver may refer to either finish facet.
+            # Withhold both directions in scope until the buyer's decision can be separated.
+            facets = FINISH_FACETS
+        elif facet is not None and facet in BUYER_FACET_TOPICS:
+            facets = (facet,)
+        else:
+            continue
+        for current_facet in facets:
+            for option_id in entry.option_ids:
+                current[current_facet, option_id] = ref
     return current
 
 
 def _linked_target(
-    current: Mapping[tuple[str, str], tuple[str, _BuyerTarget | None]],
-    topic: str, option_ids: list[str], input_refs: set[str],
+    current: Mapping[tuple[BuyerFacet, str], str], inputs: Mapping[str, _BuyerInput],
+    facet: BuyerFacet, option_ids: list[str], input_refs: set[str],
 ) -> _BuyerTarget | None:
     targets = set()
     for option_id in option_ids:
-        ref, target = current.get((topic, option_id), ("", None))
-        if ref not in input_refs or target is None:
+        ref = current.get((facet, option_id))
+        if ref is None or ref not in input_refs:
+            return None
+        target = inputs[ref].position.target
+        if target is None:
             return None
         targets.add(target)
     return next(iter(targets)) if len(targets) == 1 else None
 
 
-def _target_question(target: _BuyerTarget | None) -> str:
-    if target is None:
-        return ""
+def _target_question(target: _BuyerTarget) -> str:
     if target.kind == "screen_printing_required":
         return "Can each named option be supplied with screen printing?"
     if target.kind == "screen_printing_avoided":
         return "Can each named option be supplied without screen printing? Please identify the alternative finish."
     if target.kind == "capacity_required":
         return f"Can each named option meet {target.measurement}, and is that capacity usable or brim-full?"
+    if target.kind == "matte_finish_required":
+        return "Can each named option be supplied with a matte finish?"
+    if target.kind == "glossy_finish_required":
+        return "Can each named option be supplied with a glossy finish?"
     return ""
 
 
@@ -621,7 +709,7 @@ def _render_next_step(topic: str, action: str | None, differences: list[str]) ->
 
 def _render_finding(
     finding: FindingSelection, claims: list[DisplayClaim], unknowns: list[Unknown], differences: list[str],
-    order: _BuyerTarget | None, product_target: _BuyerTarget | None,
+    order: _BuyerTarget | None, product_targets: list[_BuyerTarget],
 ) -> Finding:
     label, _ = TOPICS[finding.topic]
     title = {
@@ -642,8 +730,8 @@ def _render_finding(
             "custom_order": "confirm_custom_order",
         }.get(order.kind if order is not None else "", "confirm_specification")
     question, requested_evidence, limits = _render_next_step(finding.topic, action, differences)
-    if question is not None and (target_question := _target_question(product_target)):
-        question = f"{question} {target_question}"
+    if question is not None and product_targets:
+        question = " ".join([question, *(_target_question(target) for target in product_targets)])
     return Finding(
         **finding.model_dump(include={"finding_id", "option_ids", "kind", "action_type", "requirement_ids", "claim_ids"}),
         title=title,
@@ -717,9 +805,13 @@ def assemble_review(
         if claim.source_id not in sent:
             raise ValueError("Claims must cite an available source actually sent for review.")
         claims[claim.claim_id] = _render_claim(claim, sources[claim.source_id], option_by_id, sent_evidence)
+    observed_image_topics = {
+        (claim.source_id, topic) for claim in claims.values()
+        if (topic := _image_claim_topic(claim)) is not None
+    }
 
     inputs = _buyer_inputs(request)
-    current_inputs = _current_buyer_inputs(inputs, content)
+    current_inputs = _current_buyer_inputs(inputs)
     _unique_ids((row.requirement_id for row in content.buyer_requirements), "buyer requirements")
     requirement_by_id = {row.requirement_id: row for row in content.buyer_requirements}
     requirements = []
@@ -730,10 +822,16 @@ def assemble_review(
             raise ValueError("Each requirement needs the full verbatim quote from its non-null buyer input reference.")
         if not source.option_ids:
             raise ValueError("Buyer answer requirements need their issued option scope.")
+        facet = source.position.facet
+        facet_topic = BUYER_FACET_TOPICS.get(facet) if facet is not None else None
+        if facet_topic is not None and row.topic != facet_topic:
+            raise ValueError("Use the topic that matches the buyer requirement's decision.")
+        if source.position.flexible:
+            raise ValueError("An answer that explicitly allows any finish or method is not a requirement.")
         scope = [
             option_id for option_id in request.selected_option_ids
             if option_id in source.option_ids
-            and current_inputs.get((row.topic, option_id), (row.input_ref, None))[0] == row.input_ref
+            and (facet_topic is None or current_inputs.get((facet, option_id)) == row.input_ref)
         ]
         if not scope:
             raise ValueError("Use the current buyer input for a requirement in its issued option scope.")
@@ -821,12 +919,17 @@ def assemble_review(
             requirement_by_id[requirement_id].input_ref for requirement_id in linked_requirements
             if requirement_by_id[requirement_id].topic == finding.topic
         }
-        order = _linked_target(current_inputs, "customization", finding.option_ids, order_refs)
-        product_target = _linked_target(current_inputs, finding.topic, finding.option_ids, product_refs)
+        order = _linked_target(current_inputs, inputs, "order_type", finding.option_ids, order_refs)
+        product_targets = [
+            target for facet in SUPPLIER_TARGET_FACETS.get(finding.topic, ())
+            if (target := _linked_target(current_inputs, inputs, facet, finding.option_ids, product_refs)) is not None
+        ]
 
-        unknowns = [_render_unknown(unknown, finding, sources, sent) for unknown in finding.unknowns]
+        unknowns = [
+            _render_unknown(unknown, finding, sources, sent, observed_image_topics) for unknown in finding.unknowns
+        ]
         differences = _conflicting_readings(finding, references, sources, aliases) if finding.kind == "listing_conflict" else []
-        findings.append(_render_finding(finding, references, unknowns, differences, order, product_target))
+        findings.append(_render_finding(finding, references, unknowns, differences, order, product_targets))
 
     _unique_ids((row.preference_id for row in content.open_preferences), "open preferences")
     preference_findings = set()

@@ -128,6 +128,7 @@ BuyerContext = Annotated[str, Field(max_length=2_000)]
 Revision = Annotated[int, Field(ge=0)]
 RoundNumber = Annotated[int, Field(ge=1, le=3)]
 SelectedOptionIds = Annotated[list[NonEmptyText], Field(min_length=1, max_length=3)]
+BuyerFacet = Literal["order_type", "decoration_method", "surface_finish", "capacity", "other"]
 
 
 class Answer(ContractModel):
@@ -142,6 +143,7 @@ class Answer(ContractModel):
 
 class AnsweredQuestion(Answer):
     question_text: NonEmptyText
+    buyer_facet: BuyerFacet | None = Field(default=None, exclude_if=lambda facet: facet is None)
 
 
 class AnswerSubmission(ContractModel):
@@ -207,6 +209,7 @@ class QuestionDraft(ContractModel):
     option_ids: SelectedOptionIds
     source_ids: list[NonEmptyText]
     choices: list[NonEmptyText]
+    buyer_facet: BuyerFacet | None = Field(default=None, exclude_if=lambda facet: facet is None)
 
 
 class IssuedQuestion(QuestionDraft):

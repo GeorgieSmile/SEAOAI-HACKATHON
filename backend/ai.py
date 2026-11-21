@@ -14,6 +14,8 @@ from unicodedata import normalize
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, AsyncOpenAI
 from openai.types.responses import Response, ResponseInputParam
 from pydantic import ValidationError
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 from .contracts import ContractModel, ListingSnapshot, QuestionInput, QuestionResult, Source
 
@@ -22,7 +24,7 @@ TRANSLATION_MODEL = "gpt-6.1-terra"
 TRANSLATION_PROMPT_VERSION = "translate-listing-v1"
 TRANSLATION_DEADLINE_SECONDS = 60
 TRANSLATION_LIMITATION = "English translation is unavailable. The original listing text is shown."
-QUESTION_PROMPT_VERSION = "buyer-questions-v2"
+QUESTION_PROMPT_VERSION = "buyer-questions-v3"
 QUESTION_DEADLINE_SECONDS = 60
 QUOTA_ERRORS = {"insufficient_quota", "billing_hard_limit_reached", "billing_not_active", "quota_exceeded"}
 PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
@@ -190,6 +192,17 @@ def _apply_translations(
     )
 
 
+class _StrictOutputSchema(GenerateJsonSchema):
+    # Older saved records may omit a field whose value the provider must return or set to null.
+    def field_is_required(
+        self, field: core_schema.ModelField | core_schema.DataclassField | core_schema.TypedDictField, total: bool,
+    ) -> bool:
+        return True
+
+    def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
+        return self.generate_inner(schema["schema"])
+
+
 async def _request_structured(
     *,
     client: AsyncOpenAI,
@@ -205,7 +218,7 @@ async def _request_structured(
         "type": "json_schema",
         "name": schema_name,
         "strict": True,
-        "schema": schema.model_json_schema(),
+        "schema": schema.model_json_schema(schema_generator=_StrictOutputSchema),
     }
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_seconds

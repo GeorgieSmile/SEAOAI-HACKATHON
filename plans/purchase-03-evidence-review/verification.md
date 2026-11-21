@@ -141,6 +141,25 @@ Three copies of reports saved on `a7dfe95` reopened twice each with their origin
 
 The follow-up passed 291 offline backend tests, 30 Chrome tests, frontend typechecking, the production build and whitespace checks. The 15-case local ZIP matrix repeated its six valid and nine invalid outcomes. The Chrome walkthrough covered the original ZIP, a disposable copy missing A’s image, restart after editing, and explicit regeneration of the legacy case at desktop and mobile widths. Provider output was scripted for all redesigned-report checks.
 
+### Follow-up to the review of `359d195`
+
+All four reported cases reproduced through the FastAPI review endpoint on the earlier commit using the original Website Test.zip. Three incorrect reports published and survived restart. The fourth case, two compatible finish requirements, returned `invalid_review` after one correction.
+
+| Original-ZIP case | Expected and observed on the follow-up |
+| --- | --- |
+| Shared capacity selector | Quoting `20ml` from the saved `720ml` failed validation. The whole value and a supported difference with a SKU’s thumbnail published. |
+| Capacity label on A’s 150 × 150 thumbnail | Either a readable `750 ml` claim or an unreadable limitation can publish on its own. Using both for the same source and topic failed validation. |
+| Required screen printing followed by “Any finish is acceptable” | A response that selected only the superseded answer failed. The neutral supplier question remained available and preserved both original answers. |
+| Screen printing and matte surface required for the same SKU | The report kept both quotes, their SKU scope and both supplier questions. The previously failed case generated on one explicit retry and reopened twice without another request. |
+
+The ten scenarios exercised on `359d195` include six valid controls. Three additional cases exercised questions carrying the new buyer facet. On the follow-up all 13 scenarios matched their expectations. Nine valid reports published on the first response and four invalid selections exhausted the permitted correction. The local SDK transport compared the transmitted thumbnail bytes with an inventory read directly from the archived HTML and image members.
+
+The Chrome walkthrough used the production frontend, local FastAPI and SQLite with scripted SDK responses. Editing the earlier order preference from custom to ready-made advanced revision 2 to 3, removed the dependent sample answer and preserved the exact deadline including surrounding whitespace. The copied and saved drafts, three original SKU images and GET-only restart were checked at 1280 px and 390 px. A separate browser check expanded a numeric excerpt to the complete original range and its English translation at both widths.
+
+Databases produced by the actual `b3fe973`, `a7dfe95` and `359d195` backends were reopened on the candidate. The unversioned report required one explicit regeneration. Valid versioned reports reopened without calling a provider, including a saved matte-only report whose rebuilt draft now explicitly asks for matte. The three incorrect ready reports from the earlier commit became retryable failures with their case, selection and answers intact.
+
+The follow-up passed 318 backend tests, 30 Chrome tests, frontend typechecking, the production build and `git diff --check`. The question and report SDK checks used the current `buyer-questions-v3` and `purchase-review-v4` prompts with scripted responses. Zero paid provider requests were made.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

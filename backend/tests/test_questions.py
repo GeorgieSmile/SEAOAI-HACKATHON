@@ -104,7 +104,8 @@ def test_questions_send_only_relevant_text_and_keep_answer_history(request_input
         "round_number": 2,
         "revision": 1,
         "answers": [
-            {"question_id": "issued-1", "question_text": "How will it be used?", "answer_text": "For tea."},
+            {"question_id": "issued-1", "question_text": "How will it be used?", "answer_text": "For tea.",
+             "buyer_facet": "other"},
             {"question_id": "issued-2", "question_text": "Which color works?", "answer_text": None},
         ],
     })
@@ -126,6 +127,12 @@ def test_questions_send_only_relevant_text_and_keep_answer_history(request_input
     assert body["store"] is False
     assert "tools" not in body
     assert body["text"]["format"]["strict"] is True
+    draft_schema = body["text"]["format"]["schema"]["$defs"]["QuestionDraft"]
+    assert "buyer_facet" in draft_schema["required"]
+    facet_schema = draft_schema["properties"]["buyer_facet"]
+    assert "default" not in facet_schema
+    assert {"type": "null"} in facet_schema["anyOf"]
+    assert {"type": "string", "enum": ["order_type", "decoration_method", "surface_finish", "capacity", "other"]} in facet_schema["anyOf"]
     assert body["max_output_tokens"] == 4096
     payload = json.loads(body["input"])
     assert payload["round_number"] == 2
@@ -174,6 +181,7 @@ def test_round_four_is_rejected_before_provider_request(request_input):
         {"choices": ["The image shows a large cup."]},
         {"choices": ["Blue", "BLUE "]},
         {"choices": ["Not sure / Skip"]},
+        {"buyer_facet": "arbitrary-topic"},
         {"question_id": "invented"},
     ],
 )

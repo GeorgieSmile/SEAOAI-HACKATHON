@@ -76,7 +76,10 @@ def _input_fields(snapshot: ListingSnapshot, case: CaseView) -> dict:
     for round in case.rounds:
         if round.answers is not None:
             answers.extend(
-                AnsweredQuestion(question_id=question.question_id, question_text=question.prompt, answer_text=answer.answer_text)
+                AnsweredQuestion(
+                    question_id=question.question_id, question_text=question.prompt,
+                    answer_text=answer.answer_text, buyer_facet=question.buyer_facet,
+                )
                 for question, answer in zip(round.questions, round.answers, strict=True)
             )
     return {
@@ -151,7 +154,7 @@ def _report_binding_matches(report: dict, inputs: ReviewInput) -> bool:
 
 def _review_digest(
     inputs: ReviewInput, operation_id: str, images: ReviewImages, scope: SentReviewEvidence, *,
-    include_answer_scope: bool = True,
+    version: int = 4,
 ) -> str:
     if scope != review_sent_evidence(inputs, images):
         raise ValueError("The sent evidence does not match the case request.")
@@ -160,11 +163,13 @@ def _review_digest(
     for source_id in scope.attached_image_ids:
         mime, payload = images[source_id]
         attachments.append((source_id, mime, sha256(payload).hexdigest()))
-    input_fields = inputs.model_dump(mode="json", exclude=None if include_answer_scope else {"answer_option_ids"})
+    input_fields = inputs.model_dump(mode="json", exclude={"answer_option_ids"} if version == 2 else None)
     material = {
         "input": input_fields, "operation_id": operation_id,
         "scope": scope.model_dump(mode="json"), "attachments": attachments,
     }
+    if version >= 4:
+        material["version"] = version
     return sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -201,14 +206,11 @@ class CaseWorkflow:
                 raise ValueError("The saved review operation has not completed successfully.")
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
             images = self._review_images(inputs)
-            digest = _review_digest(
-                inputs, operation.operation_id, images, validated.sent_evidence,
-                include_answer_scope=validated.version == 3,
-            )
+            digest = _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=validated.version)
             if validated.input_digest != digest:
                 raise ValueError("The saved review belongs to different case input or evidence.")
             rebuilt = assemble_review(inputs, validated.content, sent_evidence=validated.sent_evidence)
-            if validated.version == 2:
+            if validated.version < 4:
                 if (
                     not isinstance(report, dict) or report.keys() != LEGACY_REPORT_FIELDS | {"contract_version", "claims"}
                     or report["contract_version"] != 2 or not _report_binding_matches(report, inputs)
@@ -220,10 +222,10 @@ class CaseWorkflow:
             failed = _failure(record, "invalid_review", INVALID_REVIEW)
             self._save(generation, record, failed)
             return
-        if validated.version == 2:
-            # Earlier envelopes bound the answer text. The issued questions supply its scope on migration.
+        if validated.version < 4:
+            # Rebuild older projections from the bound sources, issued questions and saved decisions.
             migrated = validated.model_copy(update={
-                "version": 3,
+                "version": 4,
                 "input_digest": _review_digest(inputs, operation.operation_id, images, validated.sent_evidence),
             })
             self._save(generation, record, record.model_copy(update={
@@ -438,7 +440,7 @@ class CaseWorkflow:
                     raise ValueError("The report does not match its validated claims.")
                 settled = CaseRecord(
                     view=record.view.model_copy(update={"phase": "reviewed", "report": report, "last_operation": operation}),
-                    saved_review=SavedReview(version=3, input_digest=digest, content=result.content, sent_evidence=scope),
+                    saved_review=SavedReview(version=4, input_digest=digest, content=result.content, sent_evidence=scope),
                 )
         except (AttributeError, TypeError, ValidationError, ValueError):
             settled = _failure(record, "invalid_review", INVALID_REVIEW)

@@ -6,7 +6,9 @@ or infer whether a regulation applies.
 
 Use only the selected SKU IDs and supplied source IDs. Give each claim a short unique ID.
 Each claim has exactly one source:
-- text_excerpt: quote an exact contiguous part of original_text, with its qualifications.
+- text_excerpt: quote an exact contiguous part of original_text, keeping numbers and their
+  qualifications intact. Quote the entire original value for a shared selector.
+  Include the units, range, and conditions with any written measurement.
   Use the single owning option ID for sources with claim_scope sku, or [] for claim_scope shared.
   Use the original, not the translation, for the quote. When relevant, quote the exact SKU
   wording from its own name source. Shared selector values, shared specifications, general
@@ -27,6 +29,8 @@ Each claim has exactly one source:
 Inspect each attached thumbnail for legible information before choosing claims. Metadata-only,
 missing, or unreadable sources cannot support a claim. A thumbnail can be attached and still
 illegible. Use an unreadable unknown for that image if the relevant part cannot be read.
+For each SKU thumbnail and topic, report a readable observation or an unreadable unknown.
+The same thumbnail may provide a readable observation for a different topic.
 Use not_reviewed for an available source whose content was not sent, unreadable for a missing
 or unreadable source, and not_found for an unanswered topic within reviewed sources. Include
 the relevant source IDs when known. Never use not_found to assert something does not exist.
@@ -44,18 +48,28 @@ and each legible exact-SKU thumbnail reading in the capacity comparison. Leave t
 capacity to confirm and consider differing measurement conventions. Use a standalone text
 measurement only with its matching topic, whether the claim is shared or SKU-specific.
 
-Use the buyer's submitted answers and context, with the latest clear answer superseding an
-earlier one only for the options covered by the later answer. The answer option_ids come from
-the issued question. An empty list means the answer scope is unknown, so do not use that answer
-as a requirement or an open-preference reference. Give each current requirement a topic, the
-complete exact input text as its quote (excluding surrounding whitespace if needed), and
-input_ref context or answer:<question_id>. Use only genuine purchase requirements. The report
-shows the complete cited input privately, so do not select unrelated or private business notes.
-Null answers, question wording, seller claims and private business details cannot establish a
-product requirement. For unresolved or conflicting preferences, select a topic and relevant
-input_refs and finding_ids. Use deadline for purchase timing or delivery deadlines. A null
-answer from a question that was actually issued can support an open preference but not a
-requirement. Use [] for input_refs only when the preference was neither stated nor asked about.
+Use the buyer's submitted answers and context in order. The answer option_ids and buyer_facet
+come from the issued question. An empty list means the answer scope is unknown, so do not use
+that answer as a requirement or an open-preference reference. A later answer supersedes an
+earlier one only for the same decision and the options covered by the later answer. Decoration
+method and surface appearance are independent decisions under topic finish. A screen-printing
+requirement can coexist with a preference for matte texture. If the buyer says any decoration
+method is acceptable, omit the superseded method requirement from those options and use a
+neutral supplier confirmation if the listing still warrants a check. An omitted buyer input
+still affects what is current. Use the complete statement and issued facet when available.
+For an older answer with a broad finish waiver and no facet, withhold both prior finish
+directions in its scope. When it is unclear which preference changed, keep it open and cite
+the relevant answers.
+
+Give each current requirement a topic, the complete exact input text as its quote (excluding
+surrounding whitespace if needed), and input_ref context or answer:<question_id>. Select genuine
+purchase requirements only. The report shows the complete cited input privately, so do not
+select unrelated or private business notes. Null answers, question wording, seller claims and
+private business details cannot establish a product requirement. For unresolved or conflicting
+preferences, select a topic and relevant input_refs and finding_ids. Use deadline for purchase
+timing or delivery deadlines. A null answer from a question that was actually issued can support
+an open preference but not a requirement. Use [] for input_refs only when the preference was
+neither stated nor asked about.
 Every linked finding must fit each linked requirement's or preference's current option scope.
 Split findings across options when a buyer answer applies to only some of them. Link any
 decide_preference finding to an open preference about the same topic.
@@ -81,9 +95,10 @@ request_evidence. Use null for decide_preference. Use confirm_ready_made for pur
 to stock and confirm_custom_order when the buyer would consider custom production. Both need a
 linked current buyer requirement with topic customization. The backend will use an explicit
 whole current statement to distinguish order type and supported product targets, including
-required or prohibited screen printing and required capacity. Select neutral confirmation for
-unclear or conditional buyer wording. Customization availability is conditional and cannot
-verify what a stock SKU delivers. Select confirm_specification, request_documentation,
+required or prohibited screen printing, required matte or glossy finish, and required capacity.
+Link both requirements when the decoration method and surface finish are both relevant. Select
+neutral confirmation for unclear or conditional buyer wording. Customization availability is
+conditional and cannot verify what a stock SKU delivers. Select confirm_specification, request_documentation,
 request_sample, or request_close_up when those actions would better resolve the finding. Do not
 add supplier text, buyer contact details, margin, or other commercial information.
 
