@@ -466,6 +466,39 @@ def test_independent_unresolved_decisions_with_the_same_topic_keep_their_own_sou
         assemble(request, images, payload)
 
 
+def test_retained_skipped_sample_reads_as_sample_even_with_a_mismatched_order_facet(example):
+    request, images = example
+    question = "Do you require a pre-production sample?"
+    scope = ["v0"]
+    request = ReviewInput.model_validate({
+        **request.model_dump(),
+        "answers": [{"question_id": "sample", "question_text": question, "answer_text": None, "buyer_facet": "order_type"}],
+        "answer_option_ids": {"sample": scope},
+        "requirements": [{
+            "requirement_id": "sample-open", "statement": question, "topic": "sample", "buyer_facet": "order_type",
+            "status": "unresolved", "option_ids": scope, "provenance": [{
+                "input_ref": "answer:sample", "quote": None, "question_text": question,
+                "action": "unresolved", "option_ids": scope,
+            }],
+        }],
+    })
+    payload = canonical_content(request, "sample")
+    payload["findings"] = [finding_selection(
+        scope, topic="sample", finding_id="choose-sample", action_type="decide_preference",
+        supplier_action=None, decision_id="sample-open",
+    )]
+    rendered = assemble(request, images, payload)
+
+    preference, = rendered.open_preferences
+    assert preference.text == "Your preference for samples is still open."
+    assert preference.finding_ids == ["choose-sample"]
+    assert preference.questions[0].question_text == question
+    finding, = rendered.findings
+    assert finding.title == "Decide what you need for samples"
+    assert finding.interpretation == "Your preference for samples is still open for these options."
+    assert rendered.supplier_draft == ""
+
+
 def test_live_client_requires_report_opt_in(example, monkeypatch):
     request, _ = example
     client = Mock()

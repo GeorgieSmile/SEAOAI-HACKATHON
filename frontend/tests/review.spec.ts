@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
-import type { CaseView, ListingSnapshot, PurchaseReview, QuestionRound, ResolvedRequirement, Submission } from "../src/api";
+import type { CaseView, ListingSnapshot, PurchaseReview, QuestionRound, ResolvedRequirement } from "../src/api";
 import flow from "../src/fixtures/integration-flow.json" with { type: "json" };
 import contract from "../../docs/contracts/examples/report-contract-example.json" with { type: "json" };
 
@@ -39,6 +39,21 @@ async function openWorkspace(page: Page, saved: () => CaseView) {
   await page.goto("/");
 }
 
+const confirmBrief = (page: Page) => page.getByRole("button", { name: "Confirm brief and generate review", exact: true });
+
+function prepared(saved: CaseView, operation_id: string, changes: Partial<CaseView> = {}): CaseView {
+  return {
+    ...saved, ...changes, phase: "ready_for_review", report: null, confirmed_revision: undefined,
+    last_operation: { stage: "brief", status: "ready", operation_id, code: null, message: null },
+  };
+}
+
+async function mockAnswerImpact(page: Page) {
+  await page.route("**/api/brief/preview-answers", (route) => route.fulfill({
+    json: { changed_requirements: [], removed_requirements: [], discarded_rounds: [] },
+  }));
+}
+
 for (const entry of ["TTP Cargo link", "ZIP after a link failure"] as const) {
   test(`opens and resumes the purchase review from ${entry}`, async ({ page }) => {
     const usingLink = entry === "TTP Cargo link";
@@ -68,9 +83,17 @@ for (const entry of ["TTP Cargo link", "ZIP after a link failure"] as const) {
       });
       return route.fulfill({ json: ready(saved) });
     });
+    await page.route("**/api/brief", (route) => {
+      const { operation_id, submission } = route.request().postDataJSON();
+      expect(submission.answers).toEqual(asSubmission(linked.input.answers));
+      saved = prepared(saved!, operation_id, { revision: skipReport.revision,
+        rounds: [{ ...skip.first_round, answers: submission.answers }],
+      });
+      return route.fulfill({ json: ready(saved) });
+    });
     await page.route("**/api/reviews", (route) => {
       const request = route.request().postDataJSON();
-      expect(request.submission.answers).toEqual(asSubmission(linked.input.answers));
+      expect(request).toMatchObject({ confirm: true, revision: saved!.revision });
       saved = reviewed(skipReport, {
         buyer_context: "",
         last_operation: { stage: "review", status: "ready", operation_id: request.operation_id, code: null, message: null },
@@ -93,9 +116,12 @@ for (const entry of ["TTP Cargo link", "ZIP after a link failure"] as const) {
     await expect(confirm).toBeDisabled();
     for (const id of skipReport.selected_option_ids) await options.locator(`input[value="${id}"]`).check();
     await confirm.click();
-    await page.getByRole("button", { name: "View purchase review" }).click();
+    await page.getByRole("button", { name: "Review buying brief", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
+    await confirmBrief(page).click();
     await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Message to supplier" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Case progress" }).locator("[aria-current=step]")).toContainText("Evidence report");
     await page.reload();
     await page.getByRole("button", { name: "Change options or context" }).click();
     await expect(page.getByText("From your link")).toHaveCount(usingLink ? 1 : 0);
@@ -160,17 +186,24 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   });
   const originalRevision = saved.revision;
 
-  await page.route("**/api/reviews", (route) => {
+  await mockAnswerImpact(page);
+  await page.route("**/api/brief", (route) => {
     const { operation_id, submission } = route.request().postDataJSON();
-    const revision = originalRevision + 1;
-    const nextReport = { ...skipReport, revision, supplier_draft: "Could you confirm the finish for Option A?" };
-    saved = reviewed(nextReport, {
+    saved = prepared(saved, operation_id, {
+      revision: originalRevision + 1,
       rounds: [{ ...round, answers: submission.answers }],
       requirements: saved.requirements!.map((requirement) => requirement.requirement_id === confirmed.requirement_id
         ? { ...confirmed, statement: answerText, provenance: confirmed.provenance.map((entry) =>
           entry.action === "keep" ? { ...entry, action: "replace" } : entry) } : requirement),
-      last_operation: { ...saved.last_operation!, operation_id },
     });
+    return route.fulfill({ json: ready(saved) });
+  });
+  await page.route("**/api/reviews", (route) => {
+    const { operation_id, revision } = route.request().postDataJSON();
+    const nextReport = { ...skipReport, revision, supplier_draft: "Could you confirm the finish for Option A?" };
+    saved = { ...saved, phase: "reviewed", report: nextReport,
+      last_operation: { ...saved.last_operation!, stage: "review", operation_id },
+    };
     return route.fulfill({ json: ready(saved) });
   });
   await openWorkspace(page, () => saved);
@@ -202,8 +235,9 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   const effect = targetQuestion.getByRole("combobox", { name: "How should this answer affect your requirements?" });
   await expect(effect).toHaveValue("keep:finish");
   await effect.selectOption({ label: `Replace “${finish}” with my answer` });
-  const request = page.waitForRequest("**/api/reviews");
-  await page.getByRole("button", { name: "View purchase review" }).click();
+  const request = page.waitForRequest("**/api/brief");
+  await page.getByRole("button", { name: "Preview and review brief" }).click();
+  await page.getByRole("button", { name: "Save answer changes" }).click();
   expect((await request).postDataJSON()).toMatchObject({
     revision: originalRevision, submission: { answers: [
       { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "replace", requirement_id: "finish" } },
@@ -213,7 +247,79 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   });
   await expect(optionA.locator("summary").filter({ hasText: answerText.trim() })).toBeVisible();
   await expect(optionB.locator("summary").filter({ hasText: finish })).toBeVisible();
+  await confirmBrief(page).click();
   await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(saved.report!.supplier_draft);
+});
+
+test("settles one option's conflicting order instructions from a report with no interview rounds", async ({ page }) => {
+  const stock = "Ready-made stock only.";
+  const custom = "Custom orders are acceptable.";
+  const deadline = "The order must be delivered by 1 December.";
+  const stockSource: ResolvedRequirement["provenance"][number] = { input_ref: "context", quote: stock, question_text: null,
+    action: "add", option_ids: ["v0", "v1", "v6"] };
+  const customSource: ResolvedRequirement["provenance"][number] = {
+    ...stockSource, quote: custom, option_ids: ["v0"],
+  };
+  const conflict: ResolvedRequirement = {
+    requirement_id: "order-conflict-a", order_conflict: true, status: "unresolved",
+    statement: "Clarify the order type", option_ids: ["v0"],
+    provenance: [stockSource, customSource],
+  };
+  const unaffected: ResolvedRequirement[] = [
+    { requirement_id: "stock-bc", statement: stock, status: "active", option_ids: ["v1", "v6"],
+      provenance: [stockSource] },
+    { requirement_id: "deadline", statement: deadline, status: "active", option_ids: ["v0", "v1", "v6"],
+      provenance: [{ ...stockSource, quote: deadline }] },
+  ];
+  const before = "[Options B, C] Do you have ready-made stock?\n[Options A, B, C] Can you deliver by 1 December?";
+  const after = `${before}\n[Option A] If a custom order is needed, what are the lead time and minimum order quantity?`;
+  let saved = reviewed({ ...skipReport, revision: 0, findings: [], supplier_draft: before,
+    open_preferences: [{ preference_id: `requirement:${conflict.requirement_id}`, text: conflict.statement,
+      option_ids: conflict.option_ids, input_refs: ["context"], finding_ids: [], questions: [] }],
+  }, { rounds: [], requirements: [conflict, ...unaffected] });
+  const requests: unknown[] = [];
+  await page.route("**/api/brief", async (route) => {
+    const request = route.request().postDataJSON();
+    requests.push(request);
+    saved = prepared(saved, request.operation_id, { revision: 1,
+      rounds: [], requirements: [...unaffected, { requirement_id: "custom-a", statement: custom,
+        status: "active", option_ids: ["v0"], provenance: [customSource] }],
+    });
+    await route.fulfill({ json: ready(saved) });
+  });
+  await page.route("**/api/reviews", (route) => {
+    const { operation_id, revision, confirm } = route.request().postDataJSON();
+    expect(confirm).toBe(true);
+    saved = { ...saved, phase: "reviewed", report: { ...skipReport, revision, open_preferences: [], supplier_draft: after },
+      last_operation: { ...saved.last_operation!, stage: "review", operation_id } };
+    return route.fulfill({ json: ready(saved) });
+  });
+  await openWorkspace(page, () => saved);
+
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(before);
+  await page.getByRole("button", { name: "Review buying brief", exact: true }).click();
+  const clarification = page.getByRole("region", { name: "Clarify order type for Option A" });
+  await expect(clarification.getByText(stock, { exact: true })).toBeVisible();
+  await expect(clarification.getByText(custom, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Clarify order type for Option/ })).toHaveCount(1);
+  await expect(page.getByText(conflict.statement, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Saved answers" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveCount(0);
+  const save = clarification.getByRole("button", { name: "Save order choice" });
+  await expect(save).toBeDisabled();
+  await clarification.getByRole("radio", { name: "Custom orders are acceptable" }).check();
+  await save.click();
+  await expect(clarification).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveCount(0);
+  await confirmBrief(page).click();
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(after);
+  expect(requests).toEqual([{
+    case_id: skipReport.case_id, revision: 0, operation_id: expect.any(String), submission: null,
+    order_clarification: { requirement_id: conflict.requirement_id, option_id: "v0", choice: "custom_orders_acceptable" },
+  }]);
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(after);
+  expect(requests).toHaveLength(1);
 });
 
 test("opens scoped source evidence and compares ordered options while draft edits stay separate", async ({ page, context }) => {
@@ -423,22 +529,28 @@ test("retains saved answers on review failure, retries the same operation, and r
     rounds: [{ ...skip.first_round, answers: null }],
   });
   let writes = 0;
+  await mockAnswerImpact(page);
+  await page.route("**/api/brief", (route) => {
+    const { operation_id, revision, submission } = route.request().postDataJSON();
+    saved = prepared(saved, operation_id, { revision: revision + 1,
+      rounds: [{ ...skip.first_round, answers: submission.answers }],
+    });
+    return route.fulfill({ json: ready(saved) });
+  });
   await page.route("**/api/reviews", (route) => {
-    const { operation_id, revision, submission } = route.request().postDataJSON() as {
-      operation_id: string; revision: number; submission: Submission;
-    };
+    const { operation_id, revision } = route.request().postDataJSON();
     ++writes;
     const operation = {
       operation_id, stage: "review" as const, status: writes === 1 ? "failed" as const : "ready" as const,
       code: writes === 1 ? "invalid_review" : null, message: writes === 1 ? "The review could not be validated." : null,
     };
     const updatedReport = {
-      ...skipReport, revision: revision + 1, supplier_draft: "Draft for the changed answers.",
+      ...skipReport, revision, supplier_draft: "Draft for the changed answers.",
       findings: [...skipReport.findings].reverse(),
     };
     saved = reviewed(updatedReport, {
       phase: writes === 1 ? "failed" : "reviewed", report: writes === 1 ? null : updatedReport,
-      rounds: [{ ...skip.first_round, answers: submission.answers }], last_operation: operation,
+      rounds: saved.rounds, confirmed_revision: revision, last_operation: operation,
     });
     return route.fulfill({ json: writes === 1
       ? { status: "failed", case_id: saved.case_id, revision: saved.revision, code: operation.code, message: operation.message }
@@ -452,7 +564,8 @@ test("retains saved answers on review failure, retries the same operation, and r
   await openWorkspace(page, () => saved);
 
   const request = page.waitForRequest("**/api/reviews");
-  await page.getByRole("button", { name: "View purchase review" }).click();
+  await page.getByRole("button", { name: "Review buying brief", exact: true }).click();
+  await confirmBrief(page).click();
   const failedOperationId = (await request).postDataJSON().operation_id;
   await expect(page.getByRole("alert")).toHaveText("The review could not be validated.");
   await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toHaveCount(0);
@@ -473,13 +586,15 @@ test("retains saved answers on review failure, retries the same operation, and r
 
   await page.getByRole("button", { name: "Edit round 1" }).click();
   await page.getByRole("radio", { name: "Screen printing is required." }).check();
-  const changed = page.waitForRequest("**/api/reviews");
-  await page.getByRole("button", { name: "View purchase review" }).click();
+  const changed = page.waitForRequest("**/api/brief");
+  await page.getByRole("button", { name: "Preview and review brief" }).click();
+  await page.getByRole("button", { name: "Save answer changes" }).click();
   expect((await changed).postDataJSON()).toMatchObject({
     revision: 1,
     submission: { answers: [{ question_id: "q-finish", answer_text: "Screen printing is required." },
       { question_id: "q-capacity", answer_text: null }, { question_id: "q-use", answer_text: null }] },
   });
+  await confirmBrief(page).click();
   await expect(draft).toHaveValue("Draft for the changed answers.");
   await expect(page.getByRole("article").first().getByRole("heading", { level: 3 })).toHaveText(skipReport.findings.at(-1)!.title);
 
@@ -513,7 +628,7 @@ test("discards a delayed report after a new selection starts a different case", 
 
   try {
     const delayed = page.waitForRequest("**/api/reviews");
-    await page.getByRole("button", { name: "View purchase review" }).click();
+    await confirmBrief(page).click();
     await delayed;
     await expect(page.getByText("Preparing your purchase review…")).toBeVisible();
     await page.getByRole("button", { name: "Change options or context" }).click();
@@ -551,12 +666,18 @@ test("offers explicit regeneration for a saved legacy report and keeps submitted
   page.on("request", (request) => {
     if (request.method() === "POST") writes.push(new URL(request.url()).pathname);
   });
-  await page.route("**/api/case/retry", (route) => {
-    expect(route.request().postDataJSON()).toEqual({
-      case_id: saved.case_id, revision: saved.revision, operation_id: lastOperation.operation_id,
-    });
-    saved = reviewed(skipReport, {
-      last_operation: { ...lastOperation, status: "ready", code: null, message: null },
+  await page.route("**/api/brief", (route) => {
+    const { operation_id, revision, submission } = route.request().postDataJSON();
+    expect(revision).toBe(saved.revision);
+    expect(submission).toBeNull();
+    saved = prepared(saved, operation_id);
+    return route.fulfill({ json: ready(saved) });
+  });
+  await page.route("**/api/reviews", (route) => {
+    const { operation_id, revision, confirm } = route.request().postDataJSON();
+    expect(confirm).toBe(true);
+    saved = reviewed(skipReport, { confirmed_revision: revision,
+      last_operation: { ...lastOperation, operation_id, status: "ready", code: null, message: null },
     });
     return route.fulfill({ json: ready(saved) });
   });
@@ -566,9 +687,12 @@ test("offers explicit regeneration for a saved legacy report and keeps submitted
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   expect(writes).toEqual([]);
-  await page.getByRole("button", { name: "Regenerate report", exact: true }).click();
+  await page.getByRole("button", { name: "Review buying brief", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
+  expect(writes).toEqual(["/api/brief"]);
+  await confirmBrief(page).click();
   await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
-  expect(writes).toEqual(["/api/case/retry"]);
+  expect(writes).toEqual(["/api/brief", "/api/reviews"]);
 });

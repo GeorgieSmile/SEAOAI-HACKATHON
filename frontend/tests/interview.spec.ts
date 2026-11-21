@@ -16,7 +16,7 @@ const adaptiveAnswers: Answer[] = [
 ];
 const operationId = "b75ee57b-a4a5-4d9a-ab4f-20a66f71356f";
 const operation = (
-  stage: "start" | "continue" | "review", status: "ready" | "failed" | "running", id = operationId,
+  stage: "start" | "continue" | "brief" | "review", status: "ready" | "failed" | "running", id = operationId,
 ) => ({
   stage, status, operation_id: id,
   code: status === "failed" ? "question_failed" : null,
@@ -74,7 +74,10 @@ test("continues one whole round, restores its history and replaces later questio
     });
     return route.fulfill({ json: response(saved) });
   });
-  await page.route("**/api/reviews", (route) => route.fulfill({ json: response(saved) }));
+  await page.route("**/api/brief", (route) => route.fulfill({ json: response(saved) }));
+  await page.route("**/api/brief/preview-answers", (route) => route.fulfill({
+    json: { changed_requirements: [], removed_requirements: [], discarded_rounds: [] },
+  }));
   await mockSaved(page, () => saved);
 
   await expect(page.getByRole("heading", { name: "Round 1 of 3" })).toBeVisible();
@@ -107,8 +110,9 @@ test("continues one whole round, restores its history and replaces later questio
   await page.getByRole("radio", { name: "Ready-made options only." }).check();
   await page.getByRole("button", { name: "Edit round 1" }).click();
   await expect(page.getByRole("radio", { name: "Screen printing is required." })).toBeChecked();
-  const unchanged = page.waitForRequest("**/api/reviews");
-  await page.getByRole("button", { name: "View purchase review" }).click();
+  const unchanged = page.waitForRequest("**/api/brief");
+  await page.getByRole("button", { name: "Preview and review brief" }).click();
+  await page.getByRole("button", { name: "Save answer changes" }).click();
   expect((await unchanged).postDataJSON()).toMatchObject({
     revision: 1, submission: { round_id: "round-1", answers: adaptiveAnswers },
   });
@@ -119,7 +123,8 @@ test("continues one whole round, restores its history and replaces later questio
   await page.getByRole("button", { name: "Edit round 1" }).click();
   await page.getByRole("radio", { name: firstRound.questions[0]!.choices[0]! }).check();
   const edit = page.waitForRequest("**/api/questions/continue");
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  await page.getByRole("button", { name: "Preview answer changes" }).click();
+  await page.getByRole("button", { name: "Save answer changes" }).click();
   expect((await edit).postDataJSON()).toMatchObject({
     revision: 1, submission: {
       round_id: "round-1",
@@ -133,17 +138,47 @@ test("continues one whole round, restores its history and replaces later questio
   await expect(page.locator(".interview-question input:checked")).toHaveCount(0);
 });
 
-test("goes straight to review with partial answers, skipped values and exact nonblank free text", async ({ page }) => {
+test("brings a rejected answer into view on mobile and retains the answer for correction", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 850 });
+  const error = "The options named in your answer must match the options shown for this question.";
+  const question = {
+    ...firstRound.questions[1]!, prompt: "What order type applies to all selected options?",
+    option_ids: view().selected_option_ids, choices: [], requirement_ids: [], choice_effects: [],
+  };
+  const saved = view({ rounds: [{ ...firstRound, questions: [firstRound.questions[0]!, question] }] });
+  await page.route("**/api/questions/continue", (route) => route.fulfill({
+    status: 422, json: { status: "failed", code: "invalid_input", message: error },
+  }));
+  await mockSaved(page, () => saved);
+
+  const field = page.getByRole("group", { name: question.prompt });
+  const answer = field.getByRole("textbox", { name: "Your answer" });
+  const text = "For Option A, custom orders are acceptable.";
+  await answer.fill(text);
+  await field.getByRole("combobox").selectOption({ label: "Add my answer as a requirement" });
+  const submit = page.getByRole("button", { name: "Continue", exact: true });
+  await submit.click();
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText(error);
+  await expect(alert).toBeFocused();
+  await expect(alert).toBeInViewport();
+  await expect(answer).toHaveValue(text);
+  await expect(field.getByRole("combobox")).toHaveValue("add:");
+  await expect(submit).toBeEnabled();
+});
+
+test("opens the buying brief with partial answers, skipped values and exact nonblank free text", async ({ page }) => {
   const writes = trackWrites(page);
   const round = { ...skipped.first_round, answers: null, questions: skipped.first_round.questions.map(
     (question) => question.question_id === "q-use" ? { ...question, choices: [] } : question,
   ) };
   const saved = view({ rounds: [round] });
-  await page.route("**/api/reviews", (route) => {
+  await page.route("**/api/brief", (route) => {
     const { submission, operation_id } = route.request().postDataJSON();
     return route.fulfill({ json: response(view({
       ...saved, phase: "ready_for_review", revision: 1, rounds: [{ ...round, answers: submission.answers }],
-      last_operation: operation("review", "ready", operation_id),
+      last_operation: operation("brief", "ready", operation_id),
     })) });
   });
   await mockSaved(page, () => saved);
@@ -152,11 +187,11 @@ test("goes straight to review with partial answers, skipped values and exact non
   await expect(freeText).toHaveValue("");
   await page.getByRole("group", { name: round.questions[0]!.prompt }).getByRole("radio", { name: "Not sure / Skip" }).check();
   await freeText.fill("🍵".repeat(1001));
-  await expect(page.getByRole("button", { name: "View purchase review" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Review buying brief" })).toBeDisabled();
   await freeText.fill("  Cold drinks only.  ");
   expect(writes).toEqual([]);
-  const review = page.waitForRequest("**/api/reviews");
-  await page.getByRole("button", { name: "View purchase review" }).click();
+  const review = page.waitForRequest("**/api/brief");
+  await page.getByRole("button", { name: "Review buying brief" }).click();
   expect((await review).postDataJSON()).toEqual({
     case_id: "test-case", revision: 0, operation_id: expect.any(String),
     submission: { round_id: "round-1", answers: [
@@ -165,11 +200,11 @@ test("goes straight to review with partial answers, skipped values and exact non
       { question_id: "q-use", answer_text: "  Cold drinks only.  " },
     ] },
   });
-  await expect(page.getByRole("heading", { name: "Review inputs ready" })).toBeVisible();
-  expect(writes).toEqual(["/api/reviews"]);
+  await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
+  expect(writes).toEqual(["/api/brief"]);
 });
 
-test("automatically hands off zero questions but reloads an existing ready case read-only", async ({ page }) => {
+test("shows zero-question brief without starting a report and reloads it read-only", async ({ page }) => {
   const writes = trackWrites(page);
   let saved: CaseView | null = null;
   await page.route("**/api/questions", (route) => {
@@ -187,17 +222,22 @@ test("automatically hands off zero questions but reloads an existing ready case 
   await mockSaved(page, () => saved);
 
   await page.getByRole("checkbox").nth(2).check();
-  const handoff = page.waitForRequest("**/api/reviews");
   await page.getByRole("button", { name: "Confirm options" }).click();
-  expect((await handoff).postDataJSON()).toEqual({
-    case_id: "test-case", revision: 0, operation_id: expect.any(String), submission: null,
-  });
-  await expect(page.getByRole("heading", { name: "Review inputs ready" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "Case progress" }).locator("[aria-current=step]")).toContainText("Buying brief");
+  await expect(page).toHaveTitle("Review buying brief · Proofly");
   await expect(page.locator(".interview-question")).toHaveCount(0);
-  expect(writes).toEqual(["/api/questions", "/api/reviews"]);
+  expect(writes).toEqual(["/api/questions"]);
 
   await page.reload();
-  await expect(page.getByRole("button", { name: "View purchase review" })).toBeVisible();
+  const confirm = page.getByRole("button", { name: "Confirm brief and generate review" });
+  await expect(confirm).toBeVisible();
+  expect(writes).toEqual(["/api/questions"]);
+  const handoff = page.waitForRequest("**/api/reviews");
+  await confirm.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  expect((await handoff).postDataJSON()).toEqual({
+    case_id: "test-case", revision: 0, operation_id: expect.any(String), confirm: true,
+  });
   expect(writes).toEqual(["/api/questions", "/api/reviews"]);
 });
 
@@ -234,9 +274,11 @@ test("saves a fully skipped final round and then moves to review without a fourt
   expect((await submission).postDataJSON()).toMatchObject({
     revision: 2, submission: { round_id: "round-3", answers: [{ question_id: "q-final", answer_text: null }] },
   });
-  expect((await review).postDataJSON()).toMatchObject({ revision: 3, submission: null });
-  await expect(page.getByRole("heading", { name: "Review inputs ready" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
   await expect(page.locator(".interview-question")).toHaveCount(0);
+  expect(writes).toEqual(["/api/questions/continue"]);
+  await page.getByRole("button", { name: "Confirm brief and generate review" }).click();
+  expect((await review).postDataJSON()).toMatchObject({ revision: 3, confirm: true });
   expect(writes).toEqual(["/api/questions/continue", "/api/reviews"]);
 });
 
@@ -264,7 +306,7 @@ test("reconciles a failed continuation, shows saved answers and retries the orig
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   const original = (await continueRequest).postDataJSON();
   await expect(page.getByRole("alert")).toHaveText("Questions could not be prepared.");
-  await expect(page.getByRole("button", { name: "View purchase review" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Review buying brief" })).toBeEnabled();
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Screen printing is required.", { exact: true })).toBeVisible();
 

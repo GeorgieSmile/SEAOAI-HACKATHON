@@ -91,3 +91,49 @@ Integrated Standards/Spec reviews and the full T1–T5 runs remain pending. The 
 ## Proofly redesign · 2026-11-21
 
 The real ZIP flow opened round 1 with both selected SKUs. Choosing “Custom orders are acceptable” and continuing opened round 2. From the saved report, editing round 1 and cancelling restored the report and updated the progress indicator and page title. The offline server supplied the questions. See [integrated UI verification](../purchase-04-integrate-and-verify/verification.md#proofly-redesign--2026-11-21) for code state, commands and screenshot coverage.
+
+## Issue #12 buying brief
+
+**Code state.** Local working tree on `phase-3/evidence-review` at base `0f15d51`. The walkthrough used the production React/FastAPI path with scripted translation, interview, brief interpretation and report providers. The original `Website Test.zip` and disposable SQLite databases stayed local.
+
+**Checks from the repository root**
+
+```sh
+PURCHASE_TEST_ZIP="$HOME/Downloads/Website Test.zip" OPENAI_LIVE_TRANSLATION=0 OPENAI_LIVE_QUESTIONS=0 OPENAI_LIVE_REVIEW=0 .venv/bin/python -m pytest -q backend/tests --tb=short
+PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --workers=2
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
+git diff --check
+```
+
+- All 468 backend tests passed. The HTTP suite exercised the case/revision confirmation gate, the zero-question and early-exit paths, a concurrent confirmation with a different operation ID, late report results, and recovery of older unfinished and interrupted cases. It also checked the original quotes, the wrong-SKU default action and exclamation-mark regressions from PR #7, the independent engraving and texture decisions, and the skipped sample question. The scripted SDK adapter rejected a proposal for the wrong SKU, retried with the correct one, and made no interpretation call when saving or confirming. Undo preview listed the saved sample answer before discarding the dependent rounds.
+- The Chrome suite passed all 38 tests. Frontend typechecking, the production build and the whitespace check passed.
+- For the real browser walkthrough, ran `.venv/bin/python -m backend.tests.offline_server --database /tmp/purchase-12-local-final.sqlite3` and `npm --prefix frontend run dev`. Uploaded the original ZIP in Chrome and selected black/white, blue/white, and black/pink. Only B became conditional. Moved the shared date to 15 December, saw B's condition change, and undid the date change. A stale tab got HTTP 409, and a double-click sent one confirmation from the current tab. The clipboard matched the draft. Its custom question was scoped to B and its ready-made question to A and C, both with 1 December.
+- Inspected the brief and report at the top, middle, and bottom at 1280 × 850 and 390 × 850. The layout was readable and the page did not overflow horizontally. After restarting the backend on the same database, fresh Chrome sessions at both widths reopened the confirmed report with GET requests only. Images were served from the imported snapshot.
+
+**Pending.** The fresh independent Standards and Spec reviews still need to cover the final integrated changes, especially the confirmation and retry entry points, SKU ownership of order conditions, and pre-#12 SQLite recovery. Scripted checks give no evidence about live model interpretation quality.
+
+## Issue #12 on Proofly main
+
+**Code state.** The `proofly-buying-brief` worktree is based on `edbfb83d23df6b069845067bd1584d5701209051` (PR #10). This integration retains Proofly's three-step layout, evidence report and scoped decision replay. Step 2 now includes the compact brief during an interview and the full review before report confirmation.
+
+- The combined backend suite passed **478 tests** using the original `Website Test.zip` and scripted providers. The combined Playwright suite passed **41 Chrome tests**. Typecheck and production build passed.
+- The real React and FastAPI walkthrough uploaded the original ZIP, selected black/white, blue/white, and black/pink in order, and corrected only the blue option. Moving the date to 15 December updated its condition and displayed the shared deadline once. Undo restored 1 December. An outdated tab got HTTP 409 and a double-click sent one report request. The clipboard matched the draft, which scoped conditional custom ordering to B and ready-made ordering to A and C. Returning to the brief from the report moved the active step without triggering a report.
+- A separate walkthrough answered the order and deadline questions and showed the compact brief beside the next round. Ending early with the sample question skipped opened the full brief with only the sample decision open and no report.
+- Inspected top, middle, and bottom screenshots for the interview, full brief and report at 1280 × 850 and 390 × 850. Checked document width and desktop sticky supplier-panel separation while scrolling.
+- Restarted the offline backend on the same database and reopened the confirmed report at both widths in fresh Chrome sessions with GET requests only. Also tested two disposable databases written by the unmodified `edbfb83` backend using the original ZIP. The unfinished case kept its decision history and generated once after confirmation. The previously reviewed case reopened the existing report. Both restored without calling a provider.
+
+```sh
+PURCHASE_TEST_ZIP="$HOME/Downloads/Website Test.zip" OPENAI_LIVE_TRANSLATION=0 OPENAI_LIVE_QUESTIONS=0 OPENAI_LIVE_REVIEW=0 "$PROOFLY_PYTHON" -m pytest -q backend/tests --tb=short
+PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --workers=2
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
+"$PROOFLY_PYTHON" -m backend.tests.offline_server --port 8187 --database /tmp/proofly-12-browser.sqlite3
+PURCHASE_BACKEND_URL=http://127.0.0.1:8187 npm --prefix frontend run dev
+node /tmp/proofly-12-browser.cjs
+node /tmp/proofly-12-browser.cjs restart
+node /tmp/proofly-12-browser.cjs compact
+git diff --check
+```
+
+`PROOFLY_PYTHON` was the source checkout's `.venv/bin/python`. Screenshots and local database copies stayed outside the checkout. Fresh Standards and Spec reviews of this combined change and live provider quality checks remain pending.

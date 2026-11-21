@@ -15,10 +15,10 @@ from backend.ai import generate_questions
 from backend.contracts import QuestionResult
 from backend.main import create_app
 from backend.report import generate_review
-from backend.tests.test_cases import initial_request, ready, reference, round_request
+from backend.tests.test_cases import confirm_command, finish_review, initial_request, ready, reference, reopen_brief, round_request
 from backend.tests.test_imports import RAW, _upload, stub
 from backend.tests.test_reports import canonical_content, finding_selection, image_claim, response, text_claim
-from backend.tests.test_review_workflow import retry_request
+from backend.tests.test_review_workflow import _replace_saved_case, retry_request
 
 
 @dataclass(frozen=True)
@@ -235,7 +235,7 @@ def test_original_zip_review_matrix(tmp_path, name):
                 case = ready(client.post("/api/questions/continue", json=command))
         if not scenario.questions:
             command = {**reference(case), "operation_id": str(uuid4()), "submission": None}
-        result = client.post("/api/reviews", json=command).json()
+        result = finish_review(client, command).json()
         completed = client.get("/api/case").json()["case"]
         if scenario.stale or name in ("cropped-selector", "readable-and-unreadable"):
             assert (result["status"], result["code"]) == ("failed", "invalid_review")
@@ -249,7 +249,7 @@ def test_original_zip_review_matrix(tmp_path, name):
                 edit["submission"]["answers"][0]["requirement_effect"] = {
                     "action": "replace", "requirement_id": issued["requirement_ids"][0],
                 }
-                edited = ready(client.post("/api/reviews", json=edit))
+                edited = ready(finish_review(client, edit))
                 assert edited["revision"] == completed["revision"] + 1
                 check_ready(edited, selected, day=20)
                 completed = edited
@@ -335,7 +335,7 @@ def test_skipped_sample_cannot_change_the_deadline_after_edit_and_restart(tmp_pa
         start = initial_request(snap, buyer_context=DEC_1.answer)
         selected = start["selected_option_ids"]
         case = ready(client.post("/api/questions", json=start))
-        invalid = client.post("/api/reviews", json=round_request(case)).json()
+        invalid = finish_review(client, round_request(case)).json()
         assert (invalid["status"], invalid["code"]) == ("failed", "invalid_review")
         failed = client.get("/api/case").json()["case"]
         assert failed["report"] is None
@@ -343,7 +343,7 @@ def test_skipped_sample_cannot_change_the_deadline_after_edit_and_restart(tmp_pa
         submitted_topic = "sample"
         valid = ready(client.post("/api/case/retry", json=retry_request(failed)))
         assert_decisions(valid, selected, [DEC_1.answer] * 3)
-        edited = ready(client.post("/api/reviews", json=round_request(valid, texts=[DEC_15.answer, None])))
+        edited = ready(finish_review(client, round_request(valid, texts=[DEC_15.answer, None])))
         assert edited["revision"] == valid["revision"] + 1
         assert_decisions(edited, selected, [DEC_15.answer, DEC_1.answer, DEC_1.answer])
 
@@ -357,7 +357,8 @@ def test_skipped_sample_cannot_change_the_deadline_after_edit_and_restart(tmp_pa
 
 
 @pytest.mark.parametrize("followup", [None, "I need to check the minimum quantity before deciding."])
-def test_conflicting_order_decisions_are_open_only_for_the_affected_sku(tmp_path, followup):
+def test_conflicting_order_decisions_are_open_only_for_the_affected_sku(tmp_path, followup, monkeypatch):
+    from backend import case_workflow
     database = tmp_path / "conflicting-order.db"
     stock = STOCK.answer
     custom = "Custom orders are acceptable."
@@ -416,8 +417,14 @@ def test_conflicting_order_decisions_are_open_only_for_the_affected_sku(tmp_path
         snapshot = _upload(client).json()["snapshot"]
         start = initial_request(snapshot, buyer_context=stock)
         first = ready(client.post("/api/questions", json=start))
-        second = ready(client.post("/api/questions/continue", json=round_request(first, texts=[custom])))
-        opened = ready(client.post("/api/reviews", json=round_request(second, texts=[followup])))
+        resolve = case_workflow.resolve_requirements
+        # Simulate a question the original Proofly workflow had already issued against the conflict.
+        with monkeypatch.context() as when_issued:
+            when_issued.setattr(case_workflow, "resolve_requirements", lambda *args, **kwargs: resolve(
+                *args, **{**kwargs, "projection": "before_buying_brief"},
+            ))
+            second = ready(client.post("/api/questions/continue", json=round_request(first, texts=[custom])))
+        opened = ready(finish_review(client, round_request(second, texts=[followup])))
         a, *other_skus = start["selected_option_ids"]
         conflict, = [row for row in opened["requirements"] if row["status"] == "unresolved"]
         assert conflict["option_ids"] == [a]
@@ -439,7 +446,7 @@ def test_conflicting_order_decisions_are_open_only_for_the_affected_sku(tmp_path
 
     with TestClient(create_app(database, **options)) as client:
         assert client.get("/api/case").json()["case"] == opened
-        clarified = ready(client.post("/api/reviews", json=round_request(opened, texts=[custom])))
+        clarified = ready(finish_review(client, round_request(opened, texts=[custom])))
         assert clarified["revision"] == opened["revision"] + 1
         report = clarified["report"]
         assert not report["open_preferences"]
@@ -478,17 +485,19 @@ def test_pre_guard_report_with_opposite_order_instructions_requires_regeneration
 
     options = dict(translator=stub, question_generator=questions, review_generator=review)
     with monkeypatch.context() as before_guard:
-        before_guard.setattr(requirements, "_order_conflicts", lambda case_id, rows: {})
+        before_guard.setattr(requirements, "_order_conflicts", lambda case_id, rows, **kwargs: {})
         with TestClient(create_app(database, **options)) as client:
             snapshot = _upload(client).json()["snapshot"]
             start = initial_request(snapshot, buyer_context=f"{stock} {custom}")
             case = ready(client.post("/api/questions", json=start))
-            old = ready(client.post("/api/reviews", json={
+            old = ready(finish_review(client, {
                 **reference(case), "operation_id": str(uuid4()), "submission": None,
             }))
             assert len(old["report"]["buyer_requirements"]) == 2
             assert "[Options A, B, C]" in old["report"]["supplier_draft"]
             assert "[Option A]" in old["report"]["supplier_draft"]
+
+    _replace_saved_case(database, lambda record: record.pop("order_conflict_version", None))
 
     async def forbidden(*args):
         pytest.fail("Reopening a case should not call the provider.")
@@ -503,7 +512,7 @@ def test_pre_guard_report_with_opposite_order_instructions_requires_regeneration
         assert restored["last_operation"]["code"] == "review_regeneration_required"
 
     with TestClient(create_app(database, **options)) as client:
-        regenerated = ready(client.post("/api/case/retry", json=retry_request(restored)))
+        regenerated = ready(client.post("/api/reviews", json=confirm_command(reopen_brief(client, restored))))
     report = regenerated["report"]
     preference, = report["open_preferences"]
     assert preference["option_ids"] == old["selected_option_ids"][:1]
@@ -581,7 +590,7 @@ def test_skipped_repeat_opens_only_unsettled_skus_of_that_facet(tmp_path, monkey
                 case = ready(client.post("/api/questions/continue", json=round_request(case, texts=[PRINT.answer])))
             if origin == "untyped-waived-answer":
                 case = ready(client.post("/api/questions/continue", json=round_request(case, texts=[waiver])))
-            return ready(client.post("/api/reviews", json=round_request(case)))
+            return ready(finish_review(client, round_request(case)))
 
     options = dict(translator=stub, question_generator=questions, review_generator=review)
     start = {}
@@ -594,6 +603,8 @@ def test_skipped_repeat_opens_only_unsettled_skus_of_that_facet(tmp_path, monkey
         with monkeypatch.context() as old_projection:
             old_projection.setattr(case_workflow, "resolve_requirements", previous)
             old = completed_report(create_app(database, **options), start)
+        _replace_saved_case(database, lambda record: record.pop("order_conflict_version", None))
+
         assert any(
             row["option_ids"] == start["selected_option_ids"][:2]
             for row in old["report"]["open_preferences"]
@@ -610,7 +621,7 @@ def test_skipped_repeat_opens_only_unsettled_skus_of_that_facet(tmp_path, monkey
             assert restored["report"] is None
             assert restored["last_operation"]["code"] == "review_regeneration_required"
         with TestClient(create_app(database, **options)) as client:
-            reviewed = ready(client.post("/api/case/retry", json=retry_request(restored)))
+            reviewed = ready(client.post("/api/reviews", json=confirm_command(reopen_brief(client, restored))))
     else:
         reviewed = completed_report(create_app(database, **options), start)
 
@@ -684,14 +695,16 @@ def test_recovery_preserves_a_later_question_issued_for_an_unsplit_order_conflic
             second = ready(client.post("/api/questions/continue", json=round_request(first, texts=[custom])))
             third = ready(client.post("/api/questions/continue", json=round_request(second, texts=[uncertain])))
             assert third["rounds"][-1]["questions"][0]["option_ids"] == start["selected_option_ids"]
-            saved = ready(client.post("/api/reviews", json=round_request(third, texts=[STOCK.answer])))
+            saved = ready(finish_review(client, round_request(third, texts=[STOCK.answer])))
+
+    _replace_saved_case(database, lambda record: record.pop("order_conflict_version", None))
 
     with TestClient(create_app(database, **options)) as client:
         restored = client.get("/api/case").json()["case"]
         assert reference(restored) == reference(saved)
         assert restored["rounds"] == saved["rounds"]
         assert restored["last_operation"]["code"] == "review_regeneration_required"
-        regenerated = ready(client.post("/api/case/retry", json=retry_request(restored)))
+        regenerated = ready(client.post("/api/reviews", json=confirm_command(reopen_brief(client, restored))))
 
     a, *other_options = start["selected_option_ids"]
     assert {tuple(row["option_ids"]): row["text"] for row in regenerated["report"]["buyer_requirements"]} == {

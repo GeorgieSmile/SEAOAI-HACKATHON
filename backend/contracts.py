@@ -3,7 +3,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-from .supplier_targets import SupplierTarget
+from .supplier_targets import DeliveryTarget, SupplierTarget
 
 
 NonEmptyText = Annotated[str, StringConstraints(pattern=r"\S")]
@@ -138,8 +138,21 @@ ReviewTopic = Literal[
     "capacity", "finish", "materials", "temperature_use", "testing", "customization",
     "packaging", "dimensions", "weight", "sample", "sku_wording", "deadline", "other",
 ]
+BUYER_FACET_TOPICS: dict[BuyerFacet, ReviewTopic] = {
+    "order_type": "customization",
+    "decoration_method": "finish",
+    "surface_finish": "finish",
+    "capacity": "capacity",
+    "delivery_deadline": "deadline",
+}
 RequirementAction = Literal["keep", "replace", "waive", "add"]
 RequirementStatus = Literal["active", "waived", "unresolved"]
+OrderClarificationChoice = Literal["ready_made_only", "custom_orders_acceptable"]
+ORDER_CONFLICT_PROMPT = "Should this option be ready-made only, or are custom orders acceptable?"
+ORDER_CONFLICT_CHOICES: dict[OrderClarificationChoice, str] = {
+    "ready_made_only": "Ready-made stock only",
+    "custom_orders_acceptable": "Custom orders are acceptable",
+}
 
 
 class ContextRequirement(ContractModel):
@@ -187,6 +200,35 @@ class RequirementProvenance(ContractModel):
     context_start: Annotated[int, Field(ge=0)] | None = None
 
 
+class BriefProposal(ContractModel):
+    kind: Literal["ready_made", "custom", "custom_by_deadline", "deadline", "unclear"]
+    option_ids: SelectedOptionIds
+    date: DeliveryTarget | None
+
+    @model_validator(mode="after")
+    def valid_date_use(self) -> Self:
+        if (self.kind == "deadline" and self.date is None) or (
+            self.kind not in {"deadline", "custom_by_deadline"} and self.date is not None
+        ):
+            raise ValueError("Use an arrival date only for a deadline or a conditional custom order.")
+        return self
+
+
+class BriefChange(ContractModel):
+    change_id: NonEmptyText
+    revision: Revision
+    after_round: Annotated[int, Field(ge=0, le=3)]
+    text: Annotated[str, Field(min_length=1, max_length=1_000)]
+    proposal: BriefProposal
+    question: NonEmptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+    resolves_change_id: NonEmptyText | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class DeliveryCondition(ContractModel):
+    follows_deadline: bool
+    latest_arrival: DeliveryTarget | None
+
+
 class ResolvedRequirement(ContractModel):
     requirement_id: NonEmptyText
     statement: NonEmptyText
@@ -195,7 +237,9 @@ class ResolvedRequirement(ContractModel):
     topic: ReviewTopic
     buyer_facet: BuyerFacet | None = None
     supplier_target: SupplierTarget | None = None
+    delivery_condition: DeliveryCondition | None = Field(default=None, exclude_if=lambda value: value is None)
     provenance: Annotated[list[RequirementProvenance], Field(min_length=1)]
+    order_conflict: Literal[True] | None = Field(default=None, exclude_if=lambda conflict: conflict is None)
 
 
 class RequirementTarget(ContractModel):
@@ -237,6 +281,22 @@ class AnswerSubmission(ContractModel):
         return self
 
 
+class OrderClarificationSelection(ContractModel):
+    requirement_id: NonEmptyText
+    option_id: NonEmptyText
+    choice: OrderClarificationChoice
+
+
+class OrderClarification(OrderClarificationSelection):
+    clarification_id: NonEmptyText
+    after_round: Annotated[int, Field(ge=0, le=3)]
+    revision: Revision = Field(default=0, exclude_if=lambda value: value == 0)
+
+    @property
+    def answer_text(self) -> str:
+        return ORDER_CONFLICT_CHOICES[self.choice]
+
+
 class _CaseAnalysisInput(ContractModel):
     case_id: NonEmptyText
     revision: Revision
@@ -245,6 +305,8 @@ class _CaseAnalysisInput(ContractModel):
     buyer_context: BuyerContext
     answers: Annotated[list[AnsweredQuestion], Field(max_length=15)]
     requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+    order_clarifications: list[OrderClarification] = Field(default_factory=list, exclude_if=lambda rows: not rows)
+    brief_changes: list[BriefChange] = Field(default_factory=list, exclude_if=lambda rows: not rows)
 
     @model_validator(mode="after")
     def validate_case_evidence(self) -> Self:
@@ -255,6 +317,16 @@ class _CaseAnalysisInput(ContractModel):
             raise ValueError("The selected options must be in the active snapshot")
         if len({answer.question_id for answer in self.answers}) != len(self.answers):
             raise ValueError("The answered question IDs must be unique")
+        clarifications = {f"clarification:{row.clarification_id}": row for row in self.order_clarifications}
+        if len(clarifications) != len(self.order_clarifications) or any(row.option_id not in selected for row in clarifications.values()):
+            raise ValueError("Order clarifications must use distinct IDs and select one current option")
+        brief_changes = {f"brief:{row.change_id}": row for row in self.brief_changes}
+        if len(brief_changes) != len(self.brief_changes) or any(
+            not selected.issuperset(row.proposal.option_ids)
+            or len(set(row.proposal.option_ids)) != len(row.proposal.option_ids)
+            for row in self.brief_changes
+        ):
+            raise ValueError("Brief changes must use distinct IDs and current options.")
         if self.requirements is not None:
             answers = {f"answer:{answer.question_id}": answer for answer in self.answers}
             ids = {row.requirement_id for row in self.requirements}
@@ -271,6 +343,20 @@ class _CaseAnalysisInput(ContractModel):
                         start, quote = entry.context_start, entry.quote
                         if start is None or quote is None or entry.question_text is not None or not self.buyer_context.startswith(quote, start):
                             raise ValueError("Requirement context provenance must quote its exact recorded span")
+                    elif entry.input_ref.startswith("clarification:"):
+                        choice = clarifications.get(entry.input_ref)
+                        if (
+                            choice is None or entry.quote != choice.answer_text or entry.question_text != ORDER_CONFLICT_PROMPT
+                            or entry.option_ids != [choice.option_id] or entry.context_start is not None
+                        ):
+                            raise ValueError("Order clarification provenance must match the recorded buyer choice")
+                    elif entry.input_ref.startswith("brief:"):
+                        change = brief_changes.get(entry.input_ref)
+                        if (
+                            change is None or entry.quote != change.text or entry.option_ids != change.proposal.option_ids
+                            or entry.question_text is not None or entry.context_start is not None
+                        ):
+                            raise ValueError("Brief provenance must match the saved correction and its option scope.")
                     else:
                         answer = answers.get(entry.input_ref)
                         if answer is None or answer.answer_text != entry.quote or answer.question_text != entry.question_text or entry.context_start is not None:

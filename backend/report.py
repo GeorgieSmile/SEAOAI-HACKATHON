@@ -20,9 +20,13 @@ from .ai import (
     _build_client,
     _request_structured,
 )
-from .contracts import AnsweredQuestion, BuyerFacet, Option, ResolvedRequirement, ReviewInput, SKU_NAME_SOURCE_LABELS, Source
+from .contracts import (
+    BUYER_FACET_TOPICS, ORDER_CONFLICT_PROMPT, AnsweredQuestion, BuyerFacet, DeliveryCondition, Option, ResolvedRequirement,
+    ReviewInput, SKU_NAME_SOURCE_LABELS, Source,
+)
 from .intake import IMAGE_MIME
 from .report_coverage import render_coverage, thumbnail_limitations
+from .requirements import arrival_cutoff
 from .report_models import (
     BuyerRequirement,
     CanonicalFindingSelection,
@@ -53,7 +57,8 @@ from .report_models import (
     UnknownSelection,
 )
 from .supplier_targets import (
-    CapacityTarget, DecorationTarget, DeliveryTarget, OrderTarget, SupplierTarget, SurfaceTarget, validate_supplier_target,
+    CapacityTarget, DecorationTarget, DeliveryTarget, OrderTarget, SupplierTarget, SurfaceTarget, scoped_order_target,
+    validate_supplier_target,
 )
 
 
@@ -115,13 +120,6 @@ VISIBLE_DETAILS = {
     "retail_box_visible": ("packaging", "A box is visible"),
     "protective_insert_visible": ("packaging", "A protective insert is visible"),
     "markings_visible": ("sku_wording", "Markings are visible"),
-}
-BUYER_FACET_TOPICS: dict[BuyerFacet, str] = {
-    "order_type": "customization",
-    "decoration_method": "finish",
-    "surface_finish": "finish",
-    "capacity": "capacity",
-    "delivery_deadline": "deadline",
 }
 FINISH_FACETS: tuple[BuyerFacet, ...] = ("decoration_method", "surface_finish")
 SUPPLIER_TARGET_FACETS: dict[str, tuple[BuyerFacet, ...]] = {
@@ -353,7 +351,7 @@ def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, byte
                 else {"provenance", "statement", "supplier_target"},
             )
             for requirement in request.requirements
-            if requirement.status != "waived"
+            if requirement.status != "waived" and not requirement.order_conflict
         ]
     content: list[ResponseInputContentParam] = [{"type": "input_text", "text": json.dumps(data, ensure_ascii=False)}]
     included_images: dict[tuple[str, bytes], list[str]] = {}
@@ -805,11 +803,11 @@ def _render_next_step(spec: str, action: str | None, differences: list[str]) -> 
 
 def _render_finding(
     finding: FindingSelection, claims: list[DisplayClaim], unknowns: list[Unknown], differences: list[str],
-    order: OrderTarget | _BuyerTarget | None, product_targets: list[SupplierTarget | _BuyerTarget],
-    *, canonical: bool, decision: ResolvedRequirement | None = None, linked_topic_requirement: bool,
+    order: OrderTarget | DeliveryCondition | _BuyerTarget | None, product_targets: list[SupplierTarget | _BuyerTarget],
+    *, canonical: bool, decision_subject: str | None, linked_topic_requirement: bool,
+    stock_arrival: DeliveryTarget | None = None,
 ) -> Finding:
     label, spec = TOPICS[finding.topic]
-    decision_subject = _decision_subject(decision) if decision is not None else None
     if canonical and finding.topic == "customization":
         spec = "availability and order terms"
     title = {
@@ -831,7 +829,7 @@ def _render_finding(
         }[order.value] if isinstance(order, OrderTarget) else {
             "ready_made": "confirm_ready_made",
             "custom_order": "confirm_custom_order",
-        }.get(order.kind if order is not None else "")
+        }.get(order.kind if isinstance(order, _BuyerTarget) else "")
     )
     if action in {"confirm_specification", "confirm_ready_made", "confirm_custom_order"}:
         action = order_action or "confirm_specification"
@@ -851,6 +849,12 @@ def _render_finding(
         if isinstance(order, OrderTarget) and order_action == "confirm_custom_order" and action != order_action:
             target_questions.insert(0, "If a custom order is needed, please share the lead time and minimum order quantity.")
         question = " ".join([question, *filter(None, target_questions)])
+        if isinstance(order, DeliveryCondition) and order.latest_arrival is not None:
+            conditional = f"Can this option be custom-made and still arrive by {order.latest_arrival.display_date()}?"
+            question = conditional if action == "confirm_specification" else f"{conditional} {question}"
+        elif stock_arrival is not None and action == "confirm_ready_made":
+            quantity = "this option" if len(finding.option_ids) == 1 else "these options"
+            question = f"Can {quantity} ship from ready-made stock and also arrive by {stock_arrival.display_date()}?"
     impact = f"Knowing {label.lower()} helps compare what you would receive."
     priority = "Checking this before ordering can resolve an open detail about the exact item."
     if decision_subject is not None:
@@ -951,6 +955,8 @@ def _legacy_report_requirements(
 
 def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequirement]) -> list[BuyerRequirement]:
     answers = {f"answer:{answer.question_id}": answer for answer in request.answers}
+    clarifications = {f"clarification:{item.clarification_id}": item for item in request.order_clarifications}
+    corrections = {f"brief:{item.change_id}": item for item in request.brief_changes}
     selected = set(request.selected_option_ids)
     _unique_ids((row.requirement_id for row in rows), "resolved requirements")
     requirements = []
@@ -965,6 +971,23 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
                 ):
                     raise ValueError("Requirement context must match the exact buyer context and source location.")
                 evidence_scope = _validate_refs(entry.option_ids, selected, "requirement context options")
+            elif entry.input_ref.startswith("clarification:"):
+                clarification = clarifications.get(entry.input_ref)
+                if (
+                    clarification is None or entry.quote != clarification.answer_text
+                    or entry.question_text != ORDER_CONFLICT_PROMPT or entry.context_start is not None
+                    or entry.option_ids != [clarification.option_id]
+                ):
+                    raise ValueError("Requirement clarification must match the saved buyer choice and exact option.")
+                evidence_scope = {clarification.option_id}
+            elif entry.input_ref.startswith("brief:"):
+                correction = corrections.get(entry.input_ref)
+                if (
+                    correction is None or entry.quote != correction.text or entry.question_text is not None
+                    or entry.context_start is not None or entry.option_ids != correction.proposal.option_ids
+                ):
+                    raise ValueError("Requirement correction must match the exact saved quote and options.")
+                evidence_scope = set(correction.proposal.option_ids)
             else:
                 answer = answers.get(entry.input_ref)
                 if (
@@ -989,7 +1012,29 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
             or row.provenance[-1].action not in {"add", "replace", "keep"}
         ):
             raise ValueError("An active requirement must keep the current exact buyer statement.")
-        validate_supplier_target(row.supplier_target, row.statement, row.topic, row.buyer_facet)
+        scoped_target = scoped_order_target(
+            row.statement, row.topic, row.buyer_facet,
+            option_ids=origin.option_ids, selected_option_ids=request.selected_option_ids,
+        ) if origin.input_ref == "context" or origin.input_ref.startswith("answer:") else None
+        correction = corrections.get(origin.input_ref)
+        if correction is not None:
+            proposal = correction.proposal
+            target = {
+                "ready_made": OrderTarget(value="ready_made_only"),
+                "custom": OrderTarget(value="custom_orders_acceptable"),
+                "deadline": proposal.date,
+            }.get(proposal.kind)
+            if row.supplier_target != target:
+                raise ValueError("The requirement target must match the saved brief correction.")
+            if proposal.kind == "custom_by_deadline":
+                condition = row.delivery_condition
+                expected = proposal.date or arrival_cutoff(rows, row.option_ids)
+                if condition is None or expected is None or condition != DeliveryCondition(
+                    follows_deadline=proposal.date is None, latest_arrival=expected,
+                ):
+                    raise ValueError("The custom-order condition must match the confirmed arrival cutoff.")
+        elif row.supplier_target != scoped_target:
+            validate_supplier_target(row.supplier_target, row.statement, row.topic, row.buyer_facet)
         requirements.append(BuyerRequirement(
             requirement_id=row.requirement_id, text=row.statement, input_ref=origin.input_ref,
             quote=row.statement, option_ids=row.option_ids, question_text=origin.question_text,
@@ -1006,7 +1051,7 @@ def _complete_supplier_findings(
     if canonical and any(finding_id.startswith("supplier:") for finding_id in used_ids):
         raise ValueError("Finding IDs cannot use IDs reserved for buyer requirement checks.")
     for requirement in requirements.values():
-        if requirement.supplier_target is None:
+        if requirement.supplier_target is None and requirement.delivery_condition is None:
             continue
         checked_options = {
             option_id for finding in content.findings
@@ -1031,9 +1076,9 @@ def _complete_supplier_findings(
 
 def _current_finding_targets(
     finding: FindingSelection, requirements: Mapping[str, ResolvedRequirement], *, canonical: bool,
-) -> tuple[OrderTarget | None, list[SupplierTarget]]:
+) -> tuple[OrderTarget | DeliveryCondition | None, list[SupplierTarget]]:
     product_targets = []
-    order_targets = set()
+    order_targets: list[OrderTarget | DeliveryCondition] = []
     requirement_ids = (
         [requirement_id for requirement_id in requirements if requirement_id in finding.requirement_ids]
         if canonical else finding.requirement_ids
@@ -1041,19 +1086,24 @@ def _current_finding_targets(
     for requirement_id in requirement_ids:
         requirement = requirements[requirement_id]
         target = requirement.supplier_target
-        if isinstance(target, OrderTarget):
-            order_targets.add(target)
+        order_target = requirement.delivery_condition or (target if isinstance(target, OrderTarget) else None)
+        if order_target is not None:
+            if order_target not in order_targets:
+                order_targets.append(order_target)
         elif requirement.topic != finding.topic:
             raise ValueError("Use the finding topic that matches the linked requirement's decision.")
         elif target is not None and target not in product_targets:
             product_targets.append(target)
     if len(order_targets) > 1:
         raise ValueError("A supplier question cannot select conflicting order types for the same options.")
-    order = next(iter(order_targets), None)
+    order = order_targets[0] if order_targets else None
     requested_order = {"confirm_ready_made": "ready_made_only", "confirm_custom_order": "custom_orders_acceptable"}.get(
         finding.supplier_action or "",
     )
-    if requested_order is not None and (order is None or order.value != requested_order):
+    if requested_order is not None and not (
+        isinstance(order, OrderTarget) and order.value == requested_order
+        or isinstance(order, DeliveryCondition) and requested_order == "custom_orders_acceptable"
+    ):
         raise ValueError("Stock and customization actions must match a linked, active order requirement.")
     return order, product_targets
 
@@ -1061,6 +1111,7 @@ def _current_finding_targets(
 def _current_open_preferences(
     request: ReviewInput, findings: Mapping[str, FindingSelection], used_ids: set[str],
     *, decision_findings: Mapping[str, list[str]] | None = None,
+    historical_decision_labels: bool = False,
 ) -> list[OpenPreference]:
     options = request.answer_option_ids
     answered = {f"answer:{answer.question_id}": answer for answer in request.answers}
@@ -1080,10 +1131,13 @@ def _current_open_preferences(
             ]
         else:
             linked = decision_findings.get(row.requirement_id, [])
-        subject = TOPICS[row.topic][0].lower() if decision_findings is None else _decision_subject(row)
+        subject = (
+            TOPICS[row.topic][0].lower() if decision_findings is None else
+            _decision_subject(row, historical=historical_decision_labels)
+        )
         preferences.append(OpenPreference(
             preference_id=preference_id,
-            text=f"Your preference for {subject} is still open.",
+            text=ORDER_CONFLICT_PROMPT if row.order_conflict else f"Your preference for {subject} is still open.",
             input_refs=refs, option_ids=row.option_ids,
             finding_ids=linked,
             questions=[
@@ -1097,12 +1151,15 @@ def _current_open_preferences(
     return preferences
 
 
-def _decision_subject(row: ResolvedRequirement) -> str:
+def _decision_subject(row: ResolvedRequirement, *, historical: bool) -> str:
+    topic = TOPICS[row.topic][0].lower()
+    if not historical and (row.buyer_facet is None or BUYER_FACET_TOPICS.get(row.buyer_facet) != row.topic):
+        return topic
     return {
         "order_type": "stock and customization",
         "decoration_method": "the decoration method",
         "surface_finish": "the surface finish",
-    }.get(row.buyer_facet, TOPICS[row.topic][0].lower())
+    }.get(row.buyer_facet, topic)
 
 
 def _finding_decision(
@@ -1179,6 +1236,7 @@ def _legacy_open_preferences(
 
 def assemble_review(
     request: ReviewInput, content: ReviewSelection, *, sent_evidence: SentReviewEvidence,
+    historical_decision_labels: bool = False,
 ) -> PurchaseReview:
     """Validate structured selections against the case, then render the public report."""
     canonical = isinstance(content, CanonicalReviewContent)
@@ -1335,15 +1393,28 @@ def assemble_review(
             _render_unknown(unknown, finding, sources, sent, observed_image_topics) for unknown in finding.unknowns
         ]
         differences = _conflicting_readings(finding, references, sources, aliases) if finding.kind == "listing_conflict" else []
+        stock_arrival = None
+        if isinstance(order, OrderTarget) and order.value == "ready_made_only" and any(
+            row.delivery_condition is not None for row in current_requirements.values()
+        ):
+            dates = {arrival_cutoff(list(all_requirements.values()), [option_id]) for option_id in finding.option_ids}
+            if len(dates) == 1:
+                stock_arrival = next(iter(dates))
         findings.append(_render_finding(
             finding, references, unknowns, differences, order, product_targets,
-            canonical=request.requirements is not None, decision=decision, linked_topic_requirement=linked_topic_requirement,
+            canonical=request.requirements is not None,
+            decision_subject=_decision_subject(decision, historical=historical_decision_labels) if decision is not None else None,
+            linked_topic_requirement=linked_topic_requirement,
+            stock_arrival=stock_arrival,
         ))
 
     preferences = (
         _legacy_open_preferences(request, content, finding_by_id, inputs)
         if isinstance(content, ReviewContent) else
-        _current_open_preferences(request, finding_by_id, set(), decision_findings=decision_findings)
+        _current_open_preferences(
+            request, finding_by_id, set(), decision_findings=decision_findings,
+            historical_decision_labels=historical_decision_labels,
+        )
     )
 
     if _unique_ids((row.group for row in content.coverage), "coverage groups") != COVERAGE_GROUPS:

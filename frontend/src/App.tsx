@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { caseVersion, currentPurchaseReview, getCurrentCase, importListing, resetCase } from "./api";
 import type { CaseVersion, ListingSnapshot } from "./api";
 import { Interview } from "./Interview";
+import type { InterviewScreen } from "./Interview";
 import { Listing, OptionImage } from "./Listing";
 import { useInterviewSession } from "./useInterviewSession";
 
@@ -37,6 +38,7 @@ function matchesResetTarget(target: ResetTarget, listing: Awaited<ReturnType<typ
 const workMessages = {
   start: "Preparing your questions…",
   continue: "Saving answers and checking what else to ask…",
+  brief: "Saving your buying brief…",
   review: "Preparing your purchase review…",
   retry: "Retrying your last request…",
   refresh: "Loading your saved progress…",
@@ -54,7 +56,7 @@ export function App() {
   const [resetStale, setResetStale] = useState(false);
   const [productLink, setProductLink] = useState("");
   const [dragging, setDragging] = useState(false);
-  const [reportVisible, setReportVisible] = useState(false);
+  const [interviewScreen, setInterviewScreen] = useState<InterviewScreen>("questions");
   const [showImport, setShowImport] = useState(false);
   const generation = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -225,9 +227,10 @@ export function App() {
 
   const sourceLabel = "sourceLabel" in intake ? intake.sourceLabel : undefined;
 
-  const progress = !snapshot || editingSelection ? 1 : reportVisible ? 3 : 2;
-  const steps = ["Choose options", "Buyer questions", "Evidence report"];
-  const pageTitle = !snapshot ? "Import a listing" : steps[progress - 1];
+  const progress = !snapshot || editingSelection ? 1 : interviewScreen === "report" ? 3 : 2;
+  const steps = ["Choose options", "Buying brief", "Evidence report"];
+  const pageTitle = !snapshot ? "Import a listing" : progress !== 2 ? steps[progress - 1]
+    : interviewScreen === "brief" ? "Review buying brief" : "Buyer questions";
   useEffect(() => {
     document.title = `${pageTitle} · Proofly`;
   }, [pageTitle]);
@@ -481,7 +484,8 @@ export function App() {
                   disabled={resetPrompt || mustReloadInterview || selected.length === 0 || contextTooLong}
                 >
                   {activeInterview
-                    ? currentPurchaseReview(activeInterview) ? "Resume purchase review" : "Resume questions"
+                    ? currentPurchaseReview(activeInterview) ? "Resume purchase review"
+                      : activeInterview.phase === "ready_for_review" ? "Resume buying brief" : "Resume questions"
                     : "Confirm options"}
                 </button>
                 <p className="next-note">Next: up to three short rounds of questions, or skip straight to the report.</p>
@@ -493,7 +497,7 @@ export function App() {
           <Interview
             key={interview.view?.case_id ?? snapshot.snapshot_id}
             hidden={editingSelection}
-            onReportVisibilityChange={setReportVisible}
+            onScreenChange={setInterviewScreen}
             snapshot={snapshot}
             selected={selected}
             context={buyerContext}
@@ -517,6 +521,12 @@ export function App() {
             onSubmit={(submission, action) => activeInterview
               ? interview.submit(activeInterview, submission, action)
               : Promise.resolve(null)}
+            onEditBrief={(edit) => activeInterview ? interview.edit(activeInterview, edit) : Promise.resolve(null)}
+            onConfirmBrief={() => { if (activeInterview) interview.confirm(activeInterview); }}
+            onResumeQuestions={() => { if (activeInterview) interview.resume(activeInterview); }}
+            onConfirmOrder={(clarification) => {
+              if (activeInterview) void interview.submit(activeInterview, null, "brief", clarification);
+            }}
           />
         )}
       </main>

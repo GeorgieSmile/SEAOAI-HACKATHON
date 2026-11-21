@@ -4,18 +4,19 @@ from hashlib import sha256
 import json
 import sqlite3
 from types import MappingProxyType
-from typing import Literal
 from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
 from .ai import QuestionGenerationError, validate_question_result
+from .brief import correction_from_text
 from .case_models import (
-    CaseOperation, CaseRecord, CaseReference, CaseStage, CaseView, ContinueCase, OperationBinding,
-    ResetCase, RetryCase, ReviewCase, SavedReview, StartCase,
+    BriefCorrection, BriefEdit, BriefImpact, BriefPreview, CaseOperation, CaseRecord, CaseReference, CaseStage,
+    CaseView, ConfirmBrief, ContinueCase, OperationBinding, PrepareBrief, ResetCase, ResumeQuestions, RetryCase,
+    SavedReview, StartCase, UndoBriefPreview,
 )
 from .contracts import (
-    AnsweredQuestion, AnswerSubmission, IssuedRound, ListingSnapshot, QuestionInput,
+    AnsweredQuestion, AnswerSubmission, BriefChange, BriefProposal, IssuedRound, ListingSnapshot, OrderClarification, QuestionInput,
     QuestionResult, ResolvedRequirement, ReviewInput,
 )
 from .report import assemble_review, canonicalize_review_content, review_sent_evidence
@@ -24,18 +25,20 @@ from .report_models import (
     ReviewFailed, ReviewResult, SentReviewEvidence,
 )
 from .requirements import (
-    RequirementProjection, issue_requirement_plan, legacy_context_rows, recover_direct_legacy_requirement,
-    resolve_requirements,
+    RequirementProjection, issue_requirement_plan, legacy_context_rows, recover_direct_legacy_requirement, resolve_requirements,
     validate_submission_effect,
 )
 from .state import Store
 
 
 QuestionGenerator = Callable[[QuestionInput], Awaitable[QuestionResult]]
+BriefGenerator = Callable[[str, ListingSnapshot, list[str], str | None], Awaitable[BriefProposal]]
 ReviewImages = Mapping[str, tuple[str, bytes]]
 ReviewGenerator = Callable[[ReviewInput, ReviewImages], Awaitable[ReviewResult]]
-UserCommand = StartCase | ContinueCase | ReviewCase
+UserCommand = StartCase | ContinueCase | PrepareBrief | ConfirmBrief | BriefEdit | ResumeQuestions
 REVIEW_RESULT = TypeAdapter(ReviewResult)
+CURRENT_CANONICAL_REVIEW_VERSION = 7
+CURRENT_ORDER_CONFLICT_VERSION = 3
 INVALID_REVIEW = "The review could not be validated. Your answers are saved."
 REGENERATE_REVIEW = "This saved review needs to be regenerated. Your answers are saved."
 LEGACY_REPORT_FIELDS = frozenset({
@@ -95,7 +98,8 @@ def _input_fields(snapshot: ListingSnapshot, case: CaseView) -> dict:
     return {
         "case_id": case.case_id, "revision": case.revision, "snapshot": snapshot,
         "selected_option_ids": case.selected_option_ids, "buyer_context": case.buyer_context, "answers": answers,
-        "requirements": case.requirements,
+        "requirements": case.requirements, "order_clarifications": case.order_clarifications,
+        "brief_changes": case.brief_changes,
     }
 
 
@@ -129,7 +133,8 @@ def _resolved_view(
     return case.model_copy(update={
         "requirements": resolve_requirements(
             case.case_id, record.initial_requirements, case.rounds, buyer_context=case.buyer_context,
-            projection=projection,
+            selected_option_ids=case.selected_option_ids, order_clarifications=tuple(case.order_clarifications),
+            projection=projection, brief_changes=tuple(case.brief_changes),
         ),
     })
 
@@ -231,7 +236,7 @@ def _legacy_review_migration(
     return updated, saved.model_copy(update={"content": remapped})
 
 
-def _apply_submission(case: CaseView, submission: AnswerSubmission) -> CaseView:
+def _apply_submission(case: CaseView, submission: AnswerSubmission, snapshot: ListingSnapshot) -> CaseView:
     for index, round in enumerate(case.rounds):
         if round.round_id == submission.round_id:
             break
@@ -245,15 +250,64 @@ def _apply_submission(case: CaseView, submission: AnswerSubmission) -> CaseView:
     answers = [by_id[question.question_id] for question in round.questions]
     try:
         for question, answer in zip(round.questions, answers, strict=True):
-            validate_submission_effect(question, answer)
+            validate_submission_effect(question, answer, selected_option_ids=case.selected_option_ids, snapshot=snapshot)
     except ValueError as error:
         raise _invalid(str(error), case) from error
     if answers == round.answers:
         return case
     updated = round.model_copy(update={"answers": answers})
     return case.model_copy(update={
-        "revision": case.revision + 1, "rounds": [*case.rounds[:index], updated], "reason": None, "report": None,
+        "revision": case.revision + 1, "confirmed_revision": None, "rounds": [*case.rounds[:index], updated], "reason": None, "report": None,
+        "order_clarifications": [row for row in case.order_clarifications if row.after_round <= index],
+        "brief_changes": [row for row in case.brief_changes if row.after_round <= index],
+        "can_resume_questions": False,
     })
+
+
+def _apply_order_clarification(case: CaseView, command: PrepareBrief) -> CaseView:
+    selection = command.order_clarification
+    assert selection is not None
+    if not any(
+        row.order_conflict and row.requirement_id == selection.requirement_id and selection.option_id in row.option_ids
+        for row in case.requirements or []
+    ):
+        raise _invalid("Choose an open order-type conflict for this option.", case)
+    clarification = OrderClarification(
+        **selection.model_dump(), clarification_id=str(command.operation_id), revision=case.revision + 1,
+        after_round=sum(round.answers is not None for round in case.rounds),
+    )
+    return case.model_copy(update={
+        "revision": case.revision + 1, "confirmed_revision": None, "reason": None, "report": None,
+        "order_clarifications": [*case.order_clarifications, clarification],
+    })
+
+
+def _brief_impact(previous: CaseView, current: CaseView) -> BriefImpact:
+    before = {row.requirement_id: row for row in previous.requirements or []}
+    after = {row.requirement_id: row for row in current.requirements or []}
+    retained_rounds = {round.round_id for round in current.rounds}
+    changed, removed = [], []
+    for key, row in after.items():
+        prior = before.get(key)
+        scope = row.option_ids if prior is None or row.model_dump(exclude={"option_ids"}) != prior.model_dump(
+            exclude={"option_ids"},
+        ) else [option_id for option_id in row.option_ids if option_id not in prior.option_ids]
+        if scope:
+            changed.append(row.model_copy(update={"option_ids": scope}))
+    for key, row in before.items():
+        present = after.get(key)
+        scope = [option_id for option_id in row.option_ids if present is None or option_id not in present.option_ids]
+        if scope:
+            removed.append(row.model_copy(update={"option_ids": scope}))
+    return BriefImpact(
+        changed_requirements=changed,
+        removed_requirements=removed,
+        discarded_rounds=[round for round in previous.rounds if round.round_id not in retained_rounds],
+    )
+
+
+def _eligible_brief_phase(case: CaseView) -> bool:
+    return case.phase in {"awaiting_answers", "ready_for_review", "reviewed", "failed"}
 
 
 def _operation_result(case: CaseView) -> CaseView:
@@ -268,6 +322,8 @@ def _operation_result(case: CaseView) -> CaseView:
 def _failure(record: CaseRecord, code: str, message: str) -> CaseRecord:
     operation = record.view.last_operation.model_copy(update={"status": "failed", "code": code, "message": message})
     case = record.view.model_copy(update={"phase": "failed", "report": None, "reason": None, "last_operation": operation})
+    if code == "review_regeneration_required":
+        case = case.model_copy(update={"confirmed_revision": None})
     return record.model_copy(update={"view": case, "saved_review": None})
 
 
@@ -317,10 +373,14 @@ def _review_digest(
 
 
 class CaseWorkflow:
-    def __init__(self, store: Store, generate_questions: QuestionGenerator, generate_review: ReviewGenerator):
+    def __init__(
+        self, store: Store, generate_questions: QuestionGenerator, generate_review: ReviewGenerator,
+        generate_brief: BriefGenerator,
+    ):
         self.store = store
         self.generate_questions = generate_questions
         self.generate_review = generate_review
+        self.generate_brief = generate_brief
 
     def recover_saved_case(self) -> None:
         generation, snapshot, record, report, saved_review = self.store.workspace_for_recovery()
@@ -329,27 +389,31 @@ class CaseWorkflow:
         case = record.view
         operation = case.last_operation
         legacy = record.requirement_version is None
+        old_order_projection = record.order_conflict_version != CURRENT_ORDER_CONFLICT_VERSION
         try:
             upgraded = _upgrade_legacy_case(record) if legacy else record
             resolved = _resolved_view(upgraded, upgraded.view)
+            new_decisions = not legacy and resolved.requirements != case.requirements
+            if new_decisions:
+                if not _only_new_supplier_targets(case, resolved) and (
+                    not old_order_projection or not any(
+                        _only_new_supplier_targets(case, _resolved_view(record, case, projection=projection))
+                        for projection in ("before_buying_brief", "before_review_fixes", "before_order_conflicts")
+                    )
+                ):
+                    raise ValueError("The saved buyer decisions do not match the retained interview.")
+                upgraded = upgraded.model_copy(update={
+                    "view": resolved.model_copy(update={"confirmed_revision": None}),
+                })
         except (KeyError, ValueError) as error:
             raise sqlite3.DatabaseError("The saved buyer decisions could not be matched to the interview.") from error
-        decisions_changed = not legacy and resolved.requirements != case.requirements
-        if decisions_changed:
-            if not _only_new_supplier_targets(case, resolved):
-                # Accept changes only when the saved decisions match a historical replay.
-                if not any(
-                    _only_new_supplier_targets(case, _resolved_view(record, case, projection=projection))
-                    for projection in ("before_review_fixes", "before_order_conflicts")
-                ):
-                    raise sqlite3.DatabaseError("The saved buyer decisions do not match the retained interview.")
-            upgraded = record.model_copy(update={"view": resolved})
+        upgraded = upgraded.model_copy(update={"order_conflict_version": CURRENT_ORDER_CONFLICT_VERSION})
         if operation.status == "running":
             interrupted = _failure(upgraded, "analysis_failed", _interrupted(operation.stage))
             self._save(generation, record, interrupted)
             return
         if case.phase != "reviewed":
-            if legacy or decisions_changed or report is not None or saved_review is not None:
+            if legacy or new_decisions or old_order_projection or report is not None or saved_review is not None:
                 self._save(generation, record, upgraded)
             return
         if snapshot is None or case.snapshot_id != snapshot.snapshot_id or operation.stage != "review":
@@ -368,14 +432,17 @@ class CaseWorkflow:
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
             if (
                 (validated.version >= 5) != (inputs.requirements is not None)
-                or (validated.version == 6) != isinstance(validated.content, CanonicalReviewContent)
+                or (validated.version >= 6) != isinstance(validated.content, CanonicalReviewContent)
             ):
                 raise ValueError("The saved review has a mismatched requirement contract version.")
             images = self._review_images(inputs)
             digest = _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=validated.version)
             if validated.input_digest != digest:
                 raise ValueError("The saved review belongs to different case input or evidence.")
-            rebuilt = assemble_review(inputs, validated.content, sent_evidence=validated.sent_evidence)
+            rebuilt = assemble_review(
+                inputs, validated.content, sent_evidence=validated.sent_evidence,
+                historical_decision_labels=validated.version == 6,
+            )
             if validated.version < 4:
                 if (
                     not isinstance(report, dict) or report.keys() != LEGACY_REPORT_FIELDS | {"contract_version", "claims"}
@@ -397,12 +464,12 @@ class CaseWorkflow:
             failed = _failure(upgraded, "invalid_review", INVALID_REVIEW)
             self._save(generation, record, failed)
             return
-        if decisions_changed:
+        if new_decisions:
             failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
         version = max(validated.version, 4)
-        if inputs.requirements is not None and validated.version < 6:
+        if inputs.requirements is not None and validated.version < CURRENT_CANONICAL_REVIEW_VERSION:
             canonical = canonicalize_review_content(validated.content)
             try:
                 unchanged = canonical is not None and rebuilt == assemble_review(
@@ -415,8 +482,8 @@ class CaseWorkflow:
                 self._save(generation, record, failed)
                 return
             validated = validated.model_copy(update={"content": canonical})
-            version = 6
-        if version != validated.version:
+            version = CURRENT_CANONICAL_REVIEW_VERSION
+        if version != validated.version or old_order_projection:
             migrated = validated.model_copy(update={
                 "version": version,
                 "input_digest": _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=version),
@@ -454,54 +521,238 @@ class CaseWorkflow:
             last_operation=CaseOperation(operation_id=str(command.operation_id), stage="start", status="running"),
         )
         record = CaseRecord(
-            view=case, requirement_version=1,
+            view=case, requirement_version=1, order_conflict_version=CURRENT_ORDER_CONFLICT_VERSION,
             question_input=_question_input(snapshot, case, round_number=1),
         )
         self._save(generation, current, record, command=command, stage="start")
         return await self._run_questions(generation, record)
 
-    async def submit(self, command: ContinueCase | ReviewCase, stage: Literal["continue", "review"]) -> CaseView:
-        generation, snapshot, current = self.store.workspace()
-        if replay := self._replay(current, command, stage):
-            return replay
-        if current is None or snapshot is None or not _matches(current, command):
-            raise _obsolete(current.view if current is not None else None)
-
-        previous = current.view
-        case = _apply_submission(previous, command.submission) if command.submission is not None else previous
-        unchanged_submission = command.submission is not None and case is previous
-        open_round = bool(case.rounds and case.rounds[-1].answers is None)
-        if unchanged_submission and (stage == "continue" or open_round):
-            self._save(generation, current, current, command=command, stage=stage)
+    def prepare_brief(self, command: PrepareBrief) -> CaseView:
+        generation, record = self._command_case(command, "brief")
+        if isinstance(record, CaseView):
+            return record
+        previous = record.view
+        case = previous
+        if command.submission is not None:
+            case = _apply_submission(case, command.submission, self._command_snapshot(case))
+        if command.order_clarification is not None:
+            case = _apply_order_clarification(case, command)
+            case = self._close_dependent_questions(case, case.order_clarifications[-1].after_round)
+        if any(round.answers is None for round in case.rounds):
+            if case is previous and command.submission is not None:
+                self._save(generation, record, record, command=command, stage="brief")
+                return _operation_result(previous)
+            raise _invalid("Save or skip the open questions before reviewing the brief.", previous)
+        if case is previous and previous.phase in {"generating_review", "reviewed"}:
+            return _operation_result(previous)
+        if case is previous and previous.confirmed_revision == previous.revision:
             return _operation_result(previous)
 
-        operation_id = str(command.operation_id)
-        if stage == "review":
-            if open_round:
-                raise _invalid("Submit the open question round before requesting the review.", previous)
-            if case is previous and previous.last_operation.stage == "review" and (
-                previous.report is not None or previous.last_operation.status != "ready"
-            ):
-                self._save(generation, current, current, command=command, stage=stage)
-                return _operation_result(previous)
-            if current.initial_requirements is None and previous.phase == "failed" and previous.last_operation.stage == "start":
-                working = _upgrade_legacy_case(current.model_copy(update={"view": case}))
-            else:
-                working = current
-            case = _resolved_view(working, case)
-            review_input = _review_input(snapshot, case)
-            images = self._review_images(review_input)
-            case = case.model_copy(update={
-                "phase": "generating_review",
-                "last_operation": CaseOperation(operation_id=operation_id, stage="review", status="running"),
-            })
-            record = working.model_copy(update={
-                "view": case, "question_input": None, "review_input": review_input, "saved_review": None,
-            })
-            self._save(generation, current, record, command=command, stage=stage)
-            return await self._run_review(generation, record, images)
+        working = (
+            _upgrade_legacy_case(record)
+            if record.initial_requirements is None and previous.last_operation.stage == "start" and previous.phase == "failed"
+            else record
+        )
+        case = _resolved_view(working, case)
+        case = case.model_copy(update={
+            "phase": "ready_for_review",
+            "reason": None,
+            "brief_impact": _brief_impact(previous, case) if case.revision != previous.revision else previous.brief_impact,
+            "last_operation": CaseOperation(operation_id=str(command.operation_id), stage="brief", status="ready"),
+        })
+        settled = working.model_copy(update={
+            "view": case, "question_input": None, "review_input": None, "saved_review": None,
+        })
+        self._save(generation, record, settled, command=command, stage="brief")
+        return case
 
+    async def preview_correction(self, command: BriefCorrection) -> BriefPreview:
+        _, record, snapshot = self._editable_case(command)
+        try:
+            expected, question = correction_from_text(
+                command.text, snapshot, record.view.selected_option_ids, command.option_id,
+            )
+            proposal = expected
+            if question is None:
+                proposal = await self.generate_brief(command.text, snapshot, record.view.selected_option_ids, command.option_id)
+                if proposal != expected:
+                    raise ValueError("The proposed decision does not match your wording or option scope.")
+            self._editable_case(command)
+            working = _upgrade_legacy_case(record) if record.initial_requirements is None else record
+            if command.resolves_change_id is not None and proposal.kind == "unclear":
+                candidate = working.view
+            else:
+                candidate = self._corrected_view(working, f"preview-{command.revision}", command, proposal, question)
+        except QuestionGenerationError as error:
+            raise CaseCommandError(error.code, error.message, record.view) from None
+        except ValueError as error:
+            raise _invalid(str(error), record.view) from error
+        if question is None and any(
+            row.delivery_condition is not None and row.delivery_condition.latest_arrival is None
+            and any(entry.input_ref == f"brief:preview-{command.revision}" for entry in row.provenance)
+            for row in candidate.requirements or []
+        ):
+            question = "What is the latest arrival date for this custom order? Give an explicit date or set the delivery deadline first."
+        return BriefPreview(**_brief_impact(record.view, candidate).model_dump(), proposal=proposal, question=question)
+
+    def preview_undo(self, command: UndoBriefPreview) -> BriefPreview:
+        _, record, _ = self._editable_case(command)
+        candidate = self._undo_view(record, command.undo_change_id)
+        return BriefPreview(**_brief_impact(record.view, candidate).model_dump(), proposal=None)
+
+    def preview_answers(self, command: PrepareBrief) -> BriefImpact:
+        _, record, snapshot = self._editable_case(command)
+        if command.submission is None:
+            raise _invalid("Choose the answers to preview first.", record.view)
+        case = _resolved_view(record, _apply_submission(record.view, command.submission, snapshot))
+        return _brief_impact(record.view, case)
+
+    def edit_brief(self, command: BriefEdit) -> CaseView:
+        generation, record = self._command_case(command, "brief")
+        if isinstance(record, CaseView):
+            return record
+        _, _, snapshot = self._editable_case(command)
+        previous = record.view
+        working = _upgrade_legacy_case(record) if record.initial_requirements is None else record
+        try:
+            if command.undo_change_id is not None:
+                case = self._undo_view(working, command.undo_change_id)
+            else:
+                assert command.correction is not None and command.proposal is not None
+                expected, question = correction_from_text(
+                    command.correction.text, snapshot, previous.selected_option_ids, command.correction.option_id,
+                )
+                if command.proposal != expected:
+                    raise ValueError("Preview the correction again. Its order, date, or options did not match.")
+                case = self._corrected_view(working, str(command.operation_id), command.correction, expected, question)
+        except ValueError as error:
+            raise _invalid(str(error), previous) from error
+        case = case.model_copy(update={
+            "phase": "ready_for_review", "reason": None, "report": None, "confirmed_revision": None,
+            "brief_impact": _brief_impact(previous, case),
+            "last_operation": CaseOperation(operation_id=str(command.operation_id), stage="brief", status="ready"),
+        })
+        self._save(generation, record, working.model_copy(update={
+            "view": case, "question_input": None, "review_input": None, "saved_review": None,
+        }), command=command, stage="brief")
+        return case
+
+    def _editable_case(self, command: CaseReference) -> tuple[int, CaseRecord, ListingSnapshot]:
+        generation, snapshot, record = self.store.workspace()
+        if snapshot is None or record is None or not _matches(record, command):
+            raise _obsolete(record.view if record is not None else None)
+        if not _eligible_brief_phase(record.view):
+            raise _invalid("Wait for the current request before editing the buying brief.", record.view)
+        return generation, record, snapshot
+
+    def _corrected_view(
+        self, record: CaseRecord, change_id: str, correction: BriefCorrection, proposal: BriefProposal,
+        question: str | None,
+    ) -> CaseView:
+        case = record.view
+        resolves = correction.resolves_change_id
+        if resolves is not None:
+            original = next((
+                row for row in case.requirements or [] if row.status == "unresolved"
+                and row.provenance[0].input_ref == f"brief:{resolves}" and row.topic == "other"
+            ), None)
+            if original is None or proposal.kind == "unclear" or not set(original.option_ids).issuperset(proposal.option_ids):
+                raise _invalid("Give a clear correction within the open item's option scope.", case)
+        after_round = sum(round.answers is not None for round in case.rounds)
+        case = self._close_dependent_questions(case, after_round)
+        change = BriefChange(
+            change_id=change_id, after_round=after_round, revision=case.revision + 1, text=correction.text,
+            proposal=proposal, question=question, resolves_change_id=resolves,
+        )
+        return _resolved_view(record, case.model_copy(update={
+            "revision": change.revision, "brief_changes": [*case.brief_changes, change],
+        }))
+
+    def _undo_view(self, record: CaseRecord, change_id: str) -> CaseView:
+        case = record.view
+        events = [*case.order_clarifications, *case.brief_changes]
+        latest = max(reversed(events), key=lambda event: event.revision, default=None)
+        if latest is None or change_id != (latest.change_id if isinstance(latest, BriefChange) else latest.clarification_id):
+            raise _invalid("Only the latest correction can be undone.", case)
+        case = self._close_dependent_questions(case, latest.after_round)
+        return _resolved_view(record, case.model_copy(update={
+            "revision": case.revision + 1,
+            "brief_changes": [event for event in case.brief_changes if event.change_id != change_id],
+            "order_clarifications": [event for event in case.order_clarifications if event.clarification_id != change_id],
+        }))
+
+    @staticmethod
+    def _close_dependent_questions(case: CaseView, after_round: int) -> CaseView:
+        return case.model_copy(update={
+            "rounds": case.rounds[:after_round],
+            "can_resume_questions": case.can_resume_questions or after_round < len(case.rounds),
+        })
+
+    async def confirm_brief(self, command: ConfirmBrief) -> CaseView:
+        generation, record = self._command_case(command, "review")
+        if isinstance(record, CaseView):
+            return record
+        case = record.view
+        if case.confirmed_revision == case.revision:
+            self._save(generation, record, record, command=command, stage="review")
+            return _operation_result(case)
+        if case.phase != "ready_for_review" or any(round.answers is None for round in case.rounds):
+            raise _invalid("Open and review the current buying brief before confirming.", case)
+        snapshot = self._command_snapshot(case)
+        review_input = _review_input(snapshot, case)
+        images = self._review_images(review_input)
+        case = case.model_copy(update={
+            "confirmed_revision": case.revision,
+            "phase": "generating_review",
+            "last_operation": CaseOperation(operation_id=str(command.operation_id), stage="review", status="running"),
+        })
+        pending = record.model_copy(update={
+            "view": case, "question_input": None, "review_input": review_input, "saved_review": None,
+        })
+        self._save(generation, record, pending, command=command, stage="review")
+        return await self._run_review(generation, pending, images)
+
+    def _command_case(
+        self, command: ContinueCase | PrepareBrief | ConfirmBrief | BriefEdit | ResumeQuestions, stage: CaseStage,
+    ) -> tuple[int, CaseRecord | CaseView]:
+        generation, snapshot, current = self.store.workspace()
+        if replay := self._replay(current, command, stage):
+            return generation, replay
+        if current is None or snapshot is None or not _matches(current, command):
+            raise _obsolete(current.view if current is not None else None)
+        return generation, current
+
+    def _command_snapshot(self, case: CaseView) -> ListingSnapshot:
+        snapshot = self.store.snapshot()
+        if snapshot is None or snapshot.snapshot_id != case.snapshot_id:
+            raise _obsolete(case)
+        return snapshot
+
+    async def resume_questions(self, command: ResumeQuestions) -> CaseView:
+        generation, record = self._command_case(command, "continue")
+        if isinstance(record, CaseView):
+            return record
+        case = record.view
+        if not case.can_resume_questions or not _eligible_brief_phase(case) or len(case.rounds) >= 3:
+            raise _invalid("There is no question round to resume.", case)
+        case = case.model_copy(update={
+            "revision": case.revision + 1, "confirmed_revision": None, "report": None, "can_resume_questions": False,
+        })
+        return await self._request_next_round(generation, record, case, command)
+
+    async def submit(self, command: ContinueCase) -> CaseView:
+        generation, current = self._command_case(command, "continue")
+        if isinstance(current, CaseView):
+            return current
+        previous = current.view
+        case = _apply_submission(previous, command.submission, self._command_snapshot(previous))
+        stage = "continue"
+        if case is previous:
+            self._save(generation, current, current, command=command, stage=stage)
+            return _operation_result(previous)
+        operation_id = str(command.operation_id)
         case = _resolved_view(current, case)
+        case = case.model_copy(update={"brief_impact": _brief_impact(previous, case)})
         if len(case.rounds) == 3:
             case = case.model_copy(update={
                 "phase": "ready_for_review", "reason": "You have reached the three-round question limit.",
@@ -513,15 +764,21 @@ class CaseWorkflow:
             self._save(generation, current, settled, command=command, stage=stage)
             return case
 
+        return await self._request_next_round(generation, current, case, command)
+
+    async def _request_next_round(
+        self, generation: int, current: CaseRecord, case: CaseView, command: ContinueCase | ResumeQuestions,
+    ) -> CaseView:
         case = case.model_copy(update={
             "phase": "preparing_questions", "reason": None,
-            "last_operation": CaseOperation(operation_id=operation_id, stage="continue", status="running"),
+            "last_operation": CaseOperation(operation_id=str(command.operation_id), stage="continue", status="running"),
         })
+        snapshot = self._command_snapshot(case)
         question_input = _question_input(snapshot, case, round_number=len(case.rounds) + 1)
         record = current.model_copy(update={
             "view": case, "question_input": question_input, "review_input": None, "saved_review": None,
         })
-        self._save(generation, current, record, command=command, stage=stage)
+        self._save(generation, current, record, command=command, stage="continue")
         return await self._run_questions(generation, record)
 
     async def retry(self, command: RetryCase) -> CaseView:
@@ -534,6 +791,8 @@ class CaseWorkflow:
 
         operation = case.last_operation.model_copy(update={"status": "running", "code": None, "message": None})
         if operation.stage == "review":
+            if case.confirmed_revision != case.revision:
+                raise _invalid("Review and confirm your buying brief before generating a new report.", case)
             if snapshot is None or snapshot.snapshot_id != case.snapshot_id:
                 raise _obsolete(case)
             review_input = _review_input(snapshot, case)
@@ -619,6 +878,8 @@ class CaseWorkflow:
             })
             settled = record.model_copy(update={"initial_requirements": initial, "question_input": None})
             case = _resolved_view(settled, case)
+            if question_input.round_number == 1 and not record.view.rounds and record.view.brief_impact is None:
+                case = case.model_copy(update={"brief_impact": _brief_impact(record.view, case)})
             settled = settled.model_copy(update={"view": case})
         except QuestionGenerationError as error:
             settled = _failure(record, error.code, error.message)
@@ -652,7 +913,7 @@ class CaseWorkflow:
                 canonical = isinstance(result.content, CanonicalReviewContent)
                 if canonical != (inputs.requirements is not None):
                     raise ValueError("The report selections must follow the current buyer decision contract.")
-                version = 6 if canonical else 4
+                version = CURRENT_CANONICAL_REVIEW_VERSION if canonical else 4
                 digest = _review_digest(inputs, operation.operation_id, images, scope, version=version)
                 report = assemble_review(inputs, result.content, sent_evidence=scope)
                 if report != result.report:

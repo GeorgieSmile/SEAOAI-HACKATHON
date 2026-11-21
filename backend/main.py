@@ -17,11 +17,15 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse, Response
 
 from .ai import (
-    TranslationConfigurationError, build_question_client, build_translation_client, generate_questions, translate_listing,
+    TranslationConfigurationError, build_question_client, build_translation_client, generate_brief_proposal,
+    generate_questions, translate_listing,
 )
 from .archive import IntakeError, MAX_ZIP_BYTES, MiB
-from .case_models import ContinueCase, ResetCase, RetryCase, ReviewCase, StartCase
-from .case_workflow import CaseCommandError, CaseWorkflow, QuestionGenerator, ReviewGenerator
+from .case_models import (
+    BriefCorrection, BriefEdit, ConfirmBrief, ContinueCase, PrepareBrief, ResetCase, ResumeQuestions, RetryCase,
+    StartCase, UndoBriefPreview,
+)
+from .case_workflow import BriefGenerator, CaseCommandError, CaseWorkflow, QuestionGenerator, ReviewGenerator
 from .contracts import ContractModel, IntakeFailed, IntakeReady, ListingSnapshot
 from .intake import ParsedListing, parse_listing
 from .link_intake import LINK_HINT, fetch_listing, parse_product_link
@@ -125,6 +129,7 @@ def _translation(original: ListingSnapshot, output: ListingSnapshot) -> ListingS
 def create_app(
     db_path: Path | str | None = None, *, translator: Translator | None = None,
     question_generator: QuestionGenerator | None = None, review_generator: ReviewGenerator | None = None,
+    brief_generator: BriefGenerator | None = None,
 ) -> FastAPI:
     database = Path(db_path if db_path is not None else os.environ.get("PURCHASE_DATABASE_PATH", DEFAULT_DATABASE))
 
@@ -143,13 +148,14 @@ def create_app(
             if translator is None:
                 client = build_translation_client()
             app.state.translate = translator if translator is not None else partial(translate_listing, client=client)
-            if question_generator is None:
+            if question_generator is None or brief_generator is None:
                 question_client = build_question_client()
             if review_generator is None:
                 review_client = build_review_client()
             app.state.case_workflow = CaseWorkflow(
                 store, question_generator if question_generator is not None else partial(generate_questions, client=question_client),
                 review_generator if review_generator is not None else partial(generate_review, client=review_client),
+                brief_generator if brief_generator is not None else partial(generate_brief_proposal, client=question_client),
             )
             app.state.case_workflow.recover_saved_case()
             yield
@@ -326,11 +332,35 @@ def create_app(
 
     @application.post("/api/questions/continue")
     async def continue_questions(command: ContinueCase):
-        return {"status": "ready", "case": await application.state.case_workflow.submit(command, "continue")}
+        return {"status": "ready", "case": await application.state.case_workflow.submit(command)}
+
+    @application.post("/api/questions/resume")
+    async def resume_questions(command: ResumeQuestions):
+        return {"status": "ready", "case": await application.state.case_workflow.resume_questions(command)}
+
+    @application.post("/api/brief")
+    async def prepare_brief(command: PrepareBrief):
+        return {"status": "ready", "case": application.state.case_workflow.prepare_brief(command)}
+
+    @application.post("/api/brief/preview")
+    async def preview_brief(command: BriefCorrection):
+        return await application.state.case_workflow.preview_correction(command)
+
+    @application.post("/api/brief/preview-undo")
+    async def preview_undo(command: UndoBriefPreview):
+        return application.state.case_workflow.preview_undo(command)
+
+    @application.post("/api/brief/preview-answers")
+    async def preview_answers(command: PrepareBrief):
+        return application.state.case_workflow.preview_answers(command)
+
+    @application.post("/api/brief/edit")
+    async def edit_brief(command: BriefEdit):
+        return {"status": "ready", "case": application.state.case_workflow.edit_brief(command)}
 
     @application.post("/api/reviews")
-    async def review_case(command: ReviewCase):
-        return {"status": "ready", "case": await application.state.case_workflow.submit(command, "review")}
+    async def review_case(command: ConfirmBrief):
+        return {"status": "ready", "case": await application.state.case_workflow.confirm_brief(command)}
 
     @application.post("/api/case/retry")
     async def retry_case(command: RetryCase):

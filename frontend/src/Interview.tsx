@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { currentPurchaseReview, sameAnswer } from "./api";
-import type { Answer, CaseView, ListingSnapshot, Question, QuestionRound, RequirementEffect, Submission } from "./api";
+import { currentPurchaseReview, previewAnswerEdit, sameAnswer } from "./api";
+import type { Answer, BriefEdit, BriefImpact, CaseView, ListingSnapshot, OrderClarification, Question, QuestionRound, RequirementEffect, Submission } from "./api";
+import { BriefChanges, BriefSummary, BuyingBrief } from "./BuyingBrief";
 import { OptionImage } from "./Listing";
 import { PurchaseReview } from "./PurchaseReview";
 
@@ -214,9 +215,11 @@ function InterviewSelection({ snapshot, selected, context }: {
   );
 }
 
+export type InterviewScreen = "questions" | "brief" | "report";
+
 interface Props {
   hidden: boolean;
-  onReportVisibilityChange: (visible: boolean) => void;
+  onScreenChange: (screen: InterviewScreen) => void;
   snapshot: ListingSnapshot;
   selected: string[];
   context: string;
@@ -230,45 +233,63 @@ interface Props {
   onStartAgain: () => void;
   onRetry: () => void;
   onRefresh: () => void;
-  onSubmit: (submission: Submission | null, action: "continue" | "review") => Promise<CaseView | null>;
+  onSubmit: (submission: Submission | null, action: "continue" | "brief") => Promise<CaseView | null>;
+  onEditBrief: (edit: BriefEdit) => Promise<CaseView | null>;
+  onConfirmBrief: () => void;
+  onResumeQuestions: () => void;
+  onConfirmOrder: (clarification: OrderClarification) => void;
 }
 
 export function Interview({
-  hidden, onReportVisibilityChange, snapshot, selected, context, view, busy, blocked, workingMessage, error, needsRefresh,
-  onChangeSelection, onStartAgain, onRetry, onRefresh, onSubmit,
+  hidden, onScreenChange, snapshot, selected, context, view, busy, blocked, workingMessage, error, needsRefresh,
+  onChangeSelection, onStartAgain, onRetry, onRefresh, onSubmit, onConfirmOrder, onEditBrief,
+  onConfirmBrief, onResumeQuestions,
 }: Props) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [editingRound, setEditingRound] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [reopenBrief, setReopenBrief] = useState(false);
+  const [expandBrief, setExpandBrief] = useState(false);
+  const [answerPreview, setAnswerPreview] = useState<{
+    impact: BriefImpact; submission: Submission; action: "continue" | "brief"; revision: number;
+  } | null>(null);
+  const [previewingAnswers, setPreviewingAnswers] = useState(false);
   const [draftEdit, setDraftEdit] = useState<{ revision: number; text: string } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const errorAlert = useRef<HTMLParagraphElement>(null);
   const openRound = view?.rounds.find((round) => round.answers === null);
   const edited = view?.rounds.find((round) => round.round_id === editingRound);
   const activeRound = edited ?? openRound;
   const running = view?.last_operation?.status === "running";
-  const locked = busy || blocked || running || needsRefresh;
+  const locked = busy || blocked || running || needsRefresh || previewingAnswers;
   const failed = view?.last_operation?.status === "failed";
   const report = currentPurchaseReview(view);
   const reportInvalid = view?.phase === "reviewed" && !report;
-  const showReport = Boolean(report && !hidden && !activeRound && !locked);
-  const reviewPrepared = view?.phase === "ready_for_review"
-    && view.last_operation?.stage === "review" && view.last_operation.status === "ready";
+  const showReport = Boolean(report && !hidden && !activeRound && !locked && !reopenBrief);
+  const reviewPrepared = view?.phase === "ready_for_review";
+  const briefScreen = Boolean((reviewPrepared || reopenBrief || view?.phase === "generating_review") && !edited);
+  const screen = hidden ? "questions" : showReport ? "report" : briefScreen ? "brief" : "questions";
   const reviewFailed = failed && view?.last_operation?.stage === "review";
-  const needsRegeneration = reviewFailed && view?.last_operation?.code === "review_regeneration_required";
+  const needsRegeneration = reviewFailed && view.confirmed_revision !== view.revision;
 
   useEffect(() => {
-    onReportVisibilityChange(showReport);
-  }, [onReportVisibilityChange, showReport]);
+    onScreenChange(screen);
+  }, [onScreenChange, screen]);
 
   useEffect(() => {
     if (!hidden) heading.current?.focus();
-  }, [hidden, activeRound?.round_id, showReport]);
+  }, [hidden, activeRound?.round_id, screen]);
+
+  useEffect(() => {
+    if (!hidden && error) errorAlert.current?.focus();
+  }, [hidden, error]);
 
   function answerValue(round: QuestionRound, id: string) {
     return Object.hasOwn(drafts, id) ? drafts[id] : savedAnswer(round, id);
   }
 
   function setAnswer(id: string, answer: Draft) {
+    setAnswerPreview(null);
     setDrafts((existing) => ({ ...existing, [id]: answer }));
   }
 
@@ -280,19 +301,38 @@ export function Interview({
     submissionAnswer(question, answerValue(activeRound, question.question_id)).answer_text !== null
   )).length;
 
-  async function submitAnswers(action: "continue" | "review") {
+  async function submitAnswers(action: "continue" | "brief") {
     if (locked || invalidAnswer) return;
     setNotice("");
     const submission = activeRound ? {
       round_id: activeRound.round_id,
       answers: activeRound.questions.map((question) => submissionAnswer(question, answerValue(activeRound, question.question_id))),
     } : null;
+    if (edited && submission && view) {
+      setPreviewingAnswers(true);
+      try {
+        const impact = await previewAnswerEdit(view, submission);
+        setAnswerPreview({ impact, submission, action, revision: view.revision });
+      } catch (failure) {
+        setNotice(failure instanceof Error ? failure.message : "Could not preview the answer changes.");
+      } finally {
+        setPreviewingAnswers(false);
+      }
+      return;
+    }
+    await saveAnswers(submission, action);
+  }
+
+  async function saveAnswers(submission: Submission | null, action: "continue" | "brief") {
+    setAnswerPreview(null);
+    setReopenBrief(false);
+    setExpandBrief(false);
     const result = await onSubmit(submission, action);
     if (submission && result && result.case_id === view?.case_id && result.rounds.some((round) => (
       round.round_id === submission.round_id && round.answers !== null
       && submission.answers.every((answer) => sameAnswer(savedAnswer(round, answer.question_id), answer))
     ))) {
-      if (edited && action === "review" && result.rounds.some((round) => round.answers === null)) {
+      if (edited && action === "brief" && result.rounds.some((round) => round.answers === null)) {
         setNotice("Your earlier answers are unchanged. Answer or skip the open round to proceed to the purchase review.");
       }
       setEditingRound(null);
@@ -305,6 +345,7 @@ export function Interview({
   }
 
   function cancelEdit() {
+    setAnswerPreview(null);
     setEditingRound(null);
     if (edited) {
       setDrafts((existing) => {
@@ -323,6 +364,7 @@ export function Interview({
         .map((round) => <RoundHistory round={round} key={round.round_id} disabled={locked}
           onEdit={() => {
             setNotice("");
+            setAnswerPreview(null);
             setEditingRound(round.round_id);
           }} />)}
     </section>
@@ -331,14 +373,20 @@ export function Interview({
   return (
     <section className="interview-shell" aria-labelledby="interview-title" hidden={hidden}>
       <div className="interview-header">
-        <div><span className="eyebrow">Step {showReport ? "3 of 3 · Purchase review" : "2 of 3"}</span>
+        <div><span className="eyebrow">Step {showReport ? "3 of 3 · Purchase review" : briefScreen ? "2 of 3 · Buying brief" : "2 of 3 · Buyer questions"}</span>
         <h1 id="interview-title" tabIndex={-1} ref={heading}>
-          {showReport ? "Before you order" : reviewPrepared && !edited ? "Review inputs ready" : "Clarify your purchase"}
+          {showReport ? "Before you order" : briefScreen ? "Review buying brief" : "Clarify your purchase"}
         </h1>
-        <p className="muted">{showReport ? "Check each finding against its sources before contacting the seller." : "A few questions about what you need. Answer what you know, skip the rest."}</p></div>
+        <p className="muted">{showReport ? "Check each finding against its sources before contacting the seller."
+          : briefScreen ? "Check the requirements and open decisions before generating your review."
+            : "A few questions about what you need. Answer what you know, skip the rest."}</p></div>
         <div className="interview-actions">
           {showReport && history && <a className="button button-secondary" href="#history-title"
             onClick={() => document.getElementById("history-title")?.focus()}>Edit answers</a>}
+          {showReport && <button className="button button-secondary" type="button"
+            onClick={() => setReopenBrief(true)}>Review buying brief</button>}
+          {reopenBrief && report && <button className="button button-secondary" type="button"
+            onClick={() => setReopenBrief(false)}>Back to purchase review</button>}
           <button className="button button-secondary" type="button" disabled={!onChangeSelection} onClick={onChangeSelection}>
             Change options or context
           </button>
@@ -347,6 +395,7 @@ export function Interview({
 
       {showReport && report && view ? (
         <>
+          {error && <p className="interview-error" role="alert" tabIndex={-1} ref={errorAlert}>{error}</p>}
           <PurchaseReview key={report.revision} report={report} snapshot={snapshot}
             requirements={view.requirements}
             supplierDraft={draftEdit?.revision === report.revision ? draftEdit.text : report.supplier_draft}
@@ -359,7 +408,7 @@ export function Interview({
             {busy && <p className="interview-status" role="status">{workingMessage}</p>}
             {notice && !busy && <p className="interview-status" role="status">{notice}</p>}
             {(error || (failed && !busy)) && (
-              <p className="interview-error" role="alert">
+              <p className="interview-error" role="alert" tabIndex={-1} ref={errorAlert}>
                 {error || view?.last_operation?.message || "Could not prepare the next step."}
               </p>
             )}
@@ -375,6 +424,23 @@ export function Interview({
               </div>
             )}
             {history}
+            {view && activeRound && !edited && view.requirements != null && (
+              <BriefSummary view={view} snapshot={snapshot} expanded={expandBrief}
+                onToggle={() => setExpandBrief((expanded) => !expanded)} />
+            )}
+            {view && !edited && (briefScreen || expandBrief) && (
+              <BuyingBrief id={activeRound ? "expanded-buying-brief" : undefined} view={view} snapshot={snapshot} disabled={locked}
+                onConfirm={reviewPrepared && !activeRound ? onConfirmBrief : undefined}
+                onResume={view.can_resume_questions ? onResumeQuestions : undefined}
+                onEdit={async (edit) => {
+                const result = await onEditBrief(edit);
+                if (result) setReopenBrief(false);
+                return result;
+              }} onConfirmOrder={(order) => {
+                setReopenBrief(false);
+                onConfirmOrder(order);
+              }} />
+            )}
             {activeRound && (
               <form className="interview-round" onSubmit={(event) => {
                 event.preventDefault();
@@ -404,10 +470,12 @@ export function Interview({
                   ))}
                 </div>
                 <div className="interview-actions">
-                  <button type="submit" className="button button-primary" disabled={locked || invalidAnswer}>Continue</button>
+                  <button type="submit" className="button button-primary" disabled={locked || invalidAnswer}>
+                    {edited ? "Preview answer changes" : "Continue"}
+                  </button>
                   <button className="button button-secondary" type="button" disabled={locked || invalidAnswer}
-                    onClick={() => void submitAnswers("review")}>
-                    View purchase review
+                    onClick={() => void submitAnswers("brief")}>
+                    {edited ? "Preview and review brief" : "Review buying brief"}
                   </button>
                   <small className="answered">{answeredCount} of {activeRound.questions.length} answered</small>
                   {edited && <button className="button button-secondary" type="button"
@@ -415,21 +483,25 @@ export function Interview({
                 </div>
               </form>
             )}
-            {!activeRound && !busy && (view?.reason || reviewPrepared) && (
-              <p className="interview-status" role={reviewPrepared ? "status" : undefined}>
-                {view?.reason ?? "Your selected options and saved answers are ready for the purchase review."}
-              </p>
+            {answerPreview?.revision === view?.revision && answerPreview && (
+              <section className="review-panel brief-preview" aria-label="Preview of answer changes">
+                <h3>Preview answer changes</h3>
+                <BriefChanges impact={answerPreview.impact} snapshot={snapshot} selected={selected} />
+                <button type="button" className="button button-primary" disabled={locked}
+                  onClick={() => void saveAnswers(answerPreview.submission, answerPreview.action)}>Save answer changes</button>
+              </section>
             )}
-            {!activeRound && !locked && view && ((failed && !reviewFailed) || view.phase === "ready_for_review") && (
+            {!activeRound && !busy && view?.reason && <p className="interview-status">{view.reason}</p>}
+            {!activeRound && !locked && view && failed && (!reviewFailed || needsRegeneration) && (
               <div className="interview-actions">
                 <button className="button button-primary" type="button"
-                  onClick={() => void onSubmit(null, "review")}>View purchase review</button>
+                  onClick={() => void onSubmit(null, "brief")}>Review buying brief</button>
               </div>
             )}
-            {failed && !locked && (
+            {failed && !locked && !needsRegeneration && (
               <div className="interview-actions">
                 <button className={`button ${reviewFailed ? "button-primary" : "button-secondary"}`} type="button" onClick={onRetry}>
-                  {needsRegeneration ? "Regenerate report" : reviewFailed ? "Retry purchase review" : "Retry last request"}
+                  {reviewFailed ? "Retry purchase review" : "Retry last request"}
                 </button>
               </div>
             )}

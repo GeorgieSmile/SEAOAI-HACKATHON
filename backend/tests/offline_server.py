@@ -2,15 +2,18 @@
 
 import argparse
 from pathlib import Path
+import re
 from tempfile import TemporaryDirectory
 
 import uvicorn
 
+from backend.brief import correction_from_text
 from backend.case_workflow import ReviewImages
 from backend.contracts import ListingSnapshot, QuestionInput, QuestionResult, ReviewInput
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
 from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewReady
+from backend.supplier_targets import OrderTarget, parse_arrival_date, supplier_target_from_answer
 
 
 ORDER_PROMPT = "Would you consider a custom order?"
@@ -39,6 +42,27 @@ async def offline_questions(inputs: QuestionInput) -> QuestionResult:
     scope = {"option_ids": inputs.selected_option_ids, "source_ids": []}
     if inputs.round_number == 1:
         context = inputs.buyer_context.strip()
+        structured = []
+        for statement in re.split(r"(?<=[.!?])\s+", context):
+            order = supplier_target_from_answer(statement, "customization", "order_type")
+            if isinstance(order, OrderTarget):
+                topic, facet = "customization", "order_type"
+            elif re.match(r"All (?:two|three|options) must arrive by ", statement, re.IGNORECASE) and parse_arrival_date(
+                statement.split(" by ", 1)[-1]
+            ):
+                topic, facet = "deadline", "delivery_deadline"
+            else:
+                break
+            structured.append({
+                "statement": statement, "quote": statement, "option_ids": inputs.selected_option_ids,
+                "topic": topic, "buyer_facet": facet,
+            })
+        else:
+            if structured:
+                return QuestionResult.model_validate({
+                    "reason": "Review the saved order and delivery requirements.",
+                    "context_requirements": structured, "questions": [],
+                })
         return QuestionResult.model_validate({
             "reason": "Identify buyer requirements that would affect which options to review.",
             "context_requirements": [{
@@ -59,7 +83,7 @@ async def offline_questions(inputs: QuestionInput) -> QuestionResult:
                  "choices": [], "choice_effects": []},
             ],
         })
-    if inputs.round_number == 2 and inputs.answers[0].answer_text == CUSTOM_ORDER:
+    if inputs.round_number == 2 and inputs.answers and inputs.answers[0].answer_text == CUSTOM_ORDER:
         return QuestionResult.model_validate({
             "reason": "Clarify the buyer's custom-order requirements.",
             "questions": [
@@ -178,9 +202,13 @@ async def offline_review(inputs: ReviewInput, images: ReviewImages) -> ReviewRea
                        content=content, sent_evidence=evidence)
 
 
+async def offline_brief(text, snapshot, selected, option_id):
+    return correction_from_text(text, snapshot, selected, option_id)[0]
+
+
 def run(database: Path, port: int) -> None:
     app = create_app(database, translator=offline_translation, question_generator=offline_questions,
-                     review_generator=offline_review)
+                     review_generator=offline_review, brief_generator=offline_brief)
     uvicorn.run(app, host="127.0.0.1", port=port)
 
 

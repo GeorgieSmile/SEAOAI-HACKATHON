@@ -54,6 +54,8 @@ splits. Use only active requirement_id values in requirement_ids and stay within
 of every linked row. Keep differing dates, methods, and order terms in their correct scopes.
 Preserve independent decisions that share a topic, such as decoration method and surface finish.
 A supplier_target supports a specific seller question only in its active requirement's scope.
+An active delivery_condition allows custom ordering only by its recorded arrival cutoff.
+Link customization checks to that scoped requirement so the server can render the cutoff.
 
 For an optional buyer-decision finding, choose decide_preference and set decision_id to the
 exact requirement_id of one unresolved ledger row. Set topic and option_ids to that row's

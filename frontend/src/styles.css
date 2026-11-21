@@ -882,6 +882,13 @@ fieldset {
 .requirement-history li + li { margin-top: 8px; }
 .requirement-history blockquote { margin: 3px 0 0; padding-left: 8px; border-left: 2px solid var(--line); white-space: pre-wrap; }
 
+.order-clarification-option { margin-top: 6px; }
+.order-clarification-quotes { display: grid; gap: 8px; margin-block: 12px; }
+.order-clarification-quotes blockquote { margin: 0; padding-left: 12px; border-left: 2px solid var(--line); white-space: pre-wrap; }
+.order-clarification-quotes footer { font-size: .85rem; color: var(--muted); }
+.order-clarification form { display: grid; justify-items: start; gap: 14px; margin-top: 12px; }
+.order-clarification .interview-question { width: 100%; }
+
 .review-no-comparisons { margin-top: 12px; }
 .review-no-comparisons ul { margin-bottom: 0; padding-left: 20px; }
 
@@ -962,6 +969,7 @@ fieldset {
 }
 
 .linked-option { display: block; color: var(--green); font-size: .85rem; }
+
 
 /* Proofly workspace */
 .selection-jump { display: none; }
@@ -1058,3 +1066,35 @@ fieldset {
 @media (max-width: 400px) {
   .header-actions .button { padding-inline: 9px; font-size: .875rem; }
 }
+
+.buying-brief, .brief-editor, .brief-preview, .brief-changes {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.brief-editor label { display: grid; gap: 6px; min-width: 0; }
+.brief-editor textarea, .brief-editor select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--paper, white);
+  color: inherit;
+  font: inherit;
+}
+
+.brief-changes { margin-block: 8px; overflow-wrap: anywhere; }
+.brief-changes ul { margin: 0; padding-inline-start: 20px; }
+.brief-changes li + li { margin-top: 6px; }
+.brief-changes li span { display: block; }
+.brief-preview > button { justify-self: start; }
+
+
+.brief-summary { display: grid; gap: 12px; justify-items: start; }
+.brief-summary ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.brief-summary li { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.brief-summary small { color: var(--muted); }
+.brief-shared { margin-bottom: 12px; }
+.brief-shared h3 { margin-bottom: 8px; }
