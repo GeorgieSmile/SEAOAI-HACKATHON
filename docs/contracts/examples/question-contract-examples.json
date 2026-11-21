@@ -1,0 +1,711 @@
+{
+  "example_only": true,
+  "provenance": "Hand-written contract traces for test harnesses. Steps show request plus expected transitions, not full HTTP responses or model output. Question text is illustrative and must never become a fixed questionnaire or enter a model prompt as an answer key.",
+  "snapshot_fixture": "report-contract-example.json#/input/snapshot",
+  "cases": [
+    {
+      "id": "prepare-complete",
+      "name": "Enough buyer context; no clarification questions",
+      "case_id": "prepare-complete",
+      "start": {
+        "operation_id": "prepare-complete-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand. Screen printing is required. 720 ml is required. Cold drinks only.",
+        "previous_case": null
+      },
+      "first_round": null,
+      "steps": [
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "prepare-complete-op-1",
+            "case_id": "prepare-complete",
+            "revision": 0,
+            "submission": null
+          },
+          "expected_revision": 0
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "prepare-complete",
+        "revision": 0,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand. Screen printing is required. 720 ml is required. Cold drinks only.",
+        "answers": []
+      },
+      "expected_review_properties": [
+        "Skip the question screen. Derive stated requirements from context.",
+        "Keep screen printing unconfirmed for the selected options and keep the listing capacity discrepancy.",
+        "No questions does not mean approval or no findings."
+      ]
+    },
+    {
+      "id": "prepare-partial",
+      "name": "Known cold-drink use; ask only missing preferences; partial answer",
+      "case_id": "prepare-partial",
+      "start": {
+        "operation_id": "prepare-partial-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand. Cold drinks only.",
+        "previous_case": null
+      },
+      "first_round": {
+        "round_id": "round-1",
+        "round_number": 1,
+        "reason": "Ask only about unanswered buyer requirements that change the review; product facts remain evidence questions.",
+        "questions": [
+          {
+            "question_id": "q-finish",
+            "prompt": "Is screen printing required, or are applied graphics acceptable?",
+            "why_ask": "Options A and B use applied-picture wording. Your acceptable finish changes which supplier confirmations are needed; the names alone do not establish the process.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "name-v0",
+              "name-v1",
+              "name-v6",
+              "customization-menu"
+            ],
+            "choices": [
+              "Applied graphics are acceptable; screen printing is not required.",
+              "Screen printing is required."
+            ]
+          },
+          {
+            "question_id": "q-capacity",
+            "prompt": "Do you require an exact capacity?",
+            "why_ask": "The listing selector states 720 ml. Your exact capacity requirement changes which specification the supplier must confirm; the selector alone does not establish the delivered volume.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "capacity-selector"
+            ],
+            "choices": [
+              "720 ml is required.",
+              "No exact capacity requirement."
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "prepare-partial-op-1",
+            "case_id": "prepare-partial",
+            "revision": 0,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": "Screen printing is required."
+                },
+                {
+                  "question_id": "q-capacity",
+                  "answer_text": "   "
+                }
+              ]
+            }
+          },
+          "expected_revision": 1
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "prepare-partial",
+        "revision": 1,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand. Cold drinks only.",
+        "answers": [
+          {
+            "question_id": "q-finish",
+            "question_text": "Is screen printing required, or are applied graphics acceptable?",
+            "answer_text": "Screen printing is required."
+          },
+          {
+            "question_id": "q-capacity",
+            "question_text": "Do you require an exact capacity?",
+            "answer_text": null
+          }
+        ]
+      },
+      "expected_review_properties": [
+        "Do not ask drink temperature again.",
+        "Screen-print requirement comes from answer:q-finish; cold use comes from context.",
+        "Capacity requirement remains open; neither 720 nor 750 ml becomes the buyer requirement."
+      ]
+    },
+    {
+      "id": "prepare-skipped",
+      "name": "Resale only; discover issues and skip all questions",
+      "case_id": "prepare-skipped",
+      "start": {
+        "operation_id": "prepare-skipped-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "previous_case": null
+      },
+      "first_round": {
+        "round_id": "round-1",
+        "round_number": 1,
+        "reason": "Ask only about unanswered buyer requirements that change the review; product facts remain evidence questions.",
+        "questions": [
+          {
+            "question_id": "q-finish",
+            "prompt": "Is screen printing required, or are applied graphics acceptable?",
+            "why_ask": "Options A and B use applied-picture wording. Your acceptable finish changes which supplier confirmations are needed; the names alone do not establish the process.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "name-v0",
+              "name-v1",
+              "name-v6",
+              "customization-menu"
+            ],
+            "choices": [
+              "Applied graphics are acceptable; screen printing is not required.",
+              "Screen printing is required."
+            ]
+          },
+          {
+            "question_id": "q-capacity",
+            "prompt": "Do you require an exact capacity?",
+            "why_ask": "The listing selector states 720 ml. Your exact capacity requirement changes which specification the supplier must confirm; the selector alone does not establish the delivered volume.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "capacity-selector"
+            ],
+            "choices": [
+              "720 ml is required.",
+              "No exact capacity requirement."
+            ]
+          },
+          {
+            "question_id": "q-use",
+            "prompt": "What drink conditions should this review consider?",
+            "why_ask": "The listing describes a PP lid as well as the steel body. Drink conditions affect the use information and supporting evidence to request; they do not prove product suitability.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "lid",
+              "interior",
+              "dmsc-food-contact"
+            ],
+            "choices": [
+              "Cold drinks only.",
+              "Includes hot drinks."
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "prepare-skipped-op-1",
+            "case_id": "prepare-skipped",
+            "revision": 0,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": null
+                },
+                {
+                  "question_id": "q-capacity",
+                  "answer_text": null
+                },
+                {
+                  "question_id": "q-use",
+                  "answer_text": null
+                }
+              ]
+            }
+          },
+          "expected_revision": 1
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "prepare-skipped",
+        "revision": 1,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "answers": [
+          {
+            "question_id": "q-finish",
+            "question_text": "Is screen printing required, or are applied graphics acceptable?",
+            "answer_text": null
+          },
+          {
+            "question_id": "q-capacity",
+            "question_text": "Do you require an exact capacity?",
+            "answer_text": null
+          },
+          {
+            "question_id": "q-use",
+            "question_text": "What drink conditions should this review consider?",
+            "answer_text": null
+          }
+        ]
+      },
+      "expected_review_properties": [
+        "No screen-print, exact-capacity or temperature requirement may be invented.",
+        "Applied-picture wording remains a discovered issue with buyer preference open.",
+        "Material/supporting-evidence gaps remain in review even though answers are unknown."
+      ],
+      "report_fixture": "linked-skip"
+    },
+    {
+      "id": "adaptive-screen",
+      "name": "Screen printing leads to a dependent question in round two",
+      "case_id": "adaptive-screen",
+      "start": {
+        "operation_id": "adaptive-screen-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "previous_case": null
+      },
+      "first_round": {
+        "round_id": "round-1",
+        "round_number": 1,
+        "reason": "Finish and drink use can independently change the review.",
+        "questions": [
+          {
+            "question_id": "q-finish",
+            "prompt": "Is screen printing required, or are applied graphics acceptable?",
+            "why_ask": "Options A and B use applied-picture wording. Your acceptable finish changes which supplier confirmations are needed; the names alone do not establish the process.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "name-v0",
+              "name-v1",
+              "name-v6",
+              "customization-menu"
+            ],
+            "choices": [
+              "Applied graphics are acceptable; screen printing is not required.",
+              "Screen printing is required."
+            ]
+          },
+          {
+            "question_id": "q-use",
+            "prompt": "What drink conditions should this review consider?",
+            "why_ask": "The listing describes a PP lid as well as the steel body. Drink conditions affect the use information and supporting evidence to request; they do not prove product suitability.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "lid",
+              "interior",
+              "dmsc-food-contact"
+            ],
+            "choices": [
+              "Cold drinks only.",
+              "Includes hot drinks."
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "action": "continue",
+          "request": {
+            "operation_id": "adaptive-screen-op-1",
+            "case_id": "adaptive-screen",
+            "revision": 0,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": "Screen printing is required."
+                },
+                {
+                  "question_id": "q-use",
+                  "answer_text": "Includes hot drinks."
+                }
+              ]
+            }
+          },
+          "expected_revision": 1,
+          "expected_next_round": {
+            "round_id": "round-2",
+            "round_number": 2,
+            "reason": "The buyer needs screen printing and the listing offers it as a customization method.",
+            "questions": [
+              {
+                "question_id": "q-custom",
+                "prompt": "Would you consider custom screen printing, or only the ready-made options?",
+                "why_ask": "You require screen printing and the shop lists it as a customization method. This affects what to ask the seller.",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ],
+                "source_ids": [
+                  "customization-menu"
+                ],
+                "choices": [
+                  "Ready-made options only.",
+                  "Custom printing is acceptable."
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "action": "restart",
+          "expected_revision": 1,
+          "expected_round_ids": [
+            "round-1",
+            "round-2"
+          ],
+          "expected_open_round_id": "round-2"
+        },
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "adaptive-screen-op-2",
+            "case_id": "adaptive-screen",
+            "revision": 1,
+            "submission": {
+              "round_id": "round-2",
+              "answers": [
+                {
+                  "question_id": "q-custom",
+                  "answer_text": "Ready-made options only."
+                }
+              ]
+            }
+          },
+          "expected_revision": 2
+        },
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "adaptive-screen-op-3",
+            "case_id": "adaptive-screen",
+            "revision": 2,
+            "submission": {
+              "round_id": "round-2",
+              "answers": [
+                {
+                  "question_id": "q-custom",
+                  "answer_text": "Custom printing is acceptable."
+                }
+              ]
+            }
+          },
+          "expected_revision": 3
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "adaptive-screen",
+        "revision": 3,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "answers": [
+          {
+            "question_id": "q-finish",
+            "question_text": "Is screen printing required, or are applied graphics acceptable?",
+            "answer_text": "Screen printing is required."
+          },
+          {
+            "question_id": "q-use",
+            "question_text": "What drink conditions should this review consider?",
+            "answer_text": "Includes hot drinks."
+          },
+          {
+            "question_id": "q-custom",
+            "question_text": "Would you consider custom screen printing, or only the ready-made options?",
+            "answer_text": "Custom printing is acceptable."
+          }
+        ]
+      },
+      "expected_review_properties": [
+        "First report asks only about ready-made SKUs. Second adds a custom-printing path and keeps the ready-made finish unconfirmed.",
+        "Loading the saved case after restart does not issue another round or alter SKU/image scope."
+      ]
+    },
+    {
+      "id": "adaptive-edit",
+      "name": "Changing round one replaces the dependent round without reusing the old answer",
+      "case_id": "adaptive-edit",
+      "start": {
+        "operation_id": "adaptive-edit-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "previous_case": null
+      },
+      "first_round": {
+        "round_id": "round-1",
+        "round_number": 1,
+        "reason": "Finish and drink use can independently change the review.",
+        "questions": [
+          {
+            "question_id": "q-finish",
+            "prompt": "Is screen printing required, or are applied graphics acceptable?",
+            "why_ask": "Options A and B use applied-picture wording. Your acceptable finish changes which supplier confirmations are needed; the names alone do not establish the process.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "name-v0",
+              "name-v1",
+              "name-v6",
+              "customization-menu"
+            ],
+            "choices": [
+              "Applied graphics are acceptable; screen printing is not required.",
+              "Screen printing is required."
+            ]
+          },
+          {
+            "question_id": "q-use",
+            "prompt": "What drink conditions should this review consider?",
+            "why_ask": "The listing describes a PP lid as well as the steel body. Drink conditions affect the use information and supporting evidence to request; they do not prove product suitability.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "lid",
+              "interior",
+              "dmsc-food-contact"
+            ],
+            "choices": [
+              "Cold drinks only.",
+              "Includes hot drinks."
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "action": "continue",
+          "request": {
+            "operation_id": "adaptive-edit-op-1",
+            "case_id": "adaptive-edit",
+            "revision": 0,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": "Screen printing is required."
+                },
+                {
+                  "question_id": "q-use",
+                  "answer_text": "Includes hot drinks."
+                }
+              ]
+            }
+          },
+          "expected_revision": 1,
+          "expected_next_round": {
+            "round_id": "round-2",
+            "round_number": 2,
+            "reason": "The buyer needs screen printing and the listing offers it as a customization method.",
+            "questions": [
+              {
+                "question_id": "q-custom",
+                "prompt": "Would you consider custom screen printing, or only the ready-made options?",
+                "why_ask": "You require screen printing and the shop lists it as a customization method. This affects what to ask the seller.",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ],
+                "source_ids": [
+                  "customization-menu"
+                ],
+                "choices": [
+                  "Ready-made options only.",
+                  "Custom printing is acceptable."
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "adaptive-edit-op-2",
+            "case_id": "adaptive-edit",
+            "revision": 1,
+            "submission": {
+              "round_id": "round-2",
+              "answers": [
+                {
+                  "question_id": "q-custom",
+                  "answer_text": "Ready-made options only."
+                }
+              ]
+            }
+          },
+          "expected_revision": 2
+        },
+        {
+          "action": "continue",
+          "request": {
+            "operation_id": "adaptive-edit-op-3",
+            "case_id": "adaptive-edit",
+            "revision": 2,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": "Applied graphics are acceptable."
+                },
+                {
+                  "question_id": "q-use",
+                  "answer_text": "Includes hot drinks."
+                }
+              ]
+            }
+          },
+          "expected_revision": 3,
+          "expected_next_round": {
+            "round_id": "round-2-after-edit",
+            "round_number": 2,
+            "reason": "The buyer accepts applied graphics. Check whether the listed capacity matters before ordering.",
+            "questions": [
+              {
+                "question_id": "q-capacity",
+                "prompt": "Do you require an exact capacity?",
+                "why_ask": "The listing selector states 720 ml. Your exact capacity requirement changes which specification the supplier must confirm; the selector alone does not establish the delivered volume.",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ],
+                "source_ids": [
+                  "capacity-selector"
+                ],
+                "choices": [
+                  "720 ml is required.",
+                  "No exact capacity requirement."
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "adaptive-edit-op-4",
+            "case_id": "adaptive-edit",
+            "revision": 3,
+            "submission": {
+              "round_id": "round-2-after-edit",
+              "answers": [
+                {
+                  "question_id": "q-capacity",
+                  "answer_text": null
+                }
+              ]
+            }
+          },
+          "expected_revision": 4
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "adaptive-edit",
+        "revision": 4,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "answers": [
+          {
+            "question_id": "q-finish",
+            "question_text": "Is screen printing required, or are applied graphics acceptable?",
+            "answer_text": "Applied graphics are acceptable."
+          },
+          {
+            "question_id": "q-use",
+            "question_text": "What drink conditions should this review consider?",
+            "answer_text": "Includes hot drinks."
+          },
+          {
+            "question_id": "q-capacity",
+            "question_text": "Do you require an exact capacity?",
+            "answer_text": null
+          }
+        ]
+      },
+      "expected_review_properties": [
+        "No custom-print answer in the report after it was invalidated. Applied graphics are acceptable. Skipped capacity remains unknown."
+      ]
+    }
+  ]
+}

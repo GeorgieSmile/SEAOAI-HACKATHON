@@ -1,0 +1,26 @@
+{
+  "source_url": "https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639",
+  "original_saved_html_sha256": "4157412516bb441fc4c2285cc85632a332d2a830626bb6d6b9179f8e7bf22e54",
+  "listing_zip_sha256": "79b3a9813e03dded212b078325a5935f72621e3cdc60f92212d9bf805d452e4d",
+  "changes": [
+    "Product container #ttp-product retained; off-product wrapper/navigation/debug/tracking and admin-only/User IP nodes excluded",
+    "Executable scripts/styles/embedded active content/event handlers/forms actions removed; original AliProductInfo.skuMap copied verbatim as data into one inert application/json block #source-sku-map",
+    "Non-SKU inputs and non-product attributes removed; local image paths changed to listing_files/",
+    "Product h1, 12 original SKU labels, all 40 attribute rows and option-image bytes compared to original",
+    "SKU map in HTML compared as JSON object with original AliProductInfo.skuMap; inventory relation keys separately compared, not fabricated"
+  ],
+  "removed_tags": {
+    "script": 6,
+    "style": 3
+  },
+  "preserved_option_count": 12,
+  "preserved_property_count": 40,
+  "asset_count": 45,
+  "limits": [
+    "Derived product-only saved page, not byte-identical full browser save",
+    "This proves fixture fidelity only, not application parser or model quality",
+    "Full remote-resolution option images were not fetched; all 12 local option images remain 150x150"
+  ],
+  "source_sku_map_sha256": "25b626b5ed057276351e3506c08f8b217b07afeb5e10a544fcfd655f57d60538",
+  "sku_map_block_id": "source-sku-map"
+}

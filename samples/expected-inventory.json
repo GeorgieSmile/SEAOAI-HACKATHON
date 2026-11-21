@@ -1,0 +1,662 @@
+{
+  "kind": "Observed source inventory, not model answers or importer implementation",
+  "title": "高级感大容量冰霸杯不锈钢保温杯学生卡通水杯吸管杯杯子批发",
+  "options": [
+    {
+      "name_original": "暮色316-贴画粉蓝",
+      "data_sku": "暮色316-贴画粉蓝",
+      "image": "listing_files/O1CN018dyUxF1kvGSeV5abz_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "e7962b8573a7f096f5b9b1aa979e27b2799355c43a049166a4e9be0185d70a54"
+    },
+    {
+      "name_original": "暮色316-贴画黑白",
+      "data_sku": "暮色316-贴画黑白",
+      "image": "listing_files/O1CN01MfjGcN1kvGSegVDs3_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "9d0b16d42317485f88e3bcdfddc4bac54e4f3030ab6912b9cfa5bc15b444ffaa"
+    },
+    {
+      "name_original": "暮色316-贴画黑粉",
+      "data_sku": "暮色316-贴画黑粉",
+      "image": "listing_files/O1CN01JAVXdA1kvGSeygY4i_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "65280479f893ba11aad0a27cc314997fcccb547adaf12bb3ad69e3cc3d97f338"
+    },
+    {
+      "name_original": "暮色316-贴画黑色",
+      "data_sku": "暮色316-贴画黑色",
+      "image": "listing_files/O1CN01HnOf1f1kvGSeVXH1u_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "63c98a6632d7ca989a66f447243b21ac06ff8ff0310d72a794dd3c4ec763f84f"
+    },
+    {
+      "name_original": "暮色316-贴画蓝白",
+      "data_sku": "暮色316-贴画蓝白",
+      "image": "listing_files/O1CN01UhH5Y01kvGSeVVrjr_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "f54a8dd686137dee656296b3bed1b1b29441c802891150f0944c0b7e755c96c8"
+    },
+    {
+      "name_original": "暮色316-贴画蓝黄",
+      "data_sku": "暮色316-贴画蓝黄",
+      "image": "listing_files/O1CN01b2gp821kvGSeVZxR6_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "c17545ae8a95943a5bee41d786178f5961a5ffd8c155c6b485a6cc48fe9720ab"
+    },
+    {
+      "name_original": "暮色316-字母粉蓝",
+      "data_sku": "暮色316-字母粉蓝",
+      "image": "listing_files/O1CN01XbJNBD1kvGSeoi5zC_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "d2793f2338f3d7540519ad6574b74a17c1295de2cec7faa5816fd98cf2e0f68c"
+    },
+    {
+      "name_original": "暮色316-字母黑白",
+      "data_sku": "暮色316-字母黑白",
+      "image": "listing_files/O1CN01IYWzJL1kvGSeVJ5Fl_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "c6ce6ba7a62833c1021edfe57e54b241a51fcbe7887eb2b8ee7bd3d671ed11b7"
+    },
+    {
+      "name_original": "暮色316-字母黑粉",
+      "data_sku": "暮色316-字母黑粉",
+      "image": "listing_files/O1CN01FAMyBZ1kvGSfCQy2B_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "be15696aefea74c7ee9477fd015574914082d9f29a89fe0a82c8fd06af542885"
+    },
+    {
+      "name_original": "暮色316-字母黑色",
+      "data_sku": "暮色316-字母黑色",
+      "image": "listing_files/O1CN01S6SKF51kvGSf69a4j_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "006c1907e40570a2c73d8ac4a7ddb02b078f58a6931fac4b8bc776e3ee445df2"
+    },
+    {
+      "name_original": "暮色316-字母蓝白",
+      "data_sku": "暮色316-字母蓝白",
+      "image": "listing_files/O1CN01JhboRQ1kvGSg5FSel_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "4210855a55203ddd9c08456dd9ce35b9915f5f626670c0fe65a6f5cbea412134"
+    },
+    {
+      "name_original": "暮色316-字母蓝黄",
+      "data_sku": "暮色316-字母蓝黄",
+      "image": "listing_files/O1CN01Zl2Gz91kvGSeVl2Lx_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+      "image_sha256": "e8ae9b0d193ca8799b2f11cc39aef3545445110289a58628c73d5f2dbad31903"
+    }
+  ],
+  "shared_selector": "720ml",
+  "sku_relations_from_original_json": [
+    "暮色316-字母粉蓝>720ml",
+    "暮色316-字母蓝白>720ml",
+    "暮色316-字母蓝黄>720ml",
+    "暮色316-字母黑白>720ml",
+    "暮色316-字母黑粉>720ml",
+    "暮色316-字母黑色>720ml",
+    "暮色316-贴画粉蓝>720ml",
+    "暮色316-贴画蓝白>720ml",
+    "暮色316-贴画蓝黄>720ml",
+    "暮色316-贴画黑白>720ml",
+    "暮色316-贴画黑粉>720ml",
+    "暮色316-贴画黑色>720ml"
+  ],
+  "properties": [
+    {
+      "label": "内胆材质",
+      "value": "316不锈钢"
+    },
+    {
+      "label": "品牌",
+      "value": "其他"
+    },
+    {
+      "label": "功能",
+      "value": "加厚,便携,保温,防漏,防异味,可定制,可拆卸,防摔,防烫,保冷,防呛,茶水分离,防喷溅,过滤茶渣"
+    },
+    {
+      "label": "保温性能",
+      "value": "6-12小时"
+    },
+    {
+      "label": "外壳材质",
+      "value": "304不锈钢"
+    },
+    {
+      "label": "货号",
+      "value": "MSBBB-720"
+    },
+    {
+      "label": "样式",
+      "value": "有手柄,大容量,汽车杯,带吸管,直身杯,带茶漏"
+    },
+    {
+      "label": "材质",
+      "value": "内316外304"
+    },
+    {
+      "label": "风格",
+      "value": "小清新风"
+    },
+    {
+      "label": "是否进口",
+      "value": "否"
+    },
+    {
+      "label": "是否有专利",
+      "value": "否"
+    },
+    {
+      "label": "是否跨境出口专供货源",
+      "value": "否"
+    },
+    {
+      "label": "版权",
+      "value": "无"
+    },
+    {
+      "label": "是否属于礼品",
+      "value": "是，个人礼品"
+    },
+    {
+      "label": "送礼用途",
+      "value": "商务礼品,广告礼品,促销赠品,会议礼品,福利礼品,节庆礼品,嘉奖纪念,公关礼品,其他"
+    },
+    {
+      "label": "适用节日",
+      "value": "情人节,春节,父亲节,母亲节,教师节,元旦,七夕,万圣节,复活节,国庆节,儿童节,妇女节,其他"
+    },
+    {
+      "label": "适用送礼关系",
+      "value": "晚辈,情侣,夫妻,同事,朋友,长辈,孩子,同学,恩师,其他"
+    },
+    {
+      "label": "适用送礼场合",
+      "value": "满月,旅游纪念,毕业,乔迁,派对聚会,探病慰问,其他"
+    },
+    {
+      "label": "产品上市时间",
+      "value": "2026年春"
+    },
+    {
+      "label": "产品质量等级",
+      "value": "一等品"
+    },
+    {
+      "label": "适用人群",
+      "value": "女士,男士,儿童,情侣,通用,老年,学生"
+    },
+    {
+      "label": "适用场景",
+      "value": "运动,婚庆,商务,家居,车载,通用,圣诞节,春节,办公室,户外,旅行,送礼,学校,其他节日"
+    },
+    {
+      "label": "是否有第三方检测报告",
+      "value": "没有"
+    },
+    {
+      "label": "定制工艺选择",
+      "value": "热转印,丝印,3D打印,内喷陶瓷"
+    },
+    {
+      "label": "包装规格",
+      "value": "40"
+    },
+    {
+      "label": "价格段",
+      "value": "10-20元"
+    },
+    {
+      "label": "加工定制",
+      "value": "是"
+    },
+    {
+      "label": "加印LOGO",
+      "value": "可以"
+    },
+    {
+      "label": "颜色",
+      "value": "暮色316-贴画粉蓝,暮色316-贴画黑白,暮色316-贴画黑粉,暮色316-贴画黑色,暮色316-贴画蓝白,暮色316-贴画蓝黄,暮色316-字母粉蓝,暮色316-字母黑白,暮色316-字母黑粉,暮色316-字母黑色,暮色316-字母蓝白,暮色316-字母蓝黄"
+    },
+    {
+      "label": "容量",
+      "value": "720ml"
+    },
+    {
+      "label": "是否带茶隔",
+      "value": "带茶隔"
+    },
+    {
+      "label": "结构层数",
+      "value": "2"
+    },
+    {
+      "label": "用途",
+      "value": "积分换购礼品 促销赠品 嘉奖纪念 公关礼品"
+    },
+    {
+      "label": "杯子种类",
+      "value": "保温杯"
+    },
+    {
+      "label": "包装种类",
+      "value": "礼盒装"
+    },
+    {
+      "label": "杯口口径",
+      "value": "10"
+    },
+    {
+      "label": "是否显示温度",
+      "value": "不支持温度显示"
+    },
+    {
+      "label": "杯盖材质",
+      "value": "PP"
+    },
+    {
+      "label": "是否IP授权",
+      "value": "否"
+    },
+    {
+      "label": "杯盖类型",
+      "value": "旋盖"
+    }
+  ],
+  "assets": {
+    "listing_files/O1CN01suGyK41kvGSeUdrcf_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "20cde0b80c38ac17849179ff1c28254e5a9c8f6c27a7bafb9d3af7d9a3b1a337",
+      "bytes": 156935,
+      "format": "JPEG",
+      "dimensions": [
+        1080,
+        1080
+      ]
+    },
+    "listing_files/O1CN01suGyK41kvGSeUdrcf_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "7559412205508089e05c512ca0296b2789f24f2f603fe3693cd0d7b739a097bb",
+      "bytes": 3873,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01diVS541kvGSes3cjv_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "e6133fe18dc10538ddc9dffe0cbfe92d92de08e0d5a9c40f1d4e978eae99d1c4",
+      "bytes": 3520,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01ufiaBG1kvGSfBolbl_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "d68dca8b7a789aa72482334a20e34d929ccb088b995eefa0450eca019a2d663e",
+      "bytes": 3670,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01KVaFwI1kvGSeV2Wgt_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "1bf567fd78f7b7c3360bfcfedb1f0c451ab888dd2c63210a79efa3898f4d780f",
+      "bytes": 3750,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01yGQM7z1kvGSeBCb1n_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "2fc15eac0eefff561f672b513385f0a4f2a9c43ac23b0031e7aa4955aaf8573a",
+      "bytes": 1820,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN018dyUxF1kvGSeV5abz_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "b91159afd66f18f1707bbb2e970309c11ed64a50de3105ee5aca51c3eda97b85",
+      "bytes": 7002,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01JAVXdA1kvGSeygY4i_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "1fde122c5737e731dc2c3da17624223fc613ee9f9262a3e07bef3286f711d103",
+      "bytes": 6520,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01HnOf1f1kvGSeVXH1u_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "3a3cbc29489b5fb6f2cabf8e8ba9d42a7c3c3b41c074a330a3a4e4f2d713ff13",
+      "bytes": 6481,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01XbJNBD1kvGSeoi5zC_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "027bdfa7d569d2cf0fc3cfbe9119b8d549b74f52138aced1e259cd1c65471dc7",
+      "bytes": 6354,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01JhboRQ1kvGSg5FSel_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "b4cc1f4f2c8de6505af24dc3feaf89ddff9e14441476115ed6f48070b5d745c0",
+      "bytes": 5423,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01b2gp821kvGSeVZxR6_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "5cf77287f54cb043cc9f25f580cfb4a158a0de66f09b441ef39f2f0e1aee20f4",
+      "bytes": 7648,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01MfjGcN1kvGSegVDs3_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "e7bcbab370a8807b7e876daf276bd7c880046a0840fc2bc52bca34fd0fa5ae34",
+      "bytes": 6544,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01S6SKF51kvGSf69a4j_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "553f1c689fa2a826750b3558d54a1984f3cdd2c272fbcfba00b689a7f63d6dc4",
+      "bytes": 5736,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01IYWzJL1kvGSeVJ5Fl_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "0c337c0048b845b2baae3c0279e3080f5ea8508363cea3c8aa35d3882bad09ee",
+      "bytes": 5703,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01FAMyBZ1kvGSfCQy2B_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "ef36f30a0642718386061bc2722fc05d75d70700bca27c7b041c63b14f8d46e4",
+      "bytes": 5724,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01UhH5Y01kvGSeVVrjr_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "97f4bc598c93cb1c7b7de9daf2274010198e1cdbf9e3898afcaa6060b4bd6e37",
+      "bytes": 6772,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN01Zl2Gz91kvGSeVl2Lx_!!2222096314745-0-cib.jpg_100x1_iWbL.jpg": {
+      "sha256": "c76c225d7e00ae50e917ab6be1774afcbaa1ab3abcbbf00ff9d178e9c8fb4061",
+      "bytes": 6290,
+      "format": "JPEG",
+      "dimensions": [
+        100,
+        100
+      ]
+    },
+    "listing_files/O1CN018dyUxF1kvGSeV5abz_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "e7962b8573a7f096f5b9b1aa979e27b2799355c43a049166a4e9be0185d70a54",
+      "bytes": 12376,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01MfjGcN1kvGSegVDs3_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "9d0b16d42317485f88e3bcdfddc4bac54e4f3030ab6912b9cfa5bc15b444ffaa",
+      "bytes": 11505,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01JAVXdA1kvGSeygY4i_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "65280479f893ba11aad0a27cc314997fcccb547adaf12bb3ad69e3cc3d97f338",
+      "bytes": 11293,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01HnOf1f1kvGSeVXH1u_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "63c98a6632d7ca989a66f447243b21ac06ff8ff0310d72a794dd3c4ec763f84f",
+      "bytes": 11269,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01UhH5Y01kvGSeVVrjr_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "f54a8dd686137dee656296b3bed1b1b29441c802891150f0944c0b7e755c96c8",
+      "bytes": 11582,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01b2gp821kvGSeVZxR6_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "c17545ae8a95943a5bee41d786178f5961a5ffd8c155c6b485a6cc48fe9720ab",
+      "bytes": 13153,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01XbJNBD1kvGSeoi5zC_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "d2793f2338f3d7540519ad6574b74a17c1295de2cec7faa5816fd98cf2e0f68c",
+      "bytes": 10654,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01IYWzJL1kvGSeVJ5Fl_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "c6ce6ba7a62833c1021edfe57e54b241a51fcbe7887eb2b8ee7bd3d671ed11b7",
+      "bytes": 9524,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01FAMyBZ1kvGSfCQy2B_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "be15696aefea74c7ee9477fd015574914082d9f29a89fe0a82c8fd06af542885",
+      "bytes": 9659,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01S6SKF51kvGSf69a4j_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "006c1907e40570a2c73d8ac4a7ddb02b078f58a6931fac4b8bc776e3ee445df2",
+      "bytes": 9570,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01JhboRQ1kvGSg5FSel_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "4210855a55203ddd9c08456dd9ce35b9915f5f626670c0fe65a6f5cbea412134",
+      "bytes": 9357,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01Zl2Gz91kvGSeVl2Lx_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg": {
+      "sha256": "e8ae9b0d193ca8799b2f11cc39aef3545445110289a58628c73d5f2dbad31903",
+      "bytes": 10789,
+      "format": "JPEG",
+      "dimensions": [
+        150,
+        150
+      ]
+    },
+    "listing_files/O1CN01YOPJKg1kvGSeiRAdA_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "983b765c93a86d200f71c7c8f58546450016502d846496dd9fb8698df5762338",
+      "bytes": 80066,
+      "format": "JPEG",
+      "dimensions": [
+        790,
+        500
+      ]
+    },
+    "listing_files/O1CN01yUHDqp1kvGSerRX2v_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "a923116e239e58eca424156735e503f11af850d53e69b1649f0f702583bbb9d4",
+      "bytes": 107682,
+      "format": "JPEG",
+      "dimensions": [
+        1082,
+        1082
+      ]
+    },
+    "listing_files/O1CN015ZdhqN1kvGSeCAY3z_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "45d4af20595dd15f276bc12793e59d5b8e50781f7228685fd0cf84bd3c8d2d33",
+      "bytes": 182723,
+      "format": "JPEG",
+      "dimensions": [
+        1073,
+        1920
+      ]
+    },
+    "listing_files/O1CN01syzfzD1kvGSeh2aUr_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "2b3ee51b21ae9bb1f03a31bf0a1d84463a425066d7b8124911938d44bc97ecd6",
+      "bytes": 113991,
+      "format": "JPEG",
+      "dimensions": [
+        1290,
+        1042
+      ]
+    },
+    "listing_files/O1CN01REs6IY1kvGSg5VNGU_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "e388ec1dfa2a1cd7e8718def5546376fd5645c9d43162a70817ce27e150b12ea",
+      "bytes": 126503,
+      "format": "JPEG",
+      "dimensions": [
+        1051,
+        1920
+      ]
+    },
+    "listing_files/O1CN01osvg9I1kvGSeh0yis_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "9137e7772c6529e13c3f158784af06bb3ead84ca933ff17354474522d5530f60",
+      "bytes": 185544,
+      "format": "JPEG",
+      "dimensions": [
+        995,
+        1920
+      ]
+    },
+    "listing_files/O1CN013wrSDx1kvGSf6ZgL3_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "867610b3b9cbcd2f9d970301c78386070450073da561e3b5a06c7ea916f540e9",
+      "bytes": 160463,
+      "format": "JPEG",
+      "dimensions": [
+        1017,
+        1920
+      ]
+    },
+    "listing_files/O1CN01vBNR181kvGSep5rMy_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "92b976459c3db8ad45a4d6a941df0637306a7228e13f97a42019dc624e49a513",
+      "bytes": 199836,
+      "format": "JPEG",
+      "dimensions": [
+        1024,
+        1920
+      ]
+    },
+    "listing_files/O1CN016Zcyfv1kvGSet26vR_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "4c8bb612600323737cd9bd27404a6d83089b109b54a07fa337e06d6a2979ae77",
+      "bytes": 120391,
+      "format": "JPEG",
+      "dimensions": [
+        1018,
+        1920
+      ]
+    },
+    "listing_files/O1CN015afAdb1kvGSf9bu4j_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "0b3ee3bec7ba9db2ca22f0b4fa28e38e09f0b572afd2a216c155f27e17c279fc",
+      "bytes": 236710,
+      "format": "JPEG",
+      "dimensions": [
+        1290,
+        1279
+      ]
+    },
+    "listing_files/O1CN01bMSoJx1kvGSf6RZjY_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "d06512102408b966b4189d1c513254cc273a63f33551dd84c821f0d06c67b0e9",
+      "bytes": 303546,
+      "format": "JPEG",
+      "dimensions": [
+        1290,
+        1279
+      ]
+    },
+    "listing_files/O1CN01vFhGpi1kvGSf6Zwy4_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "be9065bc0789a4a8908dca83bda66aaf371d899a3f808e20ed141b41cdcbc935",
+      "bytes": 308373,
+      "format": "JPEG",
+      "dimensions": [
+        1290,
+        1279
+      ]
+    },
+    "listing_files/O1CN01wnP97M1kvGSerQzqc_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "ecb2530da80409364ac591925dc441917d85219313f4c564d3b9463e29a37b93",
+      "bytes": 272131,
+      "format": "JPEG",
+      "dimensions": [
+        1290,
+        1282
+      ]
+    },
+    "listing_files/O1CN01ZFGaie1kvGSezC6PP_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "93cda737ed9030c9577a80dbe03bcd3de3f9840e533c786fcd36cd8735d7fa8c",
+      "bytes": 164090,
+      "format": "JPEG",
+      "dimensions": [
+        1080,
+        1080
+      ]
+    },
+    "listing_files/O1CN01KARK5g1kvGSeh2Fl3_!!2222096314745-0-cib_iWbL.jpg": {
+      "sha256": "5c3d2140828435be47070f9cf240ee7033716e4674ce15f1d47cf0d6e90f61be",
+      "bytes": 880676,
+      "format": "JPEG",
+      "dimensions": [
+        1525,
+        3434
+      ]
+    }
+  }
+}
