@@ -179,7 +179,7 @@ export function App() {
   }
 
   function beginQuestions() {
-    if (!snapshot || resetPrompt || selected.length < 1 || selected.length > 3 || contextTooLong) return;
+    if (!snapshot || resetPrompt || interview.requiresReload || selected.length < 1 || selected.length > 3 || contextTooLong) return;
     setEditingSelection(false);
     void interview.start({
       snapshot_id: snapshot.snapshot_id,
@@ -190,7 +190,7 @@ export function App() {
 
   function submitSelection(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (resetPrompt) return;
+    if (resetPrompt || interview.requiresReload) return;
     if (snapshot && activeInterview) {
       setEditingSelection(false);
       if (interview.needsRefresh) void interview.refresh(snapshot.snapshot_id);
@@ -383,7 +383,7 @@ export function App() {
                 <button
                   className="button button-primary"
                   type="submit"
-                  disabled={resetPrompt || selected.length === 0 || contextTooLong}
+                  disabled={resetPrompt || interview.requiresReload || selected.length === 0 || contextTooLong}
                 >
                   {activeInterview ? "Resume questions" : "Confirm options"}
                 </button>
@@ -404,7 +404,7 @@ export function App() {
             workingMessage={interview.work ? workMessages[interview.work] : ""}
             error={savedInterviewChanged ? "The saved interview changed. Reload saved progress to open it." : interview.error}
             needsRefresh={interview.needsRefresh || savedInterviewChanged}
-            onChangeSelection={() => {
+            onChangeSelection={interview.requiresReload ? undefined : () => {
                 interview.suspend();
               setEditingSelection(true);
               requestAnimationFrame(() => selectionTitle.current?.focus());
@@ -412,7 +412,7 @@ export function App() {
             onStartAgain={beginQuestions}
             onRetry={() => { if (activeInterview) interview.retry(activeInterview); }}
             onRefresh={() => {
-              if (savedInterviewChanged) reloadListing();
+              if (savedInterviewChanged || interview.requiresReload) reloadListing();
               else void interview.refresh(snapshot.snapshot_id);
             }}
             onSubmit={(submission, action) => activeInterview

@@ -144,7 +144,7 @@ interface Props {
   workingMessage: string;
   error: string;
   needsRefresh: boolean;
-  onChangeSelection: () => void;
+  onChangeSelection?: () => void;
   onStartAgain: () => void;
   onRetry: () => void;
   onRefresh: () => void;
@@ -233,7 +233,7 @@ export function Interview({
         <h1 id="interview-title" tabIndex={-1} ref={heading}>
           {reviewPrepared && !edited ? "Review inputs ready" : "Clarify your purchase"}
         </h1>
-        <button className="button button-secondary" type="button" onClick={onChangeSelection}>
+        <button className="button button-secondary" type="button" disabled={!onChangeSelection} onClick={onChangeSelection}>
           Change options or context
         </button>
       </div>

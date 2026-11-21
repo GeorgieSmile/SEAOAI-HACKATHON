@@ -281,9 +281,10 @@ test("uses the server revision when changing SKUs during an old request", async 
   let release!: () => void;
   const hold = new Promise<void>((resolve) => { release = resolve; });
   await page.route("**/api/questions/continue", async (route) => {
+    const { operation_id } = route.request().postDataJSON();
     saved = view({
       phase: "preparing_questions", revision: 1, rounds: [{ ...firstRound, answers: adaptiveAnswers }],
-      last_operation: operation("continue", "running"),
+      last_operation: operation("continue", "running", operation_id),
     });
     await hold;
     await route.fulfill({ json: response(view({
@@ -410,4 +411,177 @@ test("retains a draft and resends the identical command after a lost submission"
   await page.getByRole("button", { name: "Continue", exact: true }).click();
   expect((await second).postDataJSON()).toEqual(originalPayload);
   await expect(page.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
+});
+
+for (const change of ["different case", "newer revision"] as const) {
+  test(`requires reload before replacing another tab's ${change} while one's own request is delayed`, async ({ page: tabA, context }) => {
+    const tabB = await context.newPage();
+    let saved = view();
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    const tabAWrites = trackWrites(tabA);
+
+    await context.route("**/api/case", (route) => route.fulfill({
+      json: { snapshot, case: saved },
+    }));
+    await context.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ status: 404 }));
+    await context.route("**/api/questions/continue", async (route) => {
+      const payload = route.request().postDataJSON();
+      if (route.request().frame().page() === tabA) {
+        const result = view({
+          revision: 1, rounds: [{ ...firstRound, answers: payload.submission.answers }, secondRound],
+          last_operation: operation("continue", "ready", payload.operation_id),
+        });
+        saved = result;
+        await hold;
+        await route.fulfill({ json: response(result) });
+      } else {
+        saved = view({
+          revision: 2, rounds: [
+            { ...firstRound, answers: adaptiveAnswers },
+            { ...secondRound, answers: payload.submission.answers },
+            { ...secondRound, round_id: "tab-b-round", round_number: 3, reason: "Saved by the other tab.",
+              questions: secondRound.questions.map((question) => ({ ...question, question_id: "tab-b-question" })) },
+          ],
+          last_operation: operation("continue", "ready", payload.operation_id),
+        });
+        await route.fulfill({ json: response(saved) });
+      }
+    });
+    await context.route("**/api/questions", (route) => {
+      const payload = route.request().postDataJSON();
+      const fromOtherTab = route.request().frame().page() === tabB;
+      saved = view({
+        case_id: fromOtherTab ? "tab-b-case" : "reconfirmed-case",
+        selected_option_ids: payload.selected_option_ids,
+        buyer_context: payload.buyer_context,
+        rounds: [{ ...firstRound, reason: fromOtherTab ? "Saved by the other tab." : "Replacement confirmed." }],
+        last_operation: operation("start", "ready", payload.operation_id),
+      });
+      return route.fulfill({ json: response(saved) });
+    });
+
+    try {
+      await tabA.goto("/");
+      const ownRequest = tabA.waitForRequest("**/api/questions/continue");
+      await tabA.getByRole("button", { name: "Continue", exact: true }).click();
+      await ownRequest;
+      await tabA.getByRole("button", { name: "Change options or context" }).click();
+      await tabA.getByRole("checkbox").nth(1).uncheck();
+      await expect.poll(() => saved.revision).toBe(1);
+
+      await tabB.goto("/");
+      await expect(tabB.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
+      if (change === "different case") {
+        await tabB.getByRole("button", { name: "Change options or context" }).click();
+        await tabB.getByRole("checkbox").nth(2).uncheck();
+        await tabB.getByRole("button", { name: "Confirm options" }).click();
+      } else {
+        await tabB.getByRole("button", { name: "Continue", exact: true }).click();
+      }
+      await expect(tabB.getByText("Saved by the other tab.")).toBeVisible();
+      const newer = saved;
+
+      await tabA.getByRole("button", { name: "Confirm options" }).click();
+      await expect(tabA.getByRole("alert")).toContainText("The saved interview changed.");
+      expect(tabAWrites).toEqual(["/api/questions/continue"]);
+      await tabA.getByRole("button", { name: "Reload saved progress" }).click();
+      await expect(tabA.getByText("Saved by the other tab.")).toBeVisible();
+      expect(tabAWrites).toEqual(["/api/questions/continue"]);
+
+      await tabA.getByRole("button", { name: "Change options or context" }).click();
+      await tabA.getByRole("checkbox").nth(0).uncheck();
+      const replacement = tabA.waitForRequest("**/api/questions");
+      await tabA.getByRole("button", { name: "Confirm options" }).click();
+      expect((await replacement).postDataJSON().previous_case).toEqual({
+        case_id: newer.case_id, revision: newer.revision,
+      });
+      await expect(tabA.getByText("Replacement confirmed.")).toBeVisible();
+    } finally {
+      release();
+    }
+  });
+}
+
+test("does not adopt an unseen case when it changes between matching preflight and POST", async ({ page }) => {
+  let saved = view();
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  const writes = trackWrites(page);
+  await page.route("**/api/questions/continue", async (route) => {
+    await hold;
+    await route.fulfill({ json: response(view()) });
+  });
+  await page.route("**/api/questions", (route) => {
+    saved = view({
+      case_id: "concurrent-case", revision: 2,
+      rounds: [{ ...firstRound, reason: "A different tab updated the interview." }],
+    });
+    return route.fulfill({ status: 409, json: {
+      status: "failed", case_id: saved.case_id, revision: saved.revision, code: "stale",
+      message: "That request no longer matches the active case.",
+    } });
+  });
+  await mockSaved(page, () => saved);
+
+  try {
+    const delayed = page.waitForRequest("**/api/questions/continue");
+    await page.getByRole("button", { name: "Continue", exact: true }).click();
+    await delayed;
+    await page.getByRole("button", { name: "Change options or context" }).click();
+    await page.getByRole("checkbox").nth(1).uncheck();
+    const attempt = page.waitForRequest("**/api/questions");
+    await page.getByRole("button", { name: "Confirm options" }).click();
+    expect((await attempt).postDataJSON().previous_case).toEqual({ case_id: "test-case", revision: 0 });
+    await expect(page.getByRole("alert")).toContainText("The saved interview changed.");
+    await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    expect(writes).toEqual(["/api/questions/continue", "/api/questions"]);
+
+    await page.getByRole("button", { name: "Reload saved progress" }).click();
+    await expect(page.getByText("A different tab updated the interview.")).toBeVisible();
+    expect(writes).toEqual(["/api/questions/continue", "/api/questions"]);
+  } finally {
+    release();
+  }
+});
+
+test("can replace the case created by the current tab's own delayed initial start", async ({ page }) => {
+  let saved: CaseView | null = null;
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/questions", async (route) => {
+    const payload = route.request().postDataJSON();
+    const initial = payload.previous_case === null;
+    const result = view({
+      case_id: initial ? "own-first-case" : "own-replacement-case",
+      selected_option_ids: payload.selected_option_ids,
+      buyer_context: payload.buyer_context,
+      rounds: [{ ...firstRound, reason: initial ? "Original request." : "New selection in this tab." }],
+      last_operation: operation("start", "ready", payload.operation_id),
+    });
+    saved = result;
+    if (initial) await hold;
+    await route.fulfill({ json: response(result) });
+  });
+  await mockSaved(page, () => saved);
+
+  try {
+    await page.getByRole("checkbox").nth(0).check();
+    await page.getByRole("checkbox").nth(1).check();
+    const first = page.waitForRequest("**/api/questions");
+    await page.getByRole("button", { name: "Confirm options" }).click();
+    expect((await first).postDataJSON().previous_case).toBeNull();
+    await expect.poll(() => saved?.case_id).toBe("own-first-case");
+
+    await page.getByRole("button", { name: "Change options or context" }).click();
+    await page.getByRole("checkbox").nth(0).uncheck();
+    const next = page.waitForRequest("**/api/questions");
+    await page.getByRole("button", { name: "Confirm options" }).click();
+    expect((await next).postDataJSON()).toMatchObject({
+      previous_case: { case_id: "own-first-case", revision: 0 }, selected_option_ids: ["v1"],
+    });
+    await expect(page.getByText("New selection in this tab.")).toBeVisible();
+  } finally {
+    release();
+  }
 });
