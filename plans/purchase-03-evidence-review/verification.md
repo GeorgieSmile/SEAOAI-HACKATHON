@@ -94,6 +94,16 @@ Both follow-ups were exercised through the report endpoint with the original ZIP
 
 Astra’s review of `f6b438c` found a mixed list starting with `316` could hide a wrong-SKU term, and a correct sentence switching from A to B could be rejected. The regression tests cover numeric and English list items and positive and negative claims about another named option. With the original ZIP, the report endpoint rejected both incorrect cases and accepted both correct controls. Opening four databases saved on `6f38c3c` gave the same results with zero provider requests. All 255 offline backend tests passed. The original-ZIP Chrome edit/restart check again restored revision 3, the scoped supplier draft and matching SKU images.
 
+### Follow-up to the review of `12b9d4f`
+
+The original ZIP reproduced all three findings through `POST /api/reviews` on `12b9d4f` with scripted OpenAI SDK responses. Both selected names contained `粉蓝`, and only B’s contained `贴画`. The earlier build accepted a claim attributing `贴画` to A “according to the seller”, a claim that `粉蓝` appeared only in B, and supplier actions missing one or all of their questions.
+
+On the fixed branch, those four malformed responses each exhausted one correction attempt and returned `invalid_review`. The correctly qualified claim about B, a genuinely exclusive term, and a complete supplier draft all returned ready on the first attempt. Restarting against seven databases written by `12b9d4f` produced the same four rejections and three valid reports, preserved the answers, and issued zero provider requests. Buyer-only decisions can still have an empty draft.
+
+The Chrome walkthrough uploaded the original ZIP, selected three distinct SKUs, edited and copied the draft, then changed the first-round answer from custom orders to ready-made stock. Revision 3 replaced revision 2, removed the dependent sample answer, kept the 33-character deadline exactly, and rebuilt the `[Options A, B, C]` and `[Option A]` questions. All three served images matched the corresponding ZIP members byte for byte before and after restarting the backend. Fresh desktop and mobile browser contexts restored the edited report using GET requests. Model responses were scripted locally throughout.
+
+`python -m pytest -q backend/tests` passed 288 tests. `npm --prefix frontend test -- --workers=2` passed 27 Chrome tests. `npm --prefix frontend run typecheck`, `npm --prefix frontend run build` and `git diff --check` passed.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

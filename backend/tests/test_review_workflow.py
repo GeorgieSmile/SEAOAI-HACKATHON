@@ -341,7 +341,9 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert calls == [inputs]
 
 
-@pytest.mark.parametrize("legacy_issue", ["unlabeled_question", "private_contact", "private_phone", "product_upc", "wrong_name"])
+@pytest.mark.parametrize("legacy_issue", [
+    "unlabeled_question", "private_contact", "private_phone", "product_upc", "wrong_name", "missing_supplier_question",
+])
 def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legacy_issue):
     database = tmp_path / "legacy.db"
     options = dict(translator=stub, question_generator=drafts, review_generator=offline_review)
@@ -368,6 +370,7 @@ def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legac
             "private_contact": "Can you send product photos to cedar914@example.test?",
             "private_phone": "Can you text 081-234-5678?",
             "product_upc": "Can you confirm the product UPC 036000291452?",
+            "missing_supplier_question": None,
         }.get(legacy_issue, "Could you confirm the decoration for this option?")
         finding.supplier_question = question
         if legacy_issue == "wrong_name":
@@ -377,7 +380,7 @@ def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legac
                 "source_id": name.source_id, "quote": name.original_text,
             })]
             finding.interpretation = "The listing name for Option A includes 贴画."
-        report.supplier_draft = "1. " + finding.supplier_question
+        report.supplier_draft = f"1. {question or report.findings[0].supplier_question}"
         assert store.save_case(generation, record, legacy)
     finally:
         store.close()
@@ -404,3 +407,6 @@ def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legac
         assert reviewed["rounds"] == original["rounds"]
         assert reference(reviewed) == reference(original)
         assert reviewed["phase"] == "reviewed"
+        assert reviewed["last_operation"]["operation_id"] == original["last_operation"]["operation_id"]
+        if legacy_issue == "missing_supplier_question":
+            assert reviewed["report"]["findings"][-1]["supplier_question"] in reviewed["report"]["supplier_draft"]

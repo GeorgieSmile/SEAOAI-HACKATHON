@@ -50,9 +50,12 @@ HAN_CHARACTER = re.compile(r"[\u3400-\u9fff\U00020000-\U000323af]")
 NAME_TERM_AFTER = re.compile(
     r"^\s*(?:(?P<modifier>not|no|neither|both|rather)\s+)?"
     r"(?:(?:the|a|an)\s+)?(?:(?:Chinese|original)\s+)?(?:\b(?:characters?|phrases?|terms?|words?|wording|text)\s+)?"
-    r"[\"“'‘`]*\s*(?P<term>[\w-]+|[A-Za-z0-9][A-Za-z0-9 .’'\t-]*)[\"”'’`]*"
-    r"(?:\s+(?:wording|term|text|label))?(?:\s+(?:in|on|as)\s+[A-Za-z0-9 ’'\t-]+)?"
-    r"\s*(?:\([^()]*\)\s*)*[.!?;:]*\s*",
+    r"[\"“'‘`]*\s*(?P<term>[\w-]+)[\"”'’`]*(?:\s+(?:wording|terms?|text|labels?)\b)?",
+    re.IGNORECASE,
+)
+NAME_ANNOTATION = re.compile(r"\([^()]*\)")
+NAME_SUBJECT_PREDICATE = re.compile(
+    r"^\s*(?:(?:only|exclusively)\s+)?(?:appears?|occurs?|does|do|did|can|could|may|might|must|will|would|should)\b",
     re.IGNORECASE,
 )
 NAME_TERM_BEFORE = re.compile(
@@ -61,11 +64,20 @@ NAME_TERM_BEFORE = re.compile(
 )
 NAME_TERM_IN_NAME = re.compile(
     r"(?P<term>[\w-]+)[\"”'’`]*\s+"
-    r"(?P<predicate>(?:(?:do(?:es)?(?:n['’]t|\s+not)\s+)?(?:appears?|occurs?)|is|are)"
-    r"(?:\s+(?:not|never|only))?)\s+in\s+"
+    r"(?:(?P<before_predicate>only|exclusively)\s+)?"
+    r"(?P<predicate>(?:do(?:es)?(?:n['’]t|\s+not)\s+)?(?:appears?|occurs?)|is|are)\s+"
+    r"(?:(?P<qualifier>not\s+only|not|never|only|exclusively)\s+)?in\s+"
     r"(?:(?:the\s+)?(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+(?:for|of)\s+)?$",
     re.IGNORECASE,
 )
+NAME_ONLY_BEFORE = re.compile(r"\b(?P<negated>not\s+)?(?:only|exclusively)\s+$", re.IGNORECASE)
+NAME_ONLY_AFTER = re.compile(
+    r"^\s*(?:(?:['’]s\s+)?(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+)?"
+    r"(?:alone\s+|(?:is|are)\s+the\s+only\s+(?:ones?|names?)\s+(?:that\s+)?)",
+    re.IGNORECASE,
+)
+NAME_COMPARISON_SCOPE = re.compile(r"^\s*(?:among|between|of)\s+", re.IGNORECASE)
+NAME_SCOPE_EXCEPTION = re.compile(r"\b(?:except(?:\s+for)?|other\s+than)\s+", re.IGNORECASE)
 PRIVATE_BUSINESS_DETAILS = re.compile(
     r"\b(?:margins?|profit(?:s|ability)?|mark[ -]?ups?|revenue|resale pric(?:e|ing)|"
     r"(?:internal|private) (?:notes?|costs?|budgets?)|target costs?|cost (?:ceilings?|targets?)|unit economics)\b"
@@ -311,6 +323,8 @@ def build_supplier_draft(request: ReviewInput, content: ReviewContent) -> str:
     questions = []
     for finding in content.findings:
         if finding.supplier_question is None:
+            if finding.action_type in {"ask_supplier", "request_evidence"}:
+                raise ValueError("An ask_supplier or request_evidence finding must include a supplier_question.")
             continue
         question = " ".join(finding.supplier_question.split())
         letters = [letter for option_id, letter in zip(request.selected_option_ids, OPTION_REFERENCES)
@@ -359,16 +373,20 @@ def _original_term(match: re.Match[str] | None) -> str:
 def _name_predicate_terms(tail: str, predicate: re.Match[str]) -> Iterable[tuple[str, bool]]:
     """Read the coordinated objects of a name predicate until the prose changes subject."""
     predicate_negative = bool(NAME_NEGATION.search(tail[:predicate.start()]))
-    parts = NAME_COORDINATION.split(tail[predicate.end():])
+    parts = NAME_COORDINATION.split(NAME_ANNOTATION.sub(" ", tail[predicate.end():]))
     for separator, phrase in zip(["", *parts[1::2]], parts[::2]):
         continuation = NAME_COORDINATED_PREDICATE.match(phrase) if separator else None
         if continuation is not None:
             predicate_negative = bool(NAME_NEGATION.search(continuation[0]))
             phrase = phrase[continuation.end():]
-        # A complete list object can be a neutral token such as 316. A term followed
-        # by its own predicate is a different assertion, not an object of this verb.
-        operand = NAME_TERM_AFTER.fullmatch(phrase)
+        operand = NAME_TERM_AFTER.match(phrase)
         if operand is None:
+            break
+        remainder = phrase[operand.end():]
+        if separator and continuation is None and (
+            NAME_COORDINATED_PREDICATE.match(remainder) or NAME_SUBJECT_PREDICATE.match(remainder)
+        ):
+            # This term is the subject of a new predicate. Its own option is checked separately.
             break
         modifier = (operand["modifier"] or "").casefold()
         if modifier in {"no", "neither"}:
@@ -381,6 +399,16 @@ def _name_predicate_terms(tail: str, predicate: re.Match[str]) -> Iterable[tuple
             yield term, absent
 
 
+def _name_comparison_options(before: str, selected: Set[str]) -> Set[str]:
+    intro, comma, _ = before.rpartition(",")
+    if not comma or not NAME_COMPARISON_SCOPE.match(intro):
+        return selected
+    included, *excluded = NAME_SCOPE_EXCEPTION.split(intro, maxsplit=1)
+    named = set().union(*(aliases for aliases, *_ in _named_option_references(included)))
+    exceptions = set().union(*(aliases for clause in excluded for aliases, *_ in _named_option_references(clause)))
+    return (named or selected) - exceptions
+
+
 def _validate_name_claims(
     text: str, wording_by_alias: Mapping[str, list[str]], full_name_by_alias: Mapping[str, str],
 ) -> None:
@@ -388,18 +416,34 @@ def _validate_name_claims(
         # Each alias in a sentence has its own words and evidence.
         next_reference = NAMED_OPTIONS.search(after)
         tail = after[:next_reference.start()] if next_reference is not None else after
-        if NAME_INQUIRY.search(before) or not (OPTION_NAME_BEFORE.search(before) or OPTION_NAME_AFTER.match(tail)):
+        only_before = NAME_ONLY_BEFORE.search(before)
+        prefix = before[:only_before.start()] if only_before else before
+        owner_only = only_before is not None and only_before["negated"] is None
+        if NAME_INQUIRY.search(before) or not (OPTION_NAME_BEFORE.search(prefix) or OPTION_NAME_AFTER.match(tail)):
             continue
-        predicate = NAME_PREDICATE.search(tail)
-        term = _original_term(NAME_TERM_BEFORE.search(before))
+        only_after = NAME_ONLY_AFTER.match(tail)
+        predicate = NAME_PREDICATE.search(tail, only_after.end() if only_after else 0)
+        term = _original_term(NAME_TERM_BEFORE.search(prefix))
         terms = [(term, False)] if term else []
-        term_in_name = NAME_TERM_IN_NAME.search(before)
+        exclusive_terms: list[tuple[str, bool]] = []
+        term_in_name = NAME_TERM_IN_NAME.search(prefix)
         if term_in_name is not None and (subject := _original_term(term_in_name)):
-            terms.append((subject, bool(NAME_NEGATION.search(term_in_name["predicate"]))))
+            qualifier = " ".join((term_in_name["qualifier"] or "").casefold().split())
+            exclusive = bool(owner_only or term_in_name["before_predicate"] or qualifier in {"only", "exclusively"})
+            negated = bool(NAME_NEGATION.search(term_in_name["predicate"]))
+            absent = negated or qualifier in {"not", "never"}
+            # Negating "appears only in" negates exclusivity, not membership.
+            if not (exclusive and negated):
+                terms.append((subject, absent))
+                if exclusive:
+                    exclusive_terms.append((subject, absent))
         if predicate is None and not terms:
             continue
         if predicate is not None:
-            terms.extend(_name_predicate_terms(tail, predicate))
+            objects = list(_name_predicate_terms(tail, predicate))
+            terms.extend(objects)
+            if owner_only or only_after:
+                exclusive_terms.extend(objects)
 
         for alias in references:
             wording = wording_by_alias.get(alias)
@@ -411,6 +455,16 @@ def _validate_name_claims(
                         raise ValueError("Do not claim an original term is absent when it occurs in that option's full SKU name.")
                 elif not any(original_term in excerpt for excerpt in wording):
                     raise ValueError("Match every asserted original term to the cited SKU name for that option.")
+
+        if exclusive_terms:
+            comparison = _name_comparison_options(before, full_name_by_alias.keys())
+            peers = (comparison & full_name_by_alias.keys()) - references
+            if any(
+                (original_term in full_name_by_alias[other]) != absent
+                for original_term, absent in exclusive_terms
+                for other in peers
+            ):
+                raise ValueError("The exclusive SKU name claim contradicts another option's full name in the comparison.")
 
 
 def validate_report_attribution(request: ReviewInput, content: ReviewContent) -> None:

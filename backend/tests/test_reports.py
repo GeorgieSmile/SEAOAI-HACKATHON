@@ -200,6 +200,7 @@ def test_draft_uses_selection_order_and_numbers_questions_after_nulls(example):
     questions = ["Can you send a close-up?", None, "Please identify drink-contact materials."]
     for row, question in zip(content["findings"], questions):
         row["supplier_question"] = question
+    mark_buyer_decision(content, content["findings"][1])
     report_value = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
     names = {option.option_id: option.name_original for option in request.snapshot.options}
     assert report_value.supplier_draft.splitlines()[1:4] == [f"A. {names['v6']}", f"B. {names['v0']}", f"C. {names['v1']}"]
@@ -224,13 +225,35 @@ def test_supplier_draft_labels_each_question_with_its_own_skus(example):
             requested_evidence="A sample.", evidence_limits="The sample covers one unit.",
             supplier_question="Could you confirm the decoration for this option?",
         )
-    findings[1]["supplier_question"] = None
+    mark_buyer_decision(content, findings[1])
     result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
     assert result.supplier_draft.splitlines()[7:] == [
         "1. [Options A, C] Could you confirm the decoration for this option?",
         "",
         "2. [Option A] Could you confirm the decoration for this option?",
     ]
+
+
+def mark_buyer_decision(content, finding):
+    finding.update(action_type="decide_preference", supplier_question=None)
+    content["open_preferences"].append({
+        "preference_id": "buyer-decision", "text": "The buyer needs to choose a preference.",
+        "input_refs": [], "finding_ids": [finding["finding_id"]],
+    })
+
+
+def test_buyer_decision_without_a_supplier_question_has_no_draft(example):
+    request, example_content, sent_sources = example
+    content = minimal_content(request)
+    finding = example_content["findings"][0]
+    finding["requirement_ids"] = []
+    content["findings"] = [finding]
+    mark_buyer_decision(content, finding)
+
+    result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
+
+    assert result.findings[0].supplier_question is None
+    assert result.supplier_draft == ""
 
 
 @pytest.mark.parametrize(("path", "replacement", "message"), [
@@ -340,6 +363,50 @@ def test_invalid_report_gets_one_repair_using_identical_input(parser_case):
     first, second = bodies
     assert first["input"] == second["input"]
     assert "Each comparison must contain every selected option once." in second["instructions"]
+
+
+@pytest.mark.parametrize("action_type", ["ask_supplier", "request_evidence"])
+@pytest.mark.parametrize("corrected", [False, True])
+def test_supplier_action_without_a_question_gets_one_correction(parser_case, action_type, corrected):
+    review_input, images = parser_case
+    malformed = minimal_content(review_input)
+    finding = {
+        "finding_id": "confirm-sample", "title": "Sample details need confirmation",
+        "option_ids": review_input.selected_option_ids, "kind": "clarification_needed", "action_type": action_type,
+        "requirement_ids": [], "citations": [], "interpretation": "The listing does not identify sample availability.",
+        "impact": "A sample can help confirm the finish.", "priority_reason": "Check the finish before buying.",
+        "unknowns": [], "requested_evidence": "A verified sample of each selected option.",
+        "evidence_limits": "One sample covers one unit.", "supplier_question": None,
+    }
+    malformed["findings"].append(finding)
+    if action_type == "request_evidence":
+        malformed["findings"].append({
+            **finding, "finding_id": "confirm-photo", "action_type": "ask_supplier",
+            "supplier_question": "Can you send a close-up photo?",
+        })
+    repaired = deepcopy(malformed)
+    question = "Can you send a sample of each selected option?"
+    repaired["findings"][0]["supplier_question"] = question
+    bodies = []
+
+    def serve(request):
+        bodies.append(json.loads(request.content))
+        return response(request, repaired if corrected and len(bodies) == 2 else malformed)
+
+    result = run_review(review_input, images, serve)
+
+    assert len(bodies) == 2
+    first, second = bodies
+    assert first["input"] == second["input"]
+    assert "must include a supplier_question" in second["instructions"]
+    if corrected:
+        assert isinstance(result, ReviewReady)
+        assert f"1. [Options A, B, C] {question}" in result.report.supplier_draft
+        if action_type == "request_evidence":
+            assert "2. [Options A, B, C] Can you send a close-up photo?" in result.report.supplier_draft
+    else:
+        assert isinstance(result, ReviewFailed)
+        assert result.code == "invalid_review"
 
 
 @pytest.mark.parametrize(("failure", "attempts", "code"), [

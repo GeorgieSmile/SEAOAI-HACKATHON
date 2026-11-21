@@ -106,6 +106,11 @@ def test_comparison_row_can_describe_its_own_cited_sku_name(joint_finding):
     ("Option A’s name includes 316, lettering, and 贴画.", "original term"),
     ("Option A’s name includes 316, letter design, and 贴画.", "original term"),
     ("Option A’s name includes 贴画 in the listing.", "original term"),
+    ("Option A’s name includes 贴画 according to the seller.", "original term"),
+    ("Option A’s name includes 贴画 (pink/blue) according to the seller.", "original term"),
+    ("Option A’s name includes 贴画 for its decoration.", "original term"),
+    ("Option A’s name includes 316 and 贴画 according to the seller.", "original term"),
+    ("Option A’s name includes 贴画 as shown on the saved listing.", "original term"),
     ("Option A’s name does not include 318 or 字母.", "absent"),
     ("Option A’s name does not include 字母.", "absent"),
     ("Option A's name includes 字母 but not 粉蓝.", "absent"),
@@ -114,6 +119,10 @@ def test_comparison_row_can_describe_its_own_cited_sku_name(joint_finding):
     ("Option A's name includes 字母 and 粉蓝, while Option B's name does not include 贴画.", "absent"),
     ("Option A’s name includes 字母, and 字母 appears only in Option B’s name.", "original term"),
     ("Option A’s name includes 字母, and 贴画 does not appear in Option B’s name.", "absent"),
+    ("粉蓝 appears only in Option B’s name.", "exclusive"),
+    ("Only Option B’s name includes 粉蓝.", "exclusive"),
+    ("Option B’s name alone includes 粉蓝.", "exclusive"),
+    ("Option B’s name is the only one that includes 粉蓝.", "exclusive"),
 ])
 def test_all_name_terms_must_match_their_option_and_polarity(joint_finding, statement, error):
     request, content, finding = joint_finding
@@ -141,6 +150,18 @@ def test_all_name_terms_must_match_their_option_and_polarity(joint_finding, stat
     "Option A's name does not include 贴画 but includes 字母 and 粉蓝.",
     "Option A's name includes 字母 and 粉蓝, while Option B's name includes 贴画 but not 字母.",
     "Option A’s name includes 字母, and 贴画 appears only in Option B’s name.",
+    "Option B’s name includes 贴画 according to the seller.",
+    "Option B’s name includes 贴画 (pink/blue) according to the seller.",
+    "Option B’s name includes 贴画 for its decoration.",
+    "Option A’s name includes 字母 according to the seller, and 贴画 appears only in Option B’s name.",
+    "贴画 appears only in Option B’s name.",
+    "Only Option B’s name includes 贴画.",
+    "Option B’s name alone includes 贴画.",
+    "Option B’s name is the only one that includes 贴画.",
+    "Option B’s name only includes 粉蓝 as a color label.",
+    "Could you confirm whether 粉蓝 appears only in Option B’s name?",
+    "粉蓝 appears not only in Option B’s name, but also in Option A’s name.",
+    "粉蓝 appears in not only Option B’s name, but also in Option A’s name.",
     "Option A’s name includes 字母, and 贴画 may be available as a custom finish.",
     "Option A’s name includes 字母, and 字母 does not appear in Option B’s name.",
     "Could you confirm whether 贴画 appears in Option A’s name?",
@@ -156,3 +177,30 @@ def test_grounded_name_clauses_and_questions_still_pass(joint_finding, statement
     finding["supplier_question"] = statement
     result = validate(request, content)
     assert statement in result.supplier_draft
+
+
+@pytest.mark.parametrize(("statement", "contradicted"), [
+    ("贴画 appears only in Option B’s name.", True),
+    ("Among Options A, B, and C, 贴画 appears only in Option B’s name.", True),
+    ("Among Options A and B, 贴画 appears only in Option B’s name.", False),
+    ("Among the selected options other than Option C, only Option B’s name includes 贴画.", False),
+    ("Only Option C’s name does not include 粉蓝.", False),
+    ("Only Option B’s name does not include 字母.", True),
+])
+def test_exclusivity_uses_the_full_names_in_the_asserted_comparison(joint_finding, statement, contradicted):
+    request, content, finding = joint_finding
+    request = request.model_copy(update={"selected_option_ids": ["v6", "v0", "v1"]})
+    content["comparisons"] = minimal_content(request)["comparisons"]
+    finding["option_ids"] = request.selected_option_ids
+    names = request.snapshot.option_name_sources()
+    finding["citations"] = [
+        {"source_id": names[option_id].source_id, "quote": names[option_id].original_text, "image_observation": None}
+        for option_id in request.selected_option_ids
+    ]
+    finding["interpretation"] = statement
+    if contradicted:
+        with pytest.raises(ValueError, match="exclusive"):
+            validate(request, content)
+    else:
+        result = validate(request, content)
+        assert result.findings[0].interpretation == statement
