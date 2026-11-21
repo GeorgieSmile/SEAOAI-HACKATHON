@@ -110,6 +110,37 @@ The review of `edc2f75` confirmed all 11 previous cases. It found that numeric o
 
 A final comparison check on the original ZIP separated the `316` in A’s cited name from the `750 ml` visible on its cited thumbnail. The combined sentence and two-sentence control both generated and reopened, while the false claim that the name contained both numbers returned `invalid_review` and was withheld on restart. This covers the regression reported on `d61c993`. All 316 offline backend tests passed.
 
+## Version 2 evidence and explicit regeneration
+
+The redesigned provider response binds each text excerpt, visible measurement, or visible detail to a source and, for SKU-specific evidence, an option ID. The application assembles the public report and supplier draft after validating those references against the evidence actually sent. Older live runs above exercised the previous report contract.
+
+The offline endpoint walkthrough used the original 5,284,828-byte Website Test.zip locally. The independent inventory read the HTML `img[data-sku]` mapping, decoded its member paths, and inspected the three original 150 × 150 thumbnails. Each showed a 750 ml label. For every scripted SDK call, the verification compared the actual image payload bytes and source IDs against those members. Each case saved answers and reopened SQLite without an additional provider request.
+
+| Provider response and evidence | Expected behavior |
+| --- | --- |
+| A’s name excerpt and A’s attached image claim | Both claims publish in A’s cell; the claim IDs point to separate text and image sources. |
+| A’s thumbnail removed from a disposable ZIP, A’s source retained as metadata | An affirmative image claim exhausts one correction and returns `invalid_review`. A truthful missing-source unknown publishes without an image measurement. |
+| A’s observation cites B’s available, attached thumbnail | Rejected with both the original and reversed selection order. B’s own claim against the same image publishes in both orders. |
+| Image observation cites the name source; arbitrary summary, title, or supplier question supplied | Each invalid response gets one correction and fails before publication. A private email in buyer context stays out of the valid supplier draft. |
+
+A separate check used a real saved case created by the `b3fe973` backend, with three selected SKUs, a ready-made answer and a deadline with surrounding spaces. Two starts of the updated app preserved the case, revision, selected order, rounds and exact answers, withheld the unversioned report, and made zero provider requests. Explicit regeneration produced one version 2 report. Replaying the operation and restarting again both returned that report without another generation.
+
+The numeric conflict check produced one supplier question naming A’s 720 ml shared selector and 750 ml thumbnail. Equal readings and unrelated source pairs failed. Across 15 original/derived-ZIP cases, six valid responses published on the first attempt and nine malformed responses returned `invalid_review` after one correction. Each reopened with its original answers and outcome.
+
+A local Chrome run independently verified the shared 720 ml selector and each of three separate name and 750 ml thumbnail controls. All three image responses matched their original members before and after restart. Editing and copying a draft preserved its stored version. Changing the first answer from custom orders to ready-made advanced revision 2 to 3, removed the sample round, retained the spaced deadline, and replaced the scoped draft. A new backend and fresh browser contexts restored the edited case using GETs only. The legacy database regenerated only after clicking **Regenerate report**; removing A’s image showed the correct limitation. At 1280 px and 390 px the top, middle, comparison and bottom views were readable with no page overflow or overlapping controls.
+
+`python -m pytest -q backend/tests` passed 264 offline tests, including replacements for the old English-sentence parser tests. `npm --prefix frontend test -- --workers=2` passed 28 Chrome tests. Frontend typechecking, the production build and `git diff --check` passed. The v2 report checks used scripted provider responses; zero paid requests were made.
+
+### Follow-up to the review of `a7dfe95`
+
+The first independent Astra review of the redesigned report reproduced six problems. A buyer answer could influence the wrong SKU or lose its negation. A shared measurement could appear under the wrong heading. Supplier questions could omit a supported preference or the deadline topic. Coverage notes could repeat across all three groups. A SKU name in a table cell could hide the limitation for its missing thumbnail.
+
+The follow-up regression suite exercises the actual issued scope, complete answer, skipped and superseded answers, incompatible units, positive and negative screen-printing preferences, delivery timing, and neutral questions for ambiguous answers. Coverage and per-cell limitations are tested in both rendered reports and Chrome. In particular, the missing-thumbnail cell retains A’s available name evidence, explains A’s missing photo, and leaves B’s and C’s cells independently sourced.
+
+Three copies of reports saved on `a7dfe95` reopened twice each with their original answers and selection. Both correctly scoped reports remained ready. Applying A’s answer to B withheld the report and allowed an explicit retry. These reads made zero provider requests. The separate unversioned database still required explicit regeneration.
+
+The follow-up passed 291 offline backend tests, 30 Chrome tests, frontend typechecking, the production build and whitespace checks. The 15-case local ZIP matrix repeated its six valid and nine invalid outcomes. The Chrome walkthrough covered the original ZIP, a disposable copy missing A’s image, restart after editing, and explicit regeneration of the legacy case at desktop and mobile widths. Provider output was scripted for all redesigned-report checks.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

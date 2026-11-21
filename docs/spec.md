@@ -83,7 +83,7 @@ Version: 0.16
 
 ข้อตกลงต่อไปนี้ยอมรับสำหรับรุ่นแข่งแล้ว ไม่อ้างว่า implementation ผ่านการตรวจหรือเหมาะกับระบบหลายผู้ใช้
 
-รายละเอียด Interface รายงานอยู่ใน [report-contract.md](contracts/report-contract.md) v0.8 พร้อม [JSON ตัวอย่าง](contracts/examples/report-contract-example.json) เอกสารนั้นเป็นแหล่งรายละเอียดเดียวของ fields และ invariants ที่ยอมรับในรุ่นนี้
+รายละเอียด Interface รายงานอยู่ใน [report-contract.md](contracts/report-contract.md) v0.9 พร้อม [JSON ตัวอย่าง](contracts/examples/report-contract-example.json) เอกสารนั้นเป็นแหล่งรายละเอียดเดียวของ fields และ invariants ที่ยอมรับในรุ่นนี้
 
 รอบคำถามก่อนรายงานกำหนดใน [question contract](contracts/question-contract.md) v0.6 พร้อม [ตัวอย่างที่เชื่อมกับรายงาน](contracts/examples/question-contract-examples.json) แบบ 0–3 รอบ ใช้คำถามที่ออกจริงและคำตอบของ revision ปัจจุบัน ไม่ให้ Frontend ตีความคำตอบหรือให้โมเดลรายงานแต่งคำถามที่ไม่เคยถาม
 

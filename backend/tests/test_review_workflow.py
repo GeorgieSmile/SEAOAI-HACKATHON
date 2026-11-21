@@ -1,21 +1,28 @@
 import asyncio
+from contextlib import closing
 from hashlib import sha256
+import json
+import sqlite3
 import subprocess
 import sys
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient
+import httpx2
+from openai import AsyncOpenAI
 import pytest
 
 from backend.case_models import CaseOperation, CaseRecord
-from backend.contracts import QuestionResult, ReviewInput
+from backend.contracts import QuestionDraft, QuestionResult, ReviewInput
 from backend.main import create_app
+from backend.report import generate_review
 from backend.report_models import ReviewFailed
 from backend.state import Store
 from backend.tests.offline_server import offline_review
 from backend.tests.test_cases import drafts, initial_request, ready, reference, round_request
 from backend.tests.test_imports import INVENTORY, RAW, _copy_zip, _image_url, _upload, stub
+from backend.tests.test_reports import finding_selection, minimal_content, response as provider_response
 
 
 def retry_request(case):
@@ -120,6 +127,7 @@ def test_late_review_cannot_publish_after_inputs_change(tmp_path, action):
     ("provider_failure", "analysis_failed"), ("exception", "analysis_failed"),
     ("result_case", "invalid_review"), ("report_snapshot", "invalid_review"),
     ("report_selection", "invalid_review"), ("report_revision", "invalid_review"),
+    ("sent_scope", "invalid_review"),
 ])
 def test_review_failure_preserves_answers_and_retries_original_input(tmp_path, defect, code):
     database = tmp_path / "case.db"
@@ -144,6 +152,8 @@ def test_review_failure_preserves_answers_and_retries_original_input(tmp_path, d
             report.snapshot_id = "wrong-snapshot"
         elif defect == "report_selection":
             report.selected_option_ids.reverse()
+        elif defect == "sent_scope":
+            ready_result.sent_evidence.attached_image_ids = ()
         else:
             report.revision += 1
         return ready_result
@@ -274,6 +284,8 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
 """, str(database)], check=False, timeout=15)
     assert process.returncode == 23
 
+    # The old persisted input did not carry scope. Retry must read it from the actual questions.
+    _replace_saved_case(database, lambda record: record["review_input"].pop("answer_option_ids"))
     calls = []
 
     async def review(inputs, images):
@@ -297,6 +309,9 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
         (inputs, images), = calls
         assert inputs.snapshot.snapshot_id == snapshot["snapshot_id"]
         assert [answer.answer_text for answer in inputs.answers] == ["Already saved", None]
+        assert inputs.answer_option_ids == {
+            question["question_id"]: question["option_ids"] for question in saved["rounds"][0]["questions"]
+        }
         assert len(images) == 3
 
 
@@ -341,72 +356,219 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert calls == [inputs]
 
 
-@pytest.mark.parametrize("legacy_issue", [
-    "unlabeled_question", "private_contact", "private_phone", "product_upc", "wrong_name", "missing_supplier_question",
+def _replace_saved_case(database, change):
+    with sqlite3.connect(database) as connection:
+        (serialized,) = connection.execute("SELECT data FROM active_case").fetchone()
+        record = json.loads(serialized)
+        change(record)
+        connection.execute("UPDATE active_case SET data = ?", (json.dumps(record),))
+
+
+def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tmp_path):
+    database = tmp_path / "case.db"
+    answer = "This option has to hold 720 ml."
+    requests = []
+    wrong_sku = True
+
+    async def ask_about_first_sku(inputs):
+        assert "answer_option_ids" not in inputs.model_dump()
+        return QuestionResult(reason="Identify the first option's requirement.", questions=[QuestionDraft(
+            prompt="What capacity is required for Option A?", why_ask="This applies to the first selected option.",
+            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[],
+        )])
+
+    async def review(inputs, images):
+        option_a, option_b = inputs.selected_option_ids
+
+        def serve(request):
+            wire_input = json.loads(request.content)["input"][0]["content"][0]["text"]
+            (wire_answer,) = json.loads(wire_input)["answers"]
+            requests.append(wire_answer)
+            payload = minimal_content(inputs)
+            payload["buyer_requirements"] = [{
+                "requirement_id": "only-option-a", "topic": "capacity",
+                "input_ref": f"answer:{wire_answer['question_id']}", "quote": answer,
+            }]
+            payload["findings"] = [finding_selection(
+                [option_b if wrong_sku else option_a], kind="requirement_unconfirmed",
+                requirement_ids=["only-option-a"],
+            )]
+            return provider_response(request, payload)
+
+        async with AsyncOpenAI(
+            api_key="offline-test-placeholder", max_retries=0, base_url="https://api.openai.com/v1",
+            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(serve)),
+        ) as sdk:
+            return await generate_review(inputs, images, client=sdk)
+
+    options = dict(translator=stub, question_generator=ask_about_first_sku, review_generator=review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        start = initial_request(snapshot)
+        start["selected_option_ids"] = start["selected_option_ids"][:2]
+        case = ready(client.post("/api/questions", json=start))
+        issued, = case["rounds"][0]["questions"]
+        response = client.post("/api/reviews", json=round_request(case, texts=[answer]))
+        assert response.status_code == 200
+        assert response.json()["code"] == "invalid_review"
+        saved = client.get("/api/case").json()["case"]
+        assert saved["phase"] == "failed"
+        assert saved["rounds"][0]["answers"] == [{"question_id": issued["question_id"], "answer_text": answer}]
+
+    expected_wire = {"question_id": issued["question_id"], "question_text": issued["prompt"],
+                     "answer_text": answer, "option_ids": issued["option_ids"]}
+    assert requests == [expected_wire, expected_wire]
+
+    wrong_sku = False
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == saved
+        assert len(requests) == 2
+        reviewed = ready(client.post("/api/case/retry", json=retry_request(saved)))
+        assert reviewed["rounds"] == saved["rounds"]
+        finding, = reviewed["report"]["findings"]
+        assert finding["option_ids"] == issued["option_ids"]
+        requirement, = reviewed["report"]["buyer_requirements"]
+        assert requirement["option_ids"] == issued["option_ids"]
+        assert requests == [expected_wire] * 3
+
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+        assert len(requests) == 3
+
+    # Same case, same quote, and same snapshot are insufficient if the issued scope itself changed.
+    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update({
+        "option_ids": start["selected_option_ids"],
+    }))
+    with TestClient(create_app(database, **options)) as client:
+        recovered = client.get("/api/case").json()["case"]
+        assert recovered["last_operation"]["code"] == "invalid_review"
+        assert recovered["report"] is None
+        assert reference(recovered) == reference(reviewed)
+        assert recovered["rounds"][0]["answers"] == saved["rounds"][0]["answers"]
+        assert len(requests) == 3
+
+
+@pytest.mark.parametrize("damage, expected_code", [
+    ("legacy", "review_regeneration_required"),
+    ("missing_envelope", "invalid_review"),
+    ("missing_version_markers", "invalid_review"),
+    ("unknown_version", "invalid_review"),
+    ("malformed_claims", "invalid_review"),
+    ("invalid_claim_reference", "invalid_review"),
+    ("missing_text", "invalid_review"),
+    ("unselected_attachment", "invalid_review"),
+    ("changed_attachment_bytes", "invalid_review"),
+    ("changed_input_binding", "invalid_review"),
+    ("changed_public_report", "invalid_review"),
 ])
-def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legacy_issue):
-    database = tmp_path / "legacy.db"
+def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tmp_path, damage, expected_code):
+    database = tmp_path / "case.db"
     options = dict(translator=stub, question_generator=drafts, review_generator=offline_review)
     with TestClient(create_app(database, **options)) as client:
         snapshot = _upload(client, RAW).json()["snapshot"]
         start = initial_request(snapshot)
         start["selected_option_ids"] = [snapshot["options"][i]["option_id"] for i in (6, 0)]
         case = ready(client.post("/api/questions", json=start))
-        buyer_note = {
-            "product_upc": "Please verify the product UPC 0-36000-29145-2 before sampling.",
-            "private_phone": "Private note: 0812345678.",
-        }.get(legacy_issue, "Private note: Reach cedar914@example.test before sampling.")
-        command = round_request(case, texts=[buyer_note, None])
+        command = round_request(case, texts=["  Keep the deadline exactly.  ", None])
         original = ready(client.post("/api/reviews", json=command))
 
-    # Recreate persisted data accepted by the original Phase 3 code.
-    store = Store(database)
-    try:
-        generation, listing, record = store.workspace()
-        legacy = record.model_copy(deep=True)
-        report = legacy.view.report
-        finding = report.findings[-1]
-        question = {
-            "private_contact": "Can you send product photos to cedar914@example.test?",
-            "private_phone": "Can you text 081-234-5678?",
-            "product_upc": "Can you confirm the product UPC 036000291452?",
-            "missing_supplier_question": None,
-        }.get(legacy_issue, "Could you confirm the decoration for this option?")
-        finding.supplier_question = question
-        if legacy_issue == "wrong_name":
-            name = listing.option_name_sources()[start["selected_option_ids"][1]]
-            finding.option_ids = start["selected_option_ids"]
-            finding.citations = [finding.citations[0].model_copy(update={
-                "source_id": name.source_id, "quote": name.original_text,
-            })]
-            finding.interpretation = "The listing name for Option A includes 贴画."
-        report.supplier_draft = f"1. {question or report.findings[0].supplier_question}"
-        assert store.save_case(generation, record, legacy)
-    finally:
-        store.close()
+    def change_report(record):
+        saved_review = record["saved_review"]
+        report = record["view"]["report"]
+        if damage in {"legacy", "missing_envelope", "missing_version_markers"}:
+            del record["saved_review"]
+        if damage in {"legacy", "missing_version_markers"}:
+            del report["contract_version"], report["claims"]
+        if damage == "legacy":
+            for comparison in report["comparisons"]:
+                del comparison["shared_claim_ids"]
+                for value in comparison["values"]:
+                    del value["claim_ids"]
+            for finding in report["findings"]:
+                del finding["claim_ids"]
+        elif damage == "unknown_version":
+            saved_review["version"] = 999
+        elif damage == "malformed_claims":
+            saved_review["content"]["claims"] = {"not": "a claim list"}
+        elif damage == "invalid_claim_reference":
+            saved_review["content"]["comparisons"][0]["values"][0]["claim_ids"].append("nonexistent-claim")
+        elif damage == "missing_text":
+            saved_review["sent_evidence"]["text_ids"].pop()
+        elif damage == "unselected_attachment":
+            saved_review["sent_evidence"]["attached_image_ids"].append(snapshot["options"][1]["image_source_id"])
+        elif damage == "changed_input_binding":
+            saved_review["input_digest"] = "f" * 64
+        elif damage == "changed_public_report":
+            report["supplier_draft"] = "This draft was never validated."
+
+    if damage == "changed_attachment_bytes":
+        with sqlite3.connect(database) as connection:
+            connection.execute("""
+                UPDATE image_blobs SET payload = (
+                    SELECT image_blobs.payload FROM image_sources JOIN image_blobs USING (digest)
+                    WHERE image_sources.source_id = ?
+                ) WHERE digest = (SELECT digest FROM image_sources WHERE source_id = ?)
+            """, (snapshot["options"][0]["image_source_id"], snapshot["options"][6]["image_source_id"]))
+    else:
+        _replace_saved_case(database, change_report)
 
     async def unexpected_generation(inputs, images):
         pytest.fail("Restoring or replaying a saved report must not call the provider.")
 
-    with TestClient(create_app(database, **{**options, "review_generator": unexpected_generation})) as client:
-        recovered = client.get("/api/case").json()["case"]
-        assert reference(recovered) == reference(original)
-        assert recovered["rounds"] == original["rounds"]
-        replay = client.post("/api/reviews", json=command).json()
-        if legacy_issue in {"unlabeled_question", "product_upc"}:
-            assert recovered["phase"] == "reviewed"
-            assert f"2. [Option A] {question}" in recovered["report"]["supplier_draft"]
-            assert replay["case"] == recovered
-            return
-        assert recovered["phase"] == "failed"
-        assert recovered["report"] is None
-        assert replay["code"] == "invalid_review"
+    recovery_options = {**options, "review_generator": unexpected_generation}
+    for _ in range(2):
+        with TestClient(create_app(database, **recovery_options)) as client:
+            workspace = client.get("/api/case").json()
+            assert workspace["snapshot"] == snapshot
+            recovered = workspace["case"]
+            for field in ("case_id", "revision", "snapshot_id", "selected_option_ids", "buyer_context", "rounds"):
+                assert recovered[field] == original[field]
+            assert recovered["phase"] == "failed"
+            assert recovered["report"] is None
+            assert recovered["last_operation"]["code"] == expected_code
+            assert client.post("/api/reviews", json=command).json()["code"] == expected_code
+            alias = {**reference(recovered), "operation_id": str(uuid4()), "submission": None}
+            assert client.post("/api/reviews", json=alias).json()["code"] == expected_code
 
-    with TestClient(create_app(database, **options)) as client:
+    retries = []
+
+    async def review(inputs, images):
+        retries.append(inputs)
+        return await offline_review(inputs, images)
+
+    with TestClient(create_app(database, **{**options, "review_generator": review})) as client:
         reviewed = ready(client.post("/api/case/retry", json=retry_request(recovered)))
         assert reviewed["rounds"] == original["rounds"]
         assert reference(reviewed) == reference(original)
         assert reviewed["phase"] == "reviewed"
         assert reviewed["last_operation"]["operation_id"] == original["last_operation"]["operation_id"]
-        if legacy_issue == "missing_supplier_question":
-            assert reviewed["report"]["findings"][-1]["supplier_question"] in reviewed["report"]["supplier_draft"]
+        assert reviewed["report"] == original["report"]
+        assert ready(client.post("/api/case/retry", json=retry_request(recovered))) == reviewed
+        (inputs,) = retries
+        assert [answer.answer_text for answer in inputs.answers] == ["  Keep the deadline exactly.  ", None]
+
+    with TestClient(create_app(database, **recovery_options)) as client:
+        assert client.get("/api/case").json() == {"snapshot": snapshot, "case": reviewed}
+
+
+def test_unreadable_base_case_neither_becomes_a_report_failure_nor_resets_workspace(tmp_path):
+    database = tmp_path / "case.db"
+    options = dict(translator=stub, question_generator=drafts, review_generator=offline_review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        case = ready(client.post("/api/questions", json=initial_request(snapshot)))
+
+    _replace_saved_case(database, lambda record: record["view"].update({"rounds": [{"unexpected": "data"}]}))
+    with closing(sqlite3.connect(database)) as connection:
+        before = connection.execute("SELECT data FROM active_case").fetchone()
+    with pytest.raises(sqlite3.DatabaseError, match="saved workspace"):
+        with TestClient(create_app(database, **options)):
+            pytest.fail("Startup should surface a storage error for an unreadable case.")
+
+    storage = Store(database)
+    try:
+        assert storage.connection.execute("SELECT data FROM active_case").fetchone() == before
+        assert storage.snapshot().snapshot_id == case["snapshot_id"]
+        assert storage.image(snapshot["snapshot_id"], snapshot["options"][0]["image_source_id"]) is not None
+    finally:
+        storage.close()

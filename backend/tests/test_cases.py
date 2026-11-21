@@ -96,6 +96,7 @@ def test_zero_question_case_generates_and_recovers_the_same_report_with_no_answe
         assert reviewed["phase"] == "reviewed"
         assert reviewed["report"]["selected_option_ids"] == start["selected_option_ids"]
         assert "review_input" not in reviewed
+        assert "saved_review" not in reviewed
         assert ready(client.post("/api/reviews", json=review)) == reviewed
         alias = {**review, "operation_id": str(uuid4())}
         assert ready(client.post("/api/reviews", json=alias)) == reviewed

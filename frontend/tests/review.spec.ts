@@ -42,17 +42,32 @@ async function openWorkspace(page: Page, saved: () => CaseView) {
 test("opens scoped source evidence and compares ordered options while draft edits stay separate", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const [shared, capacity, use] = richReport.findings;
+  const claimFor = (sourceId: string) => richReport.claims.find((claim) => claim.source_id === sourceId)!;
+  const nameClaim = claimFor("name-v6");
+  const imageClaim = claimFor("image-v6");
   const report: PurchaseReview = {
     ...richReport,
     findings: [
       shared!,
       {
         ...capacity!, option_ids: ["v6"], unknowns: [],
-        citations: capacity!.citations.filter((citation) => citation.source_id === "image-v6"),
+        claim_ids: [imageClaim.claim_id],
       },
       use!,
     ],
-    comparisons: richReport.comparisons.map((comparison) => ({ ...comparison, values: [...comparison.values].reverse() })),
+    comparisons: [
+      ...richReport.comparisons.map((comparison) => ({ ...comparison, values: [...comparison.values].reverse() })),
+      {
+        label: "Saved SKU details",
+        shared_claim_ids: [],
+        values: richReport.selected_option_ids.map((id) => ({
+          option_id: id,
+          claim_ids: id === "v6" ? [nameClaim.claim_id, imageClaim.claim_id] : [],
+          summary: id === "v6" ? "" : "No SKU-specific evidence cited for this topic.",
+          limitations: [],
+        })),
+      },
+    ],
   };
   await openWorkspace(page, () => reviewed(report, {
     buyer_context: contract.input.buyer_context,
@@ -63,40 +78,58 @@ test("opens scoped source evidence and compares ordered options while draft edit
   const findings = page.getByRole("article");
   await expect(findings.getByRole("heading", { level: 3 })).toHaveText(report.findings.map((finding) => finding.title));
   await expect(findings.nth(0).getByText("Requirement unconfirmed · Option A, Option B, Option C", { exact: true })).toBeVisible();
-  await expect(findings.nth(0).getByText("Screen printing is required.", { exact: true })).toBeVisible();
+  await expect(findings.nth(0).locator("blockquote").getByText("Screen printing is required.", { exact: true })).toBeVisible();
   await expect(findings.nth(0).getByText(report.findings[0]!.priority_reason, { exact: false })).toBeVisible();
 
   const sharedEvidence = findings.nth(0).getByRole("region", { name: "Source evidence" });
-  await expect(sharedEvidence.locator("summary").filter({ hasText: /^Original option name/ })).toHaveText([
-    "Original option name · Option A", "Original option name · Option B", "Original option name · Option C",
+  await expect(sharedEvidence.locator("summary").filter({ hasText: / · Option [ABC]$/ })).toHaveText([
+    `${claimFor("name-v0").display_text} · Option A`,
+    `${claimFor("name-v1").display_text} · Option B`,
+    `${nameClaim.display_text} · Option C`,
   ]);
-  const methods = sharedEvidence
-    .locator("details").filter({ has: page.getByText("Customization methods offered", { exact: true }) });
+  const methods = sharedEvidence.locator(`[data-claim-id="${claimFor("customization-menu").claim_id}"]`);
   await methods.locator("summary").click();
   const original = snapshot.sources.find((source) => source.source_id === "customization-menu")!;
   await expect(methods.getByText(original.original_text!, { exact: true })).toBeVisible();
   await expect(methods.getByText(original.text_en!, { exact: true })).toBeVisible();
   await expect(methods.getByText("Seller listing claim · listing level", { exact: true })).toBeVisible();
   await expect(findings.nth(1).getByText("Listing conflict · Option C", { exact: true })).toBeVisible();
-  await findings.nth(1).getByText("Seller image for option v6 · Option C", { exact: true }).click();
+  await findings.nth(1).getByText(`${imageClaim.display_text} · Option C`, { exact: true }).click();
   const image = findings.nth(1).getByRole("img", { name: "Seller image for option v6" });
   await expect(image).toHaveAttribute("src", `/api/snapshots/${snapshot.snapshot_id}/images/image-v6`);
   await expect.poll(() => image.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-  await expect(findings.nth(1).getByText(capacity!.citations.find((citation) => citation.source_id === "image-v6")!.image_observation!)).toBeVisible();
   await expect(findings.nth(1).getByRole("img")).toHaveCount(1);
-  await findings.nth(2).getByText("DMSC food-contact guidance · 30 Oct 2026", { exact: true }).click();
+  await findings.nth(2).getByText(claimFor("dmsc-food-contact").display_text, { exact: true }).click();
   await expect(findings.nth(2).getByText("Official guidance · curated reference", { exact: true })).toBeVisible();
 
   const comparison = page.getByRole("table", { name: "Compare selected options" });
-  await expect(comparison.getByText("Shared selector value", { exact: true }).first()).toBeVisible();
+  const capacityRow = comparison.getByRole("row").filter({ has: page.getByRole("rowheader", { name: /^Capacity/ }) });
+  const selector = capacityRow.getByRole("rowheader").locator("details");
+  await expect(selector.locator("summary")).toHaveText(claimFor("capacity-selector").display_text);
+  await selector.locator("summary").click();
+  await expect(selector.getByText("720ml", { exact: true })).toBeVisible();
   await expect(comparison.getByRole("columnheader")).toHaveText([
     "Listing detail",
     ...snapshot.options.map((option, index) => new RegExp(`Option ${"ABC"[index]}.*${option.name_original}`)),
   ]);
   const first = report.comparisons[0]!;
-  await expect(comparison.getByRole("row").nth(1).getByRole("cell").nth(0)).toContainText(
-    first.values.find((value) => value.option_id === "v0")!.summary,
-  );
+  expect(first.values[0]!.option_id).not.toBe("v0");
+  await expect(comparison.getByRole("row").nth(1).getByRole("cell").nth(0)).toContainText(claimFor("name-v0").display_text);
+
+  const exactSkuCell = comparison.getByRole("row").filter({
+    has: page.getByRole("rowheader", { name: "Saved SKU details" }),
+  }).getByRole("cell").nth(2);
+  await expect(exactSkuCell.locator("summary")).toHaveText([nameClaim.display_text, imageClaim.display_text]);
+  const nameEvidence = exactSkuCell.locator(`details[data-claim-id="${nameClaim.claim_id}"]`);
+  const imageEvidence = exactSkuCell.locator(`details[data-claim-id="${imageClaim.claim_id}"]`);
+  await nameEvidence.locator("summary").click();
+  await expect(nameEvidence.getByText("暮色316-字母粉蓝", { exact: true })).toBeVisible();
+  await expect(imageEvidence).not.toHaveAttribute("open");
+  await expect(imageEvidence.getByRole("img")).toBeHidden();
+  await imageEvidence.locator("summary").click();
+  const comparisonImage = imageEvidence.getByRole("img", { name: "Seller image for option v6" });
+  await expect(comparisonImage).toHaveAttribute("src", `/api/snapshots/${snapshot.snapshot_id}/images/image-v6`);
+  await expect.poll(() => comparisonImage.evaluate((img) => (img as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
 
   const message = page.getByRole("textbox", { name: "Supplier message draft" });
   await expect(message).toHaveValue(report.supplier_draft);
@@ -116,6 +149,56 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);
 });
 
+test("shows an option's thumbnail limitation beside its available comparison evidence", async ({ page }) => {
+  const limitation = "The saved thumbnail for Option A is missing. Its capacity label could not be checked.";
+  const base = richReport.comparisons.find((comparison) => comparison.label === "Capacity")!;
+  const nameClaim = richReport.claims.find((claim) => claim.source_id === "name-v0")!;
+  const report = {
+    ...richReport,
+    comparisons: [{
+      ...base,
+      values: base.values.map((value) => value.option_id === "v0"
+        ? { ...value, summary: nameClaim.display_text, claim_ids: [nameClaim.claim_id], limitations: [limitation] }
+        : value),
+    }],
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openWorkspace(page, () => reviewed(report));
+  const comparison = page.getByRole("table", { name: "Compare selected options" });
+  const cells = comparison.getByRole("cell");
+  const affected = cells.nth(0);
+  await expect(affected.getByText("Option A", { exact: true })).toBeVisible();
+  await expect(affected.locator("summary")).toHaveText(nameClaim.display_text);
+  await expect(affected.getByText(limitation, { exact: true })).toBeVisible();
+  await expect(affected.getByText("Thumbnail label: 750 ml", { exact: true })).toHaveCount(0);
+  await expect(cells.nth(1).getByText(limitation, { exact: true })).toHaveCount(0);
+  await expect(cells.nth(2).getByText(limitation, { exact: true })).toHaveCount(0);
+});
+
+test("shows report buyer inputs with the issued questions and their SKU scopes", async ({ page }) => {
+  const report: PurchaseReview = {
+    ...skipReport,
+    buyer_requirements: [{
+      requirement_id: "scoped-finish", text: "Screen printing is required.", quote: "Screen printing is required.",
+      input_ref: "answer:q-finish", option_ids: ["v1"],
+      question_text: "Does the black and white option need screen printing?",
+    }],
+    open_preferences: [{
+      preference_id: "open-use", text: "Your requirements for drink use remain open.",
+      input_refs: ["context", "answer:q-use"], finding_ids: [], option_ids: ["v0", "v6"],
+      questions: [{
+        question_id: "q-use", question_text: "Will you use the first option for hot drinks?", option_ids: ["v0"],
+      }],
+    }],
+  };
+  await openWorkspace(page, () => reviewed(report));
+  const inputs = page.getByRole("region", { name: "Buyer inputs" });
+  await expect(inputs.getByText("Your answer to “Does the black and white option need screen printing?” · Option B")).toBeVisible();
+  await expect(inputs.getByText("Your requirements for drink use remain open. · Option A, Option C")).toBeVisible();
+  await expect(inputs.getByText("Your purchase context", { exact: true })).toBeVisible();
+  await expect(inputs.getByText("Question “Will you use the first option for hot drinks?” · Option A")).toBeVisible();
+});
+
 test("shows three coverage groups and limitations for a report with no findings or supplier draft", async ({ page }) => {
   const empty = {
     ...skipReport, findings: [], open_preferences: [], supplier_draft: "",
@@ -130,6 +213,9 @@ test("shows three coverage groups and limitations for a report with no findings 
     "Product match", "Intended use", "Supporting evidence", "Review limitations",
   ]);
   await expect(coverage.getByText("Reviewed", { exact: true })).toBeVisible();
+  await expect(coverage.locator(".review-coverage > li > p:last-child")).toHaveText(
+    empty.coverage.map((group) => group.note),
+  );
   await expect(coverage.getByText(/Product-detail images were not reviewed/)).toBeVisible();
   await expect(page.getByText("This review has no questions for the supplier.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);
@@ -257,4 +343,36 @@ test("rejects a ready review with an old revision and accepts corrected saved pr
   saved = { ...saved, report: { ...skipReport, revision: saved.revision } };
   await page.getByRole("button", { name: "Reload saved progress" }).click();
   await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+});
+
+test("offers explicit regeneration for a saved legacy report and keeps submitted answers", async ({ page }) => {
+  const lastOperation = {
+    operation_id: "legacy-report", stage: "review" as const, status: "failed" as const,
+    code: "review_regeneration_required", message: "This saved review needs to be regenerated. Your answers are saved.",
+  };
+  let saved = reviewed(skipReport, { phase: "failed", report: null, last_operation: lastOperation });
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") writes.push(new URL(request.url()).pathname);
+  });
+  await page.route("**/api/case/retry", (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      case_id: saved.case_id, revision: saved.revision, operation_id: lastOperation.operation_id,
+    });
+    saved = reviewed(skipReport, {
+      last_operation: { ...lastOperation, status: "ready", code: null, message: null },
+    });
+    return route.fulfill({ json: ready(saved) });
+  });
+  await openWorkspace(page, () => saved);
+  await expect(page.getByRole("alert")).toHaveText(lastOperation.message);
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveCount(0);
+  await page.getByText("Round 1 answers", { exact: true }).click();
+  await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
+  expect(writes).toEqual([]);
+  await page.getByRole("button", { name: "Regenerate report", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+  await page.getByText("Round 1 answers", { exact: true }).click();
+  await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
+  expect(writes).toEqual(["/api/case/retry"]);
 });
