@@ -5,7 +5,7 @@ import {
 import type { CaseView, Selection, Submission } from "./api";
 
 type Work = "start" | "continue" | "review" | "retry" | "refresh";
-type CaseCommand = (operationId: string, isCurrent: () => boolean) => Promise<CaseView | null>;
+type CaseCommand = (bindOperation: (payload: unknown) => string, isCurrent: () => boolean) => Promise<CaseView | null>;
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Could not save your progress. Try again.";
@@ -54,18 +54,22 @@ export function useInterviewSession() {
   }
 
   async function run(
-    stage: Exclude<Work, "refresh">, snapshotId: string, key: string, execute: CaseCommand,
+    stage: Exclude<Work, "refresh">, snapshotId: string, execute: CaseCommand,
     autoReview: boolean, retryId?: string,
   ) {
     const request = ++activeRequest.current;
     const isCurrent = () => activeRequest.current === request;
-    let id = retryId ?? operationId(key);
+    let id = retryId;
+    const bind = (payload: unknown) => {
+      id = retryId ?? operationId(JSON.stringify([stage, payload]));
+      return id;
+    };
     pending.current = true;
     setWork(stage);
     setError("");
     setNeedsRefresh(false);
     try {
-      let result = await execute(id, isCurrent);
+      let result = await execute(bind, isCurrent);
       if (!isCurrent() || !result) return null;
       setView(result);
       unconfirmedOperation.current = null;
@@ -86,7 +90,7 @@ export function useInterviewSession() {
         const saved = await savedInterview(snapshotId);
         if (!isCurrent()) return null;
         setView(saved);
-        if (saved?.last_operation?.operation_id === id) {
+        if (id && saved?.last_operation?.operation_id === id) {
           if (saved.last_operation.status === "ready") {
             unconfirmedOperation.current = null;
             return saved;
@@ -114,26 +118,27 @@ export function useInterviewSession() {
 
   function start(selection: Selection) {
     const refreshBeforeStart = pending.current || needsRefresh;
-    return run("start", selection.snapshot_id, JSON.stringify(["start", selection, caseVersion(view)]), async (id, isCurrent) => {
+    return run("start", selection.snapshot_id, async (bind, isCurrent) => {
       const previous = refreshBeforeStart ? await savedInterview(selection.snapshot_id) : view;
       if (!isCurrent()) return null;
-      return startQuestions({ ...selection, previous_case: caseVersion(previous), operation_id: id });
+      const payload = { ...selection, previous_case: caseVersion(previous) };
+      return startQuestions({ ...payload, operation_id: bind(payload) });
     }, true);
   }
 
   function submit(current: CaseView, submission: Submission | null, stage: "continue" | "review") {
     if (pending.current || needsRefresh || (stage === "continue" && !submission)) return Promise.resolve(null);
-    return run(stage, current.snapshot_id, JSON.stringify([stage, caseVersion(current), submission]), (id) => (
+    return run(stage, current.snapshot_id, (bind) => (
       stage === "continue" && submission
-        ? continueQuestions(current, submission, id)
-        : requestReview(current, submission, id)
+        ? continueQuestions(current, submission, bind([caseVersion(current), submission]))
+        : requestReview(current, submission, bind([caseVersion(current), submission]))
     ), stage === "continue");
   }
 
   function retry(current: CaseView) {
     const operation = current.last_operation;
     if (pending.current || needsRefresh || operation?.status !== "failed") return;
-    void run("retry", current.snapshot_id, "", (id) => retryCase(current, id),
+    void run("retry", current.snapshot_id, (bind) => retryCase(current, bind(null)),
       operation.stage !== "review", operation.operation_id);
   }
 

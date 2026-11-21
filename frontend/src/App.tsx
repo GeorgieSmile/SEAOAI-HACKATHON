@@ -47,6 +47,8 @@ export function App() {
   const generation = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const selectionTitle = useRef<HTMLHeadingElement>(null);
+  const resetHeading = useRef<HTMLHeadingElement>(null);
+  const startOverButton = useRef<HTMLButtonElement>(null);
   const interview = useInterviewSession();
   const restoreInterview = interview.restore;
   const recovering = intake.status === "recovering";
@@ -75,6 +77,10 @@ export function App() {
     });
     return () => controller.abort();
   }, [recovering, restoreInterview]);
+
+  useEffect(() => {
+    if (resetPrompt) resetHeading.current?.focus();
+  }, [resetPrompt]);
 
   async function importFile(file: File) {
     if (!canUpload) return;
@@ -118,6 +124,8 @@ export function App() {
     && interview.view.selected_option_ids.every((id, index) => id === selected[index])
     ? interview.view
     : null;
+  const savedInterviewChanged = !editingSelection && interview.view !== null && activeInterview === null
+    && !interview.error && !interview.work;
 
   async function clearListing() {
     if (!resetTarget || resetting || resetStale) return;
@@ -288,7 +296,7 @@ export function App() {
               </button>
             )}
             {snapshot && !resetPrompt && (
-              <button className="button button-secondary" type="button" onClick={() => {
+              <button ref={startOverButton} className="button button-secondary" type="button" onClick={() => {
                 setResetTarget({
                   snapshotId: snapshot.snapshot_id,
                   previousCase: caseVersion(interview.view),
@@ -300,7 +308,7 @@ export function App() {
           </div>
           {resetPrompt && (
             <div className="reset-confirmation" role="group" aria-labelledby="reset-heading">
-              <h3 id="reset-heading">Clear the saved listing and answers?</h3>
+              <h3 id="reset-heading" ref={resetHeading} tabIndex={-1}>Clear the saved listing and answers?</h3>
               <p className="muted">Starting over removes the current listing, photos and answers from this app.</p>
               {resetError && <p className="error" role="alert">{resetError}</p>}
               <div className="upload-actions">
@@ -308,6 +316,7 @@ export function App() {
                   setResetTarget(null);
                   setResetError("");
                   setResetStale(false);
+                  requestAnimationFrame(() => startOverButton.current?.focus());
                 }}>Cancel</button>
                 {resetStale ? (
                   <button className="button button-secondary" type="button" onClick={reloadListing}>Reload saved progress</button>
@@ -393,8 +402,8 @@ export function App() {
             busy={interview.work !== null}
             blocked={resetPrompt}
             workingMessage={interview.work ? workMessages[interview.work] : ""}
-            error={interview.error}
-            needsRefresh={interview.needsRefresh}
+            error={savedInterviewChanged ? "The saved interview changed. Reload saved progress to open it." : interview.error}
+            needsRefresh={interview.needsRefresh || savedInterviewChanged}
             onChangeSelection={() => {
                 interview.suspend();
               setEditingSelection(true);
@@ -402,7 +411,10 @@ export function App() {
             }}
             onStartAgain={beginQuestions}
             onRetry={() => { if (activeInterview) interview.retry(activeInterview); }}
-            onRefresh={() => void interview.refresh(snapshot.snapshot_id)}
+            onRefresh={() => {
+              if (savedInterviewChanged) reloadListing();
+              else void interview.refresh(snapshot.snapshot_id);
+            }}
             onSubmit={(submission, action) => activeInterview
               ? interview.submit(activeInterview, submission, action)
               : Promise.resolve(null)}

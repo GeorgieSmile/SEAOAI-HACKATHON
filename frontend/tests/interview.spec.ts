@@ -380,3 +380,34 @@ test("a newer case on the same snapshot must be loaded and confirmed before rese
   });
   await expect(page.getByRole("button", { name: "Choose ZIP", exact: true })).toBeVisible();
 });
+
+test("retains a draft and resends the identical command after a lost submission", async ({ page }) => {
+  const freeTextRound = { ...firstRound, questions: firstRound.questions.map(
+    (question) => question.question_id === "q-use" ? { ...question, choices: [] } : question,
+  ) };
+  let saved = view({ rounds: [freeTextRound] });
+  let calls = 0;
+  await page.route("**/api/questions/continue", (route) => {
+    if (++calls === 1) return route.abort("failed");
+    const payload = route.request().postDataJSON();
+    saved = view({
+      revision: 1, rounds: [{ ...freeTextRound, answers: payload.submission.answers }, secondRound],
+      last_operation: operation("continue", "ready", payload.operation_id),
+    });
+    return route.fulfill({ json: response(saved) });
+  });
+  await mockSaved(page, () => saved);
+
+  const answer = page.getByRole("textbox", { name: "Your answer" });
+  await answer.fill("  For cold drinks only.  ");
+  const first = page.waitForRequest("**/api/questions/continue");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const originalPayload = (await first).postDataJSON();
+  await expect(page.getByRole("alert")).toContainText("The server could not be reached.");
+  await expect(answer).toHaveValue("  For cold drinks only.  ");
+
+  const second = page.waitForRequest("**/api/questions/continue");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  expect((await second).postDataJSON()).toEqual(originalPayload);
+  await expect(page.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
+});

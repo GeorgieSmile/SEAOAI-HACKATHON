@@ -303,9 +303,10 @@ export function Interview({
               </div>
             </form>
           )}
-          {!activeRound && view?.reason && !busy && <p className="interview-status">{view.reason}</p>}
-          {!activeRound && reviewPrepared && !busy && (
-            <p className="interview-status" role="status">Your selected options and saved answers are ready for the purchase review.</p>
+          {!activeRound && !busy && (view?.reason || reviewPrepared) && (
+            <p className="interview-status" role={reviewPrepared ? "status" : undefined}>
+              {view?.reason ?? "Your selected options and saved answers are ready for the purchase review."}
+            </p>
           )}
           {!activeRound && !reviewPrepared && !locked && view && (failed || view.phase === "ready_for_review") && (
             <div className="interview-actions">
