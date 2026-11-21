@@ -232,7 +232,7 @@ export function App() {
   const pageTitle = !snapshot ? "Import a listing" : progress !== 2 ? steps[progress - 1]
     : interviewScreen === "brief" ? "Review buying brief" : "Buyer questions";
   useEffect(() => {
-    document.title = `${pageTitle} · Proofly`;
+    document.title = `${pageTitle} · DiliDoo!`;
   }, [pageTitle]);
 
   const replaceButton = (
@@ -244,7 +244,7 @@ export function App() {
     <>
       <header className="site-header">
         <div className="container site-header-inner">
-          <span className="brand"><img src="/proofly-icon.svg" alt="" width="36" height="36" />proofly</span>
+          <span className="brand"><img src="/dilidoo-icon.svg" alt="" width="36" height="36" /><span>DiliDoo<span className="brand-bang">!</span></span></span>
           <ol className="steps" aria-label="Case progress">
             {steps.map((step, index) => <li key={step} aria-current={progress === index + 1 ? "step" : undefined}
               className={index + 1 < progress ? "done" : ""}><b aria-hidden="true">{index + 1 < progress ? "✓" : index + 1}</b>{step}</li>)}
@@ -267,8 +267,13 @@ export function App() {
       <main className={`container ${snapshot ? "workspace" : "landing"}`}>
         {(!snapshot || editingSelection) && (
           <div className="intro">
-            <span className="eyebrow">{snapshot ? "Step 1 of 3" : "Check a seller before you pay"}</span>
-            <h1>{snapshot ? "Confirm what you’re buying" : "Know what you’re buying before you order"}</h1>
+            <span className="eyebrow">{snapshot ? "Step 1 of 3" : "Check a seller before you order"}</span>
+            {snapshot ? <h1>Confirm what you’re buying</h1> : (
+              <div className="landing-slogan">
+                <img src="/dilidoo-detective.jpg" alt="" width="1254" height="1254" />
+                <h1>We do the diligence. <span className="h1-accent">You do the business.</span></h1>
+              </div>
+            )}
             <p>{snapshot ? "Check the seller’s wording and photos, then pick up to three options."
               : "Paste a TTP Cargo product link. Check the seller’s wording, choose your options, and get an evidence report with questions to send the seller."}</p>
           </div>

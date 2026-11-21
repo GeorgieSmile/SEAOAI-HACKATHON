@@ -360,6 +360,13 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeFocused();
   const findings = page.getByRole("article");
   await expect(findings.getByRole("heading", { level: 3 })).toHaveText(report.findings.map((finding) => finding.title));
+  await expect(findings.first().locator(".review-finding-content")).toBeHidden();
+  const firstFindingLink = page.getByRole("link", { name: report.findings[0]!.title, exact: true }).first();
+  await firstFindingLink.click();
+  await expect(findings.first().locator(".review-finding-content")).toBeVisible();
+  for (const row of [findings.nth(1), findings.nth(2)]) {
+    await row.getByText("See the evidence", { exact: true }).click();
+  }
   await expect(findings.nth(0).locator(".review-scope span")).toHaveText(["Requirement unconfirmed", "Option A", "Option B", "Option C"]);
   await expect(findings.nth(0).locator("blockquote").getByText("Screen printing is required.", { exact: true })).toBeVisible();
   await expect(findings.nth(0).getByText(report.findings[0]!.priority_reason, { exact: false })).toBeVisible();
