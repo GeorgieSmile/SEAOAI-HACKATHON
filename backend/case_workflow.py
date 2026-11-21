@@ -37,7 +37,8 @@ ReviewImages = Mapping[str, tuple[str, bytes]]
 ReviewGenerator = Callable[[ReviewInput, ReviewImages], Awaitable[ReviewResult]]
 UserCommand = StartCase | ContinueCase | PrepareBrief | ConfirmBrief | BriefEdit | ResumeQuestions
 REVIEW_RESULT = TypeAdapter(ReviewResult)
-CURRENT_CANONICAL_REVIEW_VERSION = 7
+HISTORICAL_CANONICAL_REVIEW_VERSION = 7
+CONFIRMED_REVIEW_VERSION = 8
 CURRENT_ORDER_CONFLICT_VERSION = 3
 INVALID_REVIEW = "The review could not be validated. Your answers are saved."
 REGENERATE_REVIEW = "This saved review needs to be regenerated. Your answers are saved."
@@ -319,11 +320,12 @@ def _operation_result(case: CaseView) -> CaseView:
     return case
 
 
-def _failure(record: CaseRecord, code: str, message: str) -> CaseRecord:
+def _failure(record: CaseRecord, code: str, message: str, *, reconfirm: bool = False) -> CaseRecord:
     operation = record.view.last_operation.model_copy(update={"status": "failed", "code": code, "message": message})
     case = record.view.model_copy(update={"phase": "failed", "report": None, "reason": None, "last_operation": operation})
-    if code == "review_regeneration_required":
+    if reconfirm or code == "review_regeneration_required":
         case = case.model_copy(update={"confirmed_revision": None})
+        record = record.model_copy(update={"confirmed_review_digest": None, "review_input": None})
     return record.model_copy(update={"view": case, "saved_review": None})
 
 
@@ -346,14 +348,15 @@ def _report_binding_matches(report: dict, inputs: ReviewInput) -> bool:
 
 
 def _review_digest(
-    inputs: ReviewInput, operation_id: str, images: ReviewImages, scope: SentReviewEvidence, *,
+    inputs: ReviewInput, operation_id: str, images: ReviewImages, scope: SentReviewEvidence | None, *,
     version: int,
 ) -> str:
-    if scope != review_sent_evidence(inputs, images):
+    actual_scope = review_sent_evidence(inputs, images)
+    if scope is not None and scope != actual_scope:
         raise ValueError("The sent evidence does not match the case request.")
     # Include the source binding and bytes of each attachment, not just its snapshot locator.
     attachments = []
-    for source_id in scope.attached_image_ids:
+    for source_id in actual_scope.attached_image_ids:
         mime, payload = images[source_id]
         attachments.append((source_id, mime, sha256(payload).hexdigest()))
     excluded = {"requirements"} if version < 5 else set()
@@ -365,10 +368,12 @@ def _review_digest(
         del input_fields["snapshot"]["linked_option_id"]
     material = {
         "input": input_fields, "operation_id": operation_id,
-        "scope": scope.model_dump(mode="json"), "attachments": attachments,
+        "scope": actual_scope.model_dump(mode="json"), "attachments": attachments,
     }
     if version >= 4:
         material["version"] = version
+    if version >= CONFIRMED_REVIEW_VERSION:
+        material["confirmed_revision"] = inputs.revision
     return sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -383,7 +388,7 @@ class CaseWorkflow:
         self.generate_brief = generate_brief
 
     def recover_saved_case(self) -> None:
-        generation, snapshot, record, report, saved_review = self.store.workspace_for_recovery()
+        generation, snapshot, record, report, saved_review, invalid_confirmation = self.store.workspace_for_recovery()
         if record is None:
             return
         case = record.view
@@ -408,12 +413,38 @@ class CaseWorkflow:
         except (KeyError, ValueError) as error:
             raise sqlite3.DatabaseError("The saved buyer decisions could not be matched to the interview.") from error
         upgraded = upgraded.model_copy(update={"order_conflict_version": CURRENT_ORDER_CONFLICT_VERSION})
+        if invalid_confirmation and operation.stage == "review":
+            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            self._save(generation, record, failed)
+            return
+        confirmed = None
+        if operation.stage == "review" and upgraded.confirmed_review_digest is not None:
+            try:
+                confirmed = self._confirmed_review(record, snapshot)
+            except ValueError:
+                failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                self._save(generation, record, failed)
+                return
+        if confirmed is not None and new_decisions and case.phase != "reviewed":
+            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            self._save(generation, record, failed)
+            return
+        if operation.stage == "review" and confirmed is None and (
+            operation.status == "running" or (
+                operation.status == "failed" and (case.confirmed_revision is not None or record.review_input is not None)
+            )
+        ):
+            failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+            self._save(generation, record, failed)
+            return
         if operation.status == "running":
             interrupted = _failure(upgraded, "analysis_failed", _interrupted(operation.stage))
             self._save(generation, record, interrupted)
             return
         if case.phase != "reviewed":
-            if legacy or new_decisions or old_order_projection or report is not None or saved_review is not None:
+            if case.phase == "ready_for_review" and upgraded.view.requirements is None:
+                upgraded = _upgrade_legacy_case(upgraded)
+            if upgraded != record or report is not None or saved_review is not None or invalid_confirmation:
                 self._save(generation, record, upgraded)
             return
         if snapshot is None or case.snapshot_id != snapshot.snapshot_id or operation.stage != "review":
@@ -430,18 +461,25 @@ class CaseWorkflow:
             if operation.status != "ready":
                 raise ValueError("The saved review operation has not completed successfully.")
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
+            if validated.version == CONFIRMED_REVIEW_VERSION and confirmed is None:
+                failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                self._save(generation, record, failed)
+                return
+            if validated.version < CONFIRMED_REVIEW_VERSION and confirmed is not None:
+                raise ValueError("The saved review version does not match its confirmation.")
             if (
                 (validated.version >= 5) != (inputs.requirements is not None)
                 or (validated.version >= 6) != isinstance(validated.content, CanonicalReviewContent)
             ):
                 raise ValueError("The saved review has a mismatched requirement contract version.")
-            images = self._review_images(inputs)
+            images = confirmed[1] if confirmed is not None else self._review_images(inputs)
             digest = _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=validated.version)
             if validated.input_digest != digest:
                 raise ValueError("The saved review belongs to different case input or evidence.")
             rebuilt = assemble_review(
                 inputs, validated.content, sent_evidence=validated.sent_evidence,
                 historical_decision_labels=validated.version == 6,
+                historical_supplier_questions=validated.version < CONFIRMED_REVIEW_VERSION,
             )
             if validated.version < 4:
                 if (
@@ -459,9 +497,13 @@ class CaseWorkflow:
                     return
                 validated = migrated
                 inputs = _review_input(snapshot, upgraded.view)
-                rebuilt = assemble_review(inputs, validated.content, sent_evidence=validated.sent_evidence)
+                rebuilt = assemble_review(
+                    inputs, validated.content, sent_evidence=validated.sent_evidence, historical_supplier_questions=True,
+                )
         except ValueError:
-            failed = _failure(upgraded, "invalid_review", INVALID_REVIEW)
+            failed = _failure(
+                upgraded, "invalid_review", INVALID_REVIEW, reconfirm=confirmed is None or new_decisions,
+            )
             self._save(generation, record, failed)
             return
         if new_decisions:
@@ -469,11 +511,11 @@ class CaseWorkflow:
             self._save(generation, record, failed)
             return
         version = max(validated.version, 4)
-        if inputs.requirements is not None and validated.version < CURRENT_CANONICAL_REVIEW_VERSION:
+        if inputs.requirements is not None and validated.version < HISTORICAL_CANONICAL_REVIEW_VERSION:
             canonical = canonicalize_review_content(validated.content)
             try:
                 unchanged = canonical is not None and rebuilt == assemble_review(
-                    inputs, canonical, sent_evidence=validated.sent_evidence,
+                    inputs, canonical, sent_evidence=validated.sent_evidence, historical_supplier_questions=True,
                 )
             except ValueError:
                 unchanged = False
@@ -482,7 +524,7 @@ class CaseWorkflow:
                 self._save(generation, record, failed)
                 return
             validated = validated.model_copy(update={"content": canonical})
-            version = CURRENT_CANONICAL_REVIEW_VERSION
+            version = HISTORICAL_CANONICAL_REVIEW_VERSION
         if version != validated.version or old_order_projection:
             migrated = validated.model_copy(update={
                 "version": version,
@@ -548,11 +590,7 @@ class CaseWorkflow:
         if case is previous and previous.confirmed_revision == previous.revision:
             return _operation_result(previous)
 
-        working = (
-            _upgrade_legacy_case(record)
-            if record.initial_requirements is None and previous.last_operation.stage == "start" and previous.phase == "failed"
-            else record
-        )
+        working = _upgrade_legacy_case(record) if record.initial_requirements is None else record
         case = _resolved_view(working, case)
         case = case.model_copy(update={
             "phase": "ready_for_review",
@@ -562,6 +600,7 @@ class CaseWorkflow:
         })
         settled = working.model_copy(update={
             "view": case, "question_input": None, "review_input": None, "saved_review": None,
+            "confirmed_review_digest": None,
         })
         self._save(generation, record, settled, command=command, stage="brief")
         return case
@@ -634,6 +673,7 @@ class CaseWorkflow:
         })
         self._save(generation, record, working.model_copy(update={
             "view": case, "question_input": None, "review_input": None, "saved_review": None,
+            "confirmed_review_digest": None,
         }), command=command, stage="brief")
         return case
 
@@ -696,18 +736,24 @@ class CaseWorkflow:
         if case.confirmed_revision == case.revision:
             self._save(generation, record, record, command=command, stage="review")
             return _operation_result(case)
-        if case.phase != "ready_for_review" or any(round.answers is None for round in case.rounds):
+        if (
+            case.phase != "ready_for_review" or case.requirements is None
+            or any(round.answers is None for round in case.rounds)
+        ):
             raise _invalid("Open and review the current buying brief before confirming.", case)
         snapshot = self._command_snapshot(case)
         review_input = _review_input(snapshot, case)
         images = self._review_images(review_input)
+        operation_id = str(command.operation_id)
+        digest = _review_digest(review_input, operation_id, images, None, version=CONFIRMED_REVIEW_VERSION)
         case = case.model_copy(update={
             "confirmed_revision": case.revision,
             "phase": "generating_review",
-            "last_operation": CaseOperation(operation_id=str(command.operation_id), stage="review", status="running"),
+            "last_operation": CaseOperation(operation_id=operation_id, stage="review", status="running"),
         })
         pending = record.model_copy(update={
-            "view": case, "question_input": None, "review_input": review_input, "saved_review": None,
+            "view": case, "question_input": None, "review_input": review_input,
+            "saved_review": None, "confirmed_review_digest": digest,
         })
         self._save(generation, record, pending, command=command, stage="review")
         return await self._run_review(generation, pending, images)
@@ -751,15 +797,19 @@ class CaseWorkflow:
             self._save(generation, current, current, command=command, stage=stage)
             return _operation_result(previous)
         operation_id = str(command.operation_id)
-        case = _resolved_view(current, case)
+        working = current
+        if len(case.rounds) == 3 and current.initial_requirements is None:
+            working = _upgrade_legacy_case(current)
+        case = _resolved_view(working, case)
         case = case.model_copy(update={"brief_impact": _brief_impact(previous, case)})
         if len(case.rounds) == 3:
             case = case.model_copy(update={
                 "phase": "ready_for_review", "reason": "You have reached the three-round question limit.",
                 "last_operation": CaseOperation(operation_id=operation_id, stage="continue", status="ready"),
             })
-            settled = current.model_copy(update={
+            settled = working.model_copy(update={
                 "view": case, "question_input": None, "review_input": None, "saved_review": None,
+                "confirmed_review_digest": None,
             })
             self._save(generation, current, settled, command=command, stage=stage)
             return case
@@ -776,7 +826,8 @@ class CaseWorkflow:
         snapshot = self._command_snapshot(case)
         question_input = _question_input(snapshot, case, round_number=len(case.rounds) + 1)
         record = current.model_copy(update={
-            "view": case, "question_input": question_input, "review_input": None, "saved_review": None,
+            "view": case, "question_input": question_input, "review_input": None,
+            "saved_review": None, "confirmed_review_digest": None,
         })
         self._save(generation, current, record, command=command, stage="continue")
         return await self._run_questions(generation, record)
@@ -791,12 +842,10 @@ class CaseWorkflow:
 
         operation = case.last_operation.model_copy(update={"status": "running", "code": None, "message": None})
         if operation.stage == "review":
-            if case.confirmed_revision != case.revision:
+            try:
+                review_input, images = self._confirmed_review(record, snapshot)
+            except ValueError:
                 raise _invalid("Review and confirm your buying brief before generating a new report.", case)
-            if snapshot is None or snapshot.snapshot_id != case.snapshot_id:
-                raise _obsolete(case)
-            review_input = _review_input(snapshot, case)
-            images = self._review_images(review_input)
             pending = record.model_copy(update={
                 "question_input": None, "review_input": review_input, "saved_review": None,
                 "view": case.model_copy(update={"phase": "generating_review", "last_operation": operation}),
@@ -813,6 +862,25 @@ class CaseWorkflow:
         pending = record.model_copy(update={"view": pending_view, "question_input": inputs})
         self._save(generation, record, pending)
         return await self._run_questions(generation, pending)
+
+    def _confirmed_review(self, record: CaseRecord, snapshot: ListingSnapshot | None) -> tuple[ReviewInput, ReviewImages]:
+        case = record.view
+        if (
+            record.confirmed_review_digest is None or case.confirmed_revision != case.revision
+            or case.requirements is None or snapshot is None or snapshot.snapshot_id != case.snapshot_id
+            or any(round.answers is None for round in case.rounds)
+        ):
+            raise ValueError("The current buying brief has no matching confirmation.")
+        inputs = _review_input(snapshot, case)
+        if record.review_input is not None and record.review_input != inputs:
+            raise ValueError("The pending request does not match the confirmed buying brief.")
+        images = self._review_images(inputs)
+        digest = _review_digest(
+            inputs, case.last_operation.operation_id, images, None, version=CONFIRMED_REVIEW_VERSION,
+        )
+        if record.confirmed_review_digest != digest:
+            raise ValueError("The confirmed buying brief or evidence changed.")
+        return inputs, images
 
     def _review_images(self, inputs: ReviewInput) -> ReviewImages:
         sources = {source.source_id: source for source in inputs.snapshot.sources}
@@ -877,6 +945,8 @@ class CaseWorkflow:
                 "rounds": rounds, "reason": None if questions else result.reason, "last_operation": operation,
             })
             settled = record.model_copy(update={"initial_requirements": initial, "question_input": None})
+            if not questions and initial is None:
+                settled = _upgrade_legacy_case(settled)
             case = _resolved_view(settled, case)
             if question_input.round_number == 1 and not record.view.rounds and record.view.brief_impact is None:
                 case = case.model_copy(update={"brief_impact": _brief_impact(record.view, case)})
@@ -898,7 +968,7 @@ class CaseWorkflow:
 
     async def _run_review(self, generation: int, record: CaseRecord, images: ReviewImages) -> CaseView:
         inputs = record.review_input
-        assert inputs is not None
+        assert inputs is not None and inputs.requirements is not None
         settled = None
         try:
             raw = await self.generate_review(inputs.model_copy(deep=True), images)
@@ -910,18 +980,22 @@ class CaseWorkflow:
             else:
                 operation = record.view.last_operation.model_copy(update={"status": "ready"})
                 scope = result.sent_evidence
-                canonical = isinstance(result.content, CanonicalReviewContent)
-                if canonical != (inputs.requirements is not None):
+                if not isinstance(result.content, CanonicalReviewContent):
                     raise ValueError("The report selections must follow the current buyer decision contract.")
-                version = CURRENT_CANONICAL_REVIEW_VERSION if canonical else 4
-                digest = _review_digest(inputs, operation.operation_id, images, scope, version=version)
+                digest = _review_digest(
+                    inputs, operation.operation_id, images, scope, version=CONFIRMED_REVIEW_VERSION,
+                )
+                if digest != record.confirmed_review_digest:
+                    raise ValueError("The report does not match the confirmed buying brief.")
                 report = assemble_review(inputs, result.content, sent_evidence=scope)
                 if report != result.report:
                     raise ValueError("The report does not match its validated claims.")
                 settled = record.model_copy(update={
                     "view": record.view.model_copy(update={"phase": "reviewed", "report": report, "last_operation": operation}),
                     "review_input": None,
-                    "saved_review": SavedReview(version=version, input_digest=digest, content=result.content, sent_evidence=scope),
+                    "saved_review": SavedReview(
+                        version=CONFIRMED_REVIEW_VERSION, input_digest=digest, content=result.content, sent_evidence=scope,
+                    ),
                 })
         except (AttributeError, TypeError, ValidationError, ValueError):
             settled = _failure(record, "invalid_review", INVALID_REVIEW)

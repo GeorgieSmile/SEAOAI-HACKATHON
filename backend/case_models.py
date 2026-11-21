@@ -130,9 +130,12 @@ class CaseView(CaseReference):
     last_operation: CaseOperation
 
 
+ReviewDigest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
 class SavedReview(ContractModel):
-    version: Literal[2, 3, 4, 5, 6, 7]
-    input_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    version: Literal[2, 3, 4, 5, 6, 7, 8]
+    input_digest: ReviewDigest
     content: ReviewSelection
     sent_evidence: SentReviewEvidence
 
@@ -142,6 +145,7 @@ class CaseRecord(ContractModel):
     question_input: QuestionInput | None = None
     review_input: ReviewInput | None = None
     saved_review: SavedReview | None = None
+    confirmed_review_digest: ReviewDigest | None = Field(default=None, exclude_if=lambda digest: digest is None)
     requirement_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
     order_conflict_version: Literal[1, 2, 3] | None = Field(default=None, exclude_if=lambda version: version is None)
     initial_requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)

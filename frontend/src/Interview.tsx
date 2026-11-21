@@ -398,6 +398,7 @@ export function Interview({
           {error && <p className="interview-error" role="alert" tabIndex={-1} ref={errorAlert}>{error}</p>}
           <PurchaseReview key={report.revision} report={report} snapshot={snapshot}
             requirements={view.requirements}
+            confirmed={view.confirmed_revision === report.revision} onReviewBrief={() => setReopenBrief(true)}
             supplierDraft={draftEdit?.revision === report.revision ? draftEdit.text : report.supplier_draft}
             onChangeDraft={(text) => setDraftEdit({ revision: report.revision, text })} />
           {history}

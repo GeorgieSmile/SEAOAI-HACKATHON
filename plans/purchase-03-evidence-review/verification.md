@@ -242,3 +242,32 @@ git diff --cached --check  # passed
 ```
 
 The one-off browser harness ran `PURCHASE_BACKEND_URL=http://127.0.0.1:18110 frontend/node_modules/.bin/vite frontend --host 127.0.0.1 --port 5173 --strictPort` and `node .verification/walk.cjs` against Uvicorn with a controlled supplier transport and scripted translation, questions, and review. Its first run stopped at an edit-button locator using the visible text. The rerun used the existing accessible name `Edit round 1` and completed both viewport flows. Live provider validation, integrated T1–T5, and fresh Standards and Spec reviews remain pending.
+
+## Confirmed buying brief on main
+
+This replacement for PR #7 starts at `9513190`. Phase 2 owns the buyer’s decisions. The report reads their saved revision, scopes findings and original evidence to the selected SKUs, and builds the supplier draft from the validated terms. The original Website Test.zip and all SQLite files stayed on the local machine.
+
+| Check | Result |
+| --- | --- |
+| Original ZIP in Chrome, production React build, FastAPI and disposable SQLite | Selected black/white (A), blue/white (B), and black/pink (C). Confirmed three successive revisions after applying the blue exception, moving the shared deadline, and undoing the move. Only B’s supplier question allowed custom work. A/C asked for ready-made stock. Both questions used 1 December, then 15 December, then 1 December. Clipboard contents matched the draft. |
+| Finding provenance | Expanded B’s finding to see the blue SKU name, the original correction allowing custom, and the original shared deadline. Opened A’s image evidence and matched the served bytes to the archived thumbnail. |
+| Original, missing, and wrong thumbnail | Inspected the three 750 ml labels and independently hashed the ZIP entries. At the scripted SDK boundary the image bytes matched each SKU. Removing only blue’s image from a disposable ZIP produced a limitation for B and preserved A/C’s evidence. A scripted response attributing A’s image to B failed validation on both attempts. No report was saved. Every outcome survived reopening. |
+| Concurrency and restart | The stale tab received HTTP 409. A double-click on the current brief started one report. Restarted the backend on the same database and opened the report in fresh desktop and mobile browser sessions. The case, revision and report matched the saved JSON with GET requests only. |
+| Legacy cases | Opened historical databases written before the buying brief and by the baseline at `9513190`. Both reviewed cases retained their report, SKU selection, rounds, revision and original confirmation state with providers disabled. |
+| Layout | Inspected the top, middle and bottom of the report at 1280 × 850 and 390 × 850. The report and sticky draft stayed within their columns on desktop, and the mobile page fit the viewport. |
+
+The integrated suite passed 487 backend tests and 42 Chrome tests. Frontend typecheck, production build, and whitespace checks passed. The original-ZIP HTTP suite also moved only A’s stock deadline to 15 December. B kept conditional custom and C kept stock, both by 1 December. Other regressions cover preserving an independent capacity requirement when combining it with order and arrival terms.
+
+### Reproduction
+
+From the repository root, with dependencies installed and Chrome available:
+
+```sh
+PURCHASE_TEST_ZIP="$HOME/Downloads/Website Test.zip" OPENAI_LIVE_TRANSLATION=0 OPENAI_LIVE_QUESTIONS=0 OPENAI_LIVE_REVIEW=0 .venv/bin/python -m pytest -q -p no:cacheprovider backend/tests --tb=short
+PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --workers=2 --reporter=line
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
+git diff --check
+```
+
+The original-ZIP browser run used the offline providers in `backend.tests.offline_server` with a separate SQLite database and a Vite production preview. The local test server accepted the preview origin on port 5203 because 5173 was in use. The SDK thumbnail check used an in-process HTTP transport. These runs exercised the application and validation without spending API credits. Live provider quality and a fresh independent review were not evaluated in this delivery.

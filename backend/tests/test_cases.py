@@ -23,10 +23,15 @@ PROMPTS = {
 
 
 async def drafts(request):
+    structured = (
+        {"topic": "other", "requirement_ids": [], "choice_effects": []}
+        if request.requirements is not None else {}
+    )
     return QuestionResult(reason="These answers affect the purchase review.", questions=[
         QuestionDraft(
             prompt=prompt, why_ask="This determines what you need from the supplier.",
             option_ids=request.selected_option_ids, source_ids=[], choices=[],
+            **structured,
         )
         for prompt in PROMPTS[request.round_number]
     ])

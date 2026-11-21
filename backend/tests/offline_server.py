@@ -168,8 +168,8 @@ def scripted_report(inputs: ReviewInput, attached_image_ids: set[str]) -> dict:
         for row in inputs.requirements:
             if row.status != "active":
                 continue
-            if row.topic == "customization" and row.option_ids == selected:
-                findings[0]["requirement_ids"].append(row.requirement_id)
+            # Leave order and arrival combinations to the same fallback used for provider omissions.
+            if row.delivery_condition is not None or (row.supplier_target and row.supplier_target.kind == "order_type"):
                 continue
             findings.append({
                 "finding_id": f"confirm-{row.requirement_id}", "option_ids": row.option_ids,

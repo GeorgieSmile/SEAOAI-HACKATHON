@@ -811,6 +811,8 @@ fieldset {
 
 .review-source summary { padding: 7px 10px; cursor: pointer; font-weight: 640; color: var(--green); }
 .review-source-body { display: grid; gap: 8px; padding: 3px 10px 10px; font-weight: 400; }
+.review-skus ul { list-style: none; margin: 0; }
+.review-skus strong { display: block; }
 .review-source-body img { display: block; max-width: min(100%, 250px); height: auto; border-radius: 4px; }
 .review-source-body p { white-space: pre-wrap; }
 .review-source-label { font-weight: 680; }
@@ -832,6 +834,11 @@ fieldset {
 }
 
 .review-next p + p { margin-top: 9px; }
+.review-linked-deadlines,
+.review-next .button,
+.review-buyer-inputs .button { margin-top: 8px; }
+.review-linked-deadlines > p { margin-bottom: 4px; font-size: .84rem; }
+.review-buyer-inputs .requirement-decisions-list { padding-left: 0; }
 
 .review-comparison-panel { grid-column: 1 / -1; }
 .review-comparison {

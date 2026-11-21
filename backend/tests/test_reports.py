@@ -10,8 +10,9 @@ import pytest
 from openai import AsyncOpenAI
 
 from backend import ai, report
-from backend.contracts import ReviewInput
+from backend.contracts import BriefChange, ResolvedRequirement, ReviewInput
 from backend.intake import parse_listing
+from backend.requirements import resolve_requirements
 from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewFailed, ReviewReady
 
 
@@ -268,7 +269,7 @@ def test_supplier_draft_asks_about_custom_orders_only_in_the_linked_option_scope
         assemble(request, images, payload)
 
 
-def test_overlapping_active_stock_decisions_keep_both_rows_and_one_draft_question_per_option(example):
+def test_overlapping_active_stock_decisions_keep_both_rows_and_group_identical_questions(example):
     request, images = example
     option_a, option_b, option_c = request.selected_option_ids
     first, second = "Ready-made stock only.", "Only ready-made stock."
@@ -296,9 +297,134 @@ def test_overlapping_active_stock_decisions_keep_both_rows_and_one_draft_questio
     assert [finding.option_ids for finding in rendered.findings] == [[option_a, option_b], [option_b, option_c]]
     assert rendered.findings[0].supplier_question == rendered.findings[1].supplier_question
     question = rendered.findings[0].supplier_question
-    assert rendered.supplier_draft.splitlines()[7::2] == [
+    assert rendered.supplier_draft.splitlines()[7::2] == [f"1. [Options A, B, C] {question}"]
+
+    historical = report.assemble_review(
+        request, CanonicalReviewContent.model_validate(canonical_content(request, "customization")),
+        sent_evidence=report.review_sent_evidence(request, images), historical_supplier_questions=True,
+    )
+    assert historical.supplier_draft.splitlines()[7::2] == [
         f"1. [Options A, B] {question}", f"2. [Option C] {question}",
     ]
+
+
+@pytest.fixture
+def scoped_order_terms(example):
+    original, images = example
+    options = original.selected_option_ids
+    initial_text = [
+        ("stock", "Ready-made only.", "customization", "order_type"),
+        ("shared-arrival", "The order must be delivered by 1 December.", "deadline", "delivery_deadline"),
+        ("capacity", "I require 750 ml.", "capacity", "capacity"),
+    ]
+    context = " ".join(quote for _, quote, _, _ in initial_text)
+    initial = [ResolvedRequirement.model_validate({
+        "requirement_id": requirement_id, "statement": quote, "status": "active",
+        "topic": topic, "buyer_facet": facet, "option_ids": options,
+        "provenance": [{
+            "input_ref": "context", "quote": quote, "action": "add", "option_ids": options,
+            "context_start": context.index(quote), "question_text": None,
+        }],
+    }) for requirement_id, quote, topic, facet in initial_text]
+
+    def build(custom_scope, separate_deadline=None):
+        corrections = [BriefChange.model_validate({
+            "change_id": "conditional-custom", "revision": 2, "after_round": 0,
+            "text": "Custom is acceptable for the named options if they can still arrive by then.",
+            "proposal": {"kind": "custom_by_deadline", "option_ids": custom_scope, "date": None},
+        })]
+        if separate_deadline is not None:
+            corrections.append(BriefChange.model_validate({
+                "change_id": "revised-arrival", "revision": 3, "after_round": 0,
+                "text": "Move the named option's delivery deadline to 15 December.",
+                "proposal": {"kind": "deadline", "option_ids": [separate_deadline],
+                             "date": {"kind": "delivery_deadline", "day": 15, "month": 12, "year": None}},
+            }))
+        return ReviewInput.model_validate({
+            **original.model_dump(), "revision": corrections[-1].revision, "buyer_context": context,
+            "answers": [], "answer_option_ids": {}, "brief_changes": corrections,
+            "requirements": resolve_requirements(
+                original.case_id, initial, [], buyer_context=context,
+                selected_option_ids=options, brief_changes=corrections,
+            ),
+        }), images
+
+    return build, options
+
+
+@pytest.mark.parametrize("option_index", [0, 1])
+def test_order_cutoff_keeps_the_independent_capacity_target_in_the_finding(scoped_order_terms, option_index):
+    build, options = scoped_order_terms
+    request, images = build(options[1:2])
+    option_id = options[option_index]
+    order = next(row for row in request.requirements
+                 if row.topic == "customization" and option_id in row.option_ids)
+    payload = canonical_content(request)
+    payload["findings"] = [finding_selection(
+        [option_id], decision_id=None, kind="requirement_unconfirmed",
+        requirement_ids=["capacity", order.requirement_id],
+    )]
+    rendered = assemble(request, images, payload)
+
+    finding = rendered.findings[0]
+    assert set(finding.requirement_ids) == {"capacity", order.requirement_id}
+    assert finding.option_ids == [option_id]
+    assert "arrive by 1 December?" in finding.supplier_question
+    assert "meet 750 ml" in finding.supplier_question
+    assert f"[Option {'AB'[option_index]}] {finding.supplier_question}" in rendered.supplier_draft
+
+
+def test_mixed_stock_arrival_dates_split_by_option_and_wrong_provider_group_is_repaired(scoped_order_terms):
+    build, options = scoped_order_terms
+    request, images = build(options[1:2], separate_deadline=options[0])
+    payload = canonical_content(request, "customization")
+    rendered = assemble(request, images, payload)
+
+    stock = [finding for finding in rendered.findings if finding.requirement_ids == ["stock"]]
+    assert [(finding.option_ids, finding.supplier_question) for finding in stock] == [
+        (options[0:1], "Can this option ship from ready-made stock and also arrive by 15 December?"),
+        (options[2:3], "Can this option ship from ready-made stock and also arrive by 1 December?"),
+    ]
+    draft = rendered.supplier_draft
+    for letter, finding in zip("AC", stock, strict=True):
+        assert f"[Option {letter}] {finding.supplier_question}" in draft
+    assert "[Option B] Can this option be custom-made and still arrive by 1 December?" in draft
+    assert "[Options A, C]" not in draft
+
+    unscoped = {**payload, "findings": [finding_selection(
+        [options[0], options[2]], topic="customization", decision_id=None,
+        requirement_ids=["stock"], kind="requirement_unconfirmed",
+    )]}
+    served = []
+
+    def serve(http_request):
+        selection = unscoped if not served else payload
+        served.append(selection)
+        return response(http_request, selection)
+
+    result = run_review(request, images, serve)
+    assert served == [unscoped, payload]
+    assert isinstance(result, ReviewReady)
+    assert result.report == rendered
+
+
+def test_same_custom_cutoff_groups_sku_specific_decisions_and_changed_cutoff_splits_them(scoped_order_terms):
+    build, options = scoped_order_terms
+    same, images = build(options[1:])
+    distinct, _ = build(options[1:], separate_deadline=options[2])
+    original = assemble(same, images, canonical_content(same, "customization"))
+    revised = assemble(distinct, images, canonical_content(distinct, "customization"))
+
+    assert "[Options B, C] Can these options be custom-made and still arrive by 1 December?" in original.supplier_draft
+    assert "[Option B] Can this option be custom-made and still arrive by 1 December?" in revised.supplier_draft
+    assert "[Option C] Can this option be custom-made and still arrive by 15 December?" in revised.supplier_draft
+    assert "[Options B, C]" not in revised.supplier_draft
+    original_orders = {(finding.option_ids[0], tuple(finding.requirement_ids)) for finding in original.findings
+                       if "be custom-made" in finding.supplier_question}
+    revised_orders = {(finding.option_ids[0], tuple(finding.requirement_ids)) for finding in revised.findings
+                      if "be custom-made" in finding.supplier_question}
+    assert original_orders == revised_orders
+    assert {option for option, _ in revised_orders} == set(options[1:])
 
 
 @pytest.mark.parametrize("requirement_ids", [["december-1"], ["stale-date"]])
