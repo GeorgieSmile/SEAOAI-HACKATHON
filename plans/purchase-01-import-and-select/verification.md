@@ -1,17 +1,25 @@
 # PR-01 verification
 
-Status: not run; no app implementation
+Status: Phase 1 implemented and verified for handoff. Awaiting PR review.
 
-- Branch/base และ tested SHA: pending
-- ส่งต่อได้แล้ว: ยังไม่มีผลจากโค้ดจริง เริ่มงานจาก interface/fixture ได้
-- Blocker และเจ้าของ: pending ให้ผู้ประสาน ticket อัปเดตเมื่อพบ
-- รอตรวจเพื่อส่งต่อ: PR-02 รับ snapshot และ selected IDs ที่ผ่าน V01 แล้ว ชุด T4/T5 ส่งตามเวลาแยกได้
-- Gate รวม: pending ตามเกณฑ์ด้านล่าง
+- Branch `phase-1/import-and-select` from `55bbc64`. Tested implementation commit `a79ec3e98533be78d2b67988f0b4c57acb612402`.
+- Open the app using the [root README](../../README.md). Phase 1 confirms the ordered selection against the active server snapshot through `POST /api/selections`. Starting questions or persisting a buyer interview belongs to Phase 2.
+- The real-ZIP browser walkthrough used the no-network translator. The separately authorized live translation used the raw ZIP parser and production translation adapter. Both paths are recorded below.
+- Phase 2 and the integrated T1–T5, Standards/Spec review, and demo gates remain pending.
+
 Authority: [plan](plan.md), [ชุดเกณฑ์รับหลักฐาน](../../docs/contracts/intake-contract.md#กรณีที่ต้องยืนยันตอน-build)
+
+## PR #5 review fixes after `9df0627`
+
+- The new regressions failed on the reviewed baseline. Swapped image keys produced a ready snapshot with incorrect photos. A single SKU with the same display text as its shared option failed to import. A failed restore request left the browser showing an empty upload screen.
+- `.venv/bin/python -m pytest -q backend/tests` passed 52 tests after the compatibility and document-wide ID follow-ups. The importer rejected conflicting image and label ownership while retaining all 12 verified photos when labels explicitly link cards to radio controls outside them. A duplicate label target across SKU groups was rejected before publication. The single-SKU test imported the listing over HTTP and verified distinct option and shared-value translations using a mock provider.
+- The frontend typecheck and production build passed. Playwright passed all 6 tests, including read-only recovery, deliberate replacement, and a delayed restore response. Browser tests used `PURCHASE_TEST_BROWSER` to select the installed Chrome.
+- In a separate Chrome walkthrough, the unmodified user-supplied `Website Test.zip` matched an independent inventory from its saved HTML and assets for 12 SKU names and image hashes, the shared 720ml value, and 40 seller attributes. Ordered selection succeeded. Stopping the backend produced a visible restore error. Restarting it with the same SQLite file and clicking **Retry saved listing** recovered the same snapshot and all 12 photos.
+- A disposable replacement ZIP changed two photos, the title, and one seller attribute. The UI showed the replacements, all 12 obsolete photo URLs returned 404, and the old confirmation returned 409. Another backend restart recovered the replacement. Re-uploading the original restored its evidence. The walkthrough passed again after the compatibility follow-up. It used offline translation, checked the UI at 390 and 1280 px, and made no external browser requests.
 
 ## ตรวจส่วนของตนก่อนเปิด PR
 
-ทุกรายการยัง not run บันทึกผลแยก A/B/C ตาม [รูปแบบส่งงาน](../../docs/team-plan.md#วิธีส่ง-pr-ของแต่ละคน) ใช้คำสั่ง app ที่สร้างจริง
+บันทึกผลแยก A/B/C ตาม [รูปแบบส่งงาน](../../docs/team-plan.md#วิธีส่ง-pr-ของแต่ละคน) ใช้คำสั่ง app ที่สร้างจริง
 
 | ID / เจ้าของ | วิธีตรวจและผลที่ต้องได้ | หลักฐานก่อนส่ง |
 | --- | --- | --- |
@@ -34,15 +42,25 @@ Authority: [plan](plan.md), [ชุดเกณฑ์รับหลักฐา
 
 ## ผลจริงของ A
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build` passed. The Playwright suite passed all 4 cases against deterministic API responses. It exercised 0/1/3/4 selections, preserved order and Unicode context, distinct image states, native image sizing, failed imports, and stale responses.
+- Real HTTP walkthrough on the demo Mac: upload the redacted raw ZIP, open seller details, choose three SKUs in a different order, enter context, and confirm. The browser matched the 12 names and each served image hash to the independent inventory. A curated ZIP upload then cleared the prior draft. The shared seller value was 720ml and initial selection count was zero.
+- Checked the top, middle, and bottom of the page at 1280 and 390 px with seller details closed and open. A separate translated fixture exercised bilingual wrapping. No horizontal overflow or overlapping controls were observed. Screenshots with the real ZIP used the offline translation path.
+- Port 5173 and port 8000 were occupied by another project. The browser retained the required origin `http://127.0.0.1:5173` while Chromium routed HTTP to a Vite preview on 5175. Vite proxied to the offline backend on 8015. The browser checked the returned Origin header.
 
 ## ผลจริงของ B
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+- `.venv/bin/python -m pytest -q backend/tests` passed 40 tests on the implementation commit, including 19 intake/HTTP tests. Both real ZIPs matched the product title, all 12 ordered SKU names and image hashes, the shared 720ml relation, and all 40 attributes in the independent inventory.
+- Checked shape, Origin, body/archive/parser limits, ambiguous input, missing/unreadable/unmapped image handling, stale imports, and recovery on the next valid import. A separate two-process check recovered the original snapshot ID and all 12 image hashes from SQLite, then confirmed two options in the requested order. Stored snapshots and images were read back without calling the model.
+- Resource evidence on macOS ARM / Python 3.15.2, one fresh process per ZIP. Curated parse took 0.0162 s with 44.5 MiB peak process RSS. Raw parse took 0.1037 s with 59.1 MiB. These numbers exclude translation. The ZIP central-directory scan now enforces 1,000 entries before constructing the Python ZIP inventory. The importer accepts bounded, single-volume ZIP files and rejects ZIP64 end records.
+- HTML limits include 20,000 tags/comments, 32,768 characters per counted start tag/comment, 128 nesting levels and 20,000 entity references. Listing processing caps are 128 options, 160 attributes, 4,096 characters per source text part, and 8 JSON candidates of up to 65,536 characters and depth 24.
+- Generated T4/T5 with [make_variants.py](../../samples/make_variants.py) and parsed both. T4 retained 12 images and delivered the seller marker in the title to the mock transport with the report attribute absent. T5 retained the 12 options with exactly the seventh image missing and the other 11 intact. Original ZIPs were unchanged.
 
 ## ผลจริงของ C
 
-Status: not run ใช้รูปแบบหลักฐานใน team plan เมื่อรันตรวจแล้ว
+- The 21 translation tests used the SDK with a mock transport. They covered exact source IDs, unchanged originals, SKU names sharing the source translation, authorization/quota failures, bounded retries, refusal/incomplete output and deadline behavior. The linked frontend fixture was checked against the snapshot and the two contract traces.
+- A raw ZIP integration check exercised the normal import route, parser, adapter, and SQLite with a mock provider. Success published 12 translated options. Two transient failures produced a limitation and null translations. Quota or disabled live translation produced intake failure with no published snapshot.
+- One authorized live run used `samples/raw-save/raw-save-redacted.zip`, the production parser, prompt `translate-listing-v1`, and `gpt-6.1-terra` with medium reasoning. No app cache was used. The request contained 54 allowlisted text sources. **1 provider request, 20.27 s, 3,091 input tokens and 1,451 output tokens.** No retry was needed.
+- Read all 12 translated names alongside their Chinese originals. All retained 316, the correct six colors or color pairs in each series, and the distinction between 贴画 (“Decal”) and 字母 (“Letters”). For example, 暮色316-贴画粉蓝 became “Twilight 316 - Decal Pink/Blue”. No name asserted a screen-print process. This run measures one listing and does not establish general model quality.
 
 ## Review รวมก่อนปิด ticket
 

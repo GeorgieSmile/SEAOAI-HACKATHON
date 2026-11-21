@@ -1,0 +1,865 @@
+{
+  "example_only": true,
+  "provenance": "Hand-written linked-skip and multi-round contract traces from docs/contracts/examples. Harness only. The expected report is an assertion target.",
+  "snapshot": {
+    "snapshot_id": "example-snapshot-1",
+    "title": "高级感大容量冰霸杯不锈钢保温杯学生卡通水杯吸管杯杯子批发",
+    "options": [
+      {
+        "option_id": "v0",
+        "name_original": "暮色316-贴画粉蓝",
+        "name_en": "暮色316 · applied-picture design · pink/blue",
+        "image_source_id": "image-v0"
+      },
+      {
+        "option_id": "v1",
+        "name_original": "暮色316-贴画黑白",
+        "name_en": "暮色316 · applied-picture design · black/white",
+        "image_source_id": "image-v1"
+      },
+      {
+        "option_id": "v6",
+        "name_original": "暮色316-字母粉蓝",
+        "name_en": "暮色316 · letter design · pink/blue",
+        "image_source_id": "image-v6"
+      }
+    ],
+    "sources": [
+      {
+        "source_id": "product-title",
+        "kind": "listing_text",
+        "label": "Product title",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "高级感大容量冰霸杯不锈钢保温杯学生卡通水杯吸管杯杯子批发",
+        "text_en": "Premium-style, large-capacity stainless steel insulated tumbler with cartoon designs and a straw, for students · wholesale",
+        "image_file": null,
+        "url": null
+      },
+      {
+        "source_id": "name-v0",
+        "kind": "listing_text",
+        "label": "Original option name",
+        "option_ids": [
+          "v0"
+        ],
+        "availability": "available",
+        "original_text": "暮色316-贴画粉蓝",
+        "image_file": null,
+        "url": null,
+        "text_en": "暮色316 · applied-picture design · pink/blue"
+      },
+      {
+        "source_id": "name-v1",
+        "kind": "listing_text",
+        "label": "Original option name",
+        "option_ids": [
+          "v1"
+        ],
+        "availability": "available",
+        "original_text": "暮色316-贴画黑白",
+        "image_file": null,
+        "url": null,
+        "text_en": "暮色316 · applied-picture design · black/white"
+      },
+      {
+        "source_id": "name-v6",
+        "kind": "listing_text",
+        "label": "Original option name",
+        "option_ids": [
+          "v6"
+        ],
+        "availability": "available",
+        "original_text": "暮色316-字母粉蓝",
+        "image_file": null,
+        "url": null,
+        "text_en": "暮色316 · letter design · pink/blue"
+      },
+      {
+        "source_id": "capacity-selector",
+        "kind": "listing_text",
+        "label": "Shared selector value",
+        "option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "availability": "available",
+        "original_text": "720ml",
+        "image_file": null,
+        "url": null,
+        "text_en": "720 ml"
+      },
+      {
+        "source_id": "customization-menu",
+        "kind": "listing_text",
+        "label": "Customization methods offered",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "定制工艺选择: 热转印,丝印,3D打印,内喷陶瓷",
+        "image_file": null,
+        "url": null,
+        "text_en": "Customization methods offered: heat transfer, screen printing, 3D printing, internal ceramic coating."
+      },
+      {
+        "source_id": "interior",
+        "kind": "listing_text",
+        "label": "Interior material, seller claim",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "内胆材质: 316不锈钢",
+        "image_file": null,
+        "url": null,
+        "text_en": "Interior material: 316 stainless steel."
+      },
+      {
+        "source_id": "exterior",
+        "kind": "listing_text",
+        "label": "Exterior material, seller claim",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "外壳材质: 304不锈钢",
+        "image_file": null,
+        "url": null,
+        "text_en": "Exterior material: 304 stainless steel."
+      },
+      {
+        "source_id": "lid",
+        "kind": "listing_text",
+        "label": "Lid material, seller claim",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "杯盖材质: PP",
+        "image_file": null,
+        "url": null,
+        "text_en": "Lid material: polypropylene (PP)."
+      },
+      {
+        "source_id": "report-availability",
+        "kind": "listing_text",
+        "label": "Third-party test report availability, seller claim",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "是否有第三方检测报告: 没有",
+        "image_file": null,
+        "url": null,
+        "text_en": "Is a third-party test report available? No."
+      },
+      {
+        "source_id": "image-v0",
+        "kind": "listing_image",
+        "label": "Seller image for option v0",
+        "option_ids": [
+          "v0"
+        ],
+        "availability": "available",
+        "original_text": null,
+        "image_file": "O1CN018dyUxF1kvGSeV5abz_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+        "url": null,
+        "text_en": null
+      },
+      {
+        "source_id": "image-v1",
+        "kind": "listing_image",
+        "label": "Seller image for option v1",
+        "option_ids": [
+          "v1"
+        ],
+        "availability": "available",
+        "original_text": null,
+        "image_file": "O1CN01MfjGcN1kvGSegVDs3_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+        "url": null,
+        "text_en": null
+      },
+      {
+        "source_id": "image-v6",
+        "kind": "listing_image",
+        "label": "Seller image for option v6",
+        "option_ids": [
+          "v6"
+        ],
+        "availability": "available",
+        "original_text": null,
+        "image_file": "O1CN01XbJNBD1kvGSeoi5zC_!!2222096314745-0-cib.jpg_150x1_iWbL.jpg",
+        "url": null,
+        "text_en": null
+      },
+      {
+        "source_id": "dmsc-food-contact",
+        "kind": "official_guidance",
+        "label": "DMSC food-contact guidance · 30 Oct 2026",
+        "option_ids": [],
+        "availability": "available",
+        "original_text": "ความเสี่ยงขึ้นอยู่กับชนิดของวัสดุ คุณภาพและมาตรฐานของผลิตภัณฑ์ ประเภทอาหาร อุณหภูมิ ระยะเวลาที่สัมผัสอาหาร และวิธีการใช้งาน",
+        "image_file": null,
+        "url": "https://www.dmsc.moph.go.th/th/detailAll/3898/nw/25",
+        "text_en": "Risk depends on the material type, product quality and standards, food type, temperature, food-contact duration and method of use."
+      }
+    ],
+    "limitations": [
+      "The saved listing contains seller claims, not physical product measurements.",
+      "All three option images here are 150×150 thumbnails; image matching does not confirm the decoration process or durability. Only clearly legible image text may be reported as an image observation, not a product measurement."
+    ]
+  },
+  "cases": [
+    {
+      "id": "prepare-skipped",
+      "name": "Resale only; discover issues and skip all questions",
+      "case_id": "prepare-skipped",
+      "start": {
+        "operation_id": "prepare-skipped-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "previous_case": null
+      },
+      "first_round": {
+        "round_id": "round-1",
+        "round_number": 1,
+        "reason": "Ask only about unanswered buyer requirements that change the review; product facts remain evidence questions.",
+        "questions": [
+          {
+            "question_id": "q-finish",
+            "prompt": "Is screen printing required, or are applied graphics acceptable?",
+            "why_ask": "Options A and B use applied-picture wording. Your acceptable finish changes which supplier confirmations are needed; the names alone do not establish the process.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "name-v0",
+              "name-v1",
+              "name-v6",
+              "customization-menu"
+            ],
+            "choices": [
+              "Applied graphics are acceptable; screen printing is not required.",
+              "Screen printing is required."
+            ]
+          },
+          {
+            "question_id": "q-capacity",
+            "prompt": "Do you require an exact capacity?",
+            "why_ask": "The listing selector states 720 ml. Your exact capacity requirement changes which specification the supplier must confirm; the selector alone does not establish the delivered volume.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "capacity-selector"
+            ],
+            "choices": [
+              "720 ml is required.",
+              "No exact capacity requirement."
+            ]
+          },
+          {
+            "question_id": "q-use",
+            "prompt": "What drink conditions should this review consider?",
+            "why_ask": "The listing describes a PP lid as well as the steel body. Drink conditions affect the use information and supporting evidence to request; they do not prove product suitability.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "lid",
+              "interior",
+              "dmsc-food-contact"
+            ],
+            "choices": [
+              "Cold drinks only.",
+              "Includes hot drinks."
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "prepare-skipped-op-1",
+            "case_id": "prepare-skipped",
+            "revision": 0,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": null
+                },
+                {
+                  "question_id": "q-capacity",
+                  "answer_text": null
+                },
+                {
+                  "question_id": "q-use",
+                  "answer_text": null
+                }
+              ]
+            }
+          },
+          "expected_revision": 1
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "prepare-skipped",
+        "revision": 1,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "answers": [
+          {
+            "question_id": "q-finish",
+            "question_text": "Is screen printing required, or are applied graphics acceptable?",
+            "answer_text": null
+          },
+          {
+            "question_id": "q-capacity",
+            "question_text": "Do you require an exact capacity?",
+            "answer_text": null
+          },
+          {
+            "question_id": "q-use",
+            "question_text": "What drink conditions should this review consider?",
+            "answer_text": null
+          }
+        ]
+      },
+      "expected_review_properties": [
+        "No screen-print, exact-capacity or temperature requirement may be invented.",
+        "Applied-picture wording remains a discovered issue with buyer preference open.",
+        "Material/supporting-evidence gaps remain in review even though answers are unknown."
+      ],
+      "report_fixture": "linked-skip"
+    },
+    {
+      "id": "adaptive-screen",
+      "name": "Screen printing leads to a dependent question in round two",
+      "case_id": "adaptive-screen",
+      "start": {
+        "operation_id": "adaptive-screen-start",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "previous_case": null
+      },
+      "first_round": {
+        "round_id": "round-1",
+        "round_number": 1,
+        "reason": "Finish and drink use can independently change the review.",
+        "questions": [
+          {
+            "question_id": "q-finish",
+            "prompt": "Is screen printing required, or are applied graphics acceptable?",
+            "why_ask": "Options A and B use applied-picture wording. Your acceptable finish changes which supplier confirmations are needed; the names alone do not establish the process.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "name-v0",
+              "name-v1",
+              "name-v6",
+              "customization-menu"
+            ],
+            "choices": [
+              "Applied graphics are acceptable; screen printing is not required.",
+              "Screen printing is required."
+            ]
+          },
+          {
+            "question_id": "q-use",
+            "prompt": "What drink conditions should this review consider?",
+            "why_ask": "The listing describes a PP lid as well as the steel body. Drink conditions affect the use information and supporting evidence to request; they do not prove product suitability.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "source_ids": [
+              "lid",
+              "interior",
+              "dmsc-food-contact"
+            ],
+            "choices": [
+              "Cold drinks only.",
+              "Includes hot drinks."
+            ]
+          }
+        ]
+      },
+      "steps": [
+        {
+          "action": "continue",
+          "request": {
+            "operation_id": "adaptive-screen-op-1",
+            "case_id": "adaptive-screen",
+            "revision": 0,
+            "submission": {
+              "round_id": "round-1",
+              "answers": [
+                {
+                  "question_id": "q-finish",
+                  "answer_text": "Screen printing is required."
+                },
+                {
+                  "question_id": "q-use",
+                  "answer_text": "Includes hot drinks."
+                }
+              ]
+            }
+          },
+          "expected_revision": 1,
+          "expected_next_round": {
+            "round_id": "round-2",
+            "round_number": 2,
+            "reason": "The buyer needs screen printing and the listing offers it as a customization method.",
+            "questions": [
+              {
+                "question_id": "q-custom",
+                "prompt": "Would you consider custom screen printing, or only the ready-made options?",
+                "why_ask": "You require screen printing and the shop lists it as a customization method. This affects what to ask the seller.",
+                "option_ids": [
+                  "v0",
+                  "v1",
+                  "v6"
+                ],
+                "source_ids": [
+                  "customization-menu"
+                ],
+                "choices": [
+                  "Ready-made options only.",
+                  "Custom printing is acceptable."
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "action": "restart",
+          "expected_revision": 1,
+          "expected_round_ids": [
+            "round-1",
+            "round-2"
+          ],
+          "expected_open_round_id": "round-2"
+        },
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "adaptive-screen-op-2",
+            "case_id": "adaptive-screen",
+            "revision": 1,
+            "submission": {
+              "round_id": "round-2",
+              "answers": [
+                {
+                  "question_id": "q-custom",
+                  "answer_text": "Ready-made options only."
+                }
+              ]
+            }
+          },
+          "expected_revision": 2
+        },
+        {
+          "action": "review",
+          "request": {
+            "operation_id": "adaptive-screen-op-3",
+            "case_id": "adaptive-screen",
+            "revision": 2,
+            "submission": {
+              "round_id": "round-2",
+              "answers": [
+                {
+                  "question_id": "q-custom",
+                  "answer_text": "Custom printing is acceptable."
+                }
+              ]
+            }
+          },
+          "expected_revision": 3
+        }
+      ],
+      "expected_review_input": {
+        "case_id": "adaptive-screen",
+        "revision": 3,
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_context": "Resale in Thailand.",
+        "answers": [
+          {
+            "question_id": "q-finish",
+            "question_text": "Is screen printing required, or are applied graphics acceptable?",
+            "answer_text": "Screen printing is required."
+          },
+          {
+            "question_id": "q-use",
+            "question_text": "What drink conditions should this review consider?",
+            "answer_text": "Includes hot drinks."
+          },
+          {
+            "question_id": "q-custom",
+            "question_text": "Would you consider custom screen printing, or only the ready-made options?",
+            "answer_text": "Custom printing is acceptable."
+          }
+        ]
+      },
+      "expected_review_properties": [
+        "First report asks only about ready-made SKUs. Second adds a custom-printing path and keeps the ready-made finish unconfirmed.",
+        "Loading the saved case after restart does not issue another round or alter SKU/image scope."
+      ]
+    }
+  ],
+  "report_example": {
+    "id": "linked-skip",
+    "input": {
+      "snapshot_id": "example-snapshot-1",
+      "selected_option_ids": [
+        "v0",
+        "v1",
+        "v6"
+      ],
+      "case_id": "prepare-skipped",
+      "buyer_context": "Resale in Thailand.",
+      "answers": [
+        {
+          "question_id": "q-finish",
+          "question_text": "Is screen printing required, or are applied graphics acceptable?",
+          "answer_text": null
+        },
+        {
+          "question_id": "q-capacity",
+          "question_text": "Do you require an exact capacity?",
+          "answer_text": null
+        },
+        {
+          "question_id": "q-use",
+          "question_text": "What drink conditions should this review consider?",
+          "answer_text": null
+        }
+      ],
+      "revision": 1
+    },
+    "expected_result": {
+      "status": "ready",
+      "report": {
+        "case_id": "prepare-skipped",
+        "snapshot_id": "example-snapshot-1",
+        "selected_option_ids": [
+          "v0",
+          "v1",
+          "v6"
+        ],
+        "buyer_requirements": [],
+        "open_preferences": [
+          {
+            "preference_id": "p-finish",
+            "text": "Acceptable decoration methods remain unknown.",
+            "input_refs": [
+              "answer:q-finish"
+            ],
+            "finding_ids": [
+              "f-artwork"
+            ]
+          },
+          {
+            "preference_id": "p-capacity",
+            "text": "An exact capacity requirement was not supplied.",
+            "input_refs": [
+              "answer:q-capacity"
+            ],
+            "finding_ids": [
+              "f-capacity"
+            ]
+          },
+          {
+            "preference_id": "p-use",
+            "text": "Drink conditions were not supplied.",
+            "input_refs": [
+              "answer:q-use"
+            ],
+            "finding_ids": [
+              "f-use"
+            ]
+          }
+        ],
+        "comparisons": [
+          {
+            "label": "Decoration",
+            "values": [
+              {
+                "option_id": "v0",
+                "summary": "Applied-picture / decal wording; exact process unconfirmed.",
+                "source_ids": [
+                  "name-v0"
+                ]
+              },
+              {
+                "option_id": "v1",
+                "summary": "Applied-picture / decal wording; exact process unconfirmed.",
+                "source_ids": [
+                  "name-v1"
+                ]
+              },
+              {
+                "option_id": "v6",
+                "summary": "Letter design; screen printing not confirmed.",
+                "source_ids": [
+                  "name-v6"
+                ]
+              }
+            ]
+          },
+          {
+            "label": "Capacity",
+            "values": [
+              {
+                "option_id": "v0",
+                "summary": "Selector: 720 ml. Option image: 750 ml, manually read by the team. Delivered capacity unconfirmed.",
+                "source_ids": [
+                  "capacity-selector",
+                  "image-v0"
+                ]
+              },
+              {
+                "option_id": "v1",
+                "summary": "Selector: 720 ml. Option image: 750 ml, manually read by the team. Delivered capacity unconfirmed.",
+                "source_ids": [
+                  "capacity-selector",
+                  "image-v1"
+                ]
+              },
+              {
+                "option_id": "v6",
+                "summary": "Selector: 720 ml. Option image: 750 ml, manually read by the team. Delivered capacity unconfirmed.",
+                "source_ids": [
+                  "capacity-selector",
+                  "image-v6"
+                ]
+              }
+            ]
+          }
+        ],
+        "findings": [
+          {
+            "finding_id": "f-artwork",
+            "title": "Applied-picture wording may change what you expect.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "kind": "clarification_needed",
+            "action_type": "decide_preference",
+            "requirement_ids": [],
+            "citations": [
+              {
+                "source_id": "name-v0",
+                "quote": "暮色316-贴画粉蓝",
+                "image_observation": null
+              },
+              {
+                "source_id": "name-v1",
+                "quote": "暮色316-贴画黑白",
+                "image_observation": null
+              },
+              {
+                "source_id": "name-v6",
+                "quote": "暮色316-字母粉蓝",
+                "image_observation": null
+              },
+              {
+                "source_id": "customization-menu",
+                "quote": "定制工艺选择: 热转印,丝印,3D打印,内喷陶瓷",
+                "image_observation": null
+              }
+            ],
+            "interpretation": "Names for v0 and v1 use 贴画, wording associated with applied pictures or decals. The v6 name uses 字母, meaning letters. These names do not establish the exact process. The customization menu offers screen printing but does not identify the ready-made options as screen-printed.",
+            "impact": "Your acceptable finish is unknown. The app has not assumed that you require screen printing.",
+            "priority_reason": "This unasked discovery may change which options you would accept.",
+            "unknowns": [
+              {
+                "text": "The exact decoration process for each selected option.",
+                "reason": "not_found",
+                "source_ids": [
+                  "name-v0",
+                  "name-v1",
+                  "name-v6",
+                  "customization-menu"
+                ]
+              }
+            ],
+            "requested_evidence": "Decide which finishes are acceptable after learning the process for each option. Request close-up photos or a sample and care instructions.",
+            "evidence_limits": "A supplier reply or photo alone does not verify the production process or durability of delivered units.",
+            "supplier_question": "My decoration requirement is not yet set. Please name the process for each exact option, explain the 贴画 wording for A and B, and provide close-up photos or a sample and care instructions."
+          },
+          {
+            "finding_id": "f-capacity",
+            "title": "The selector says 720 ml while the checked images say 750 ml.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "kind": "listing_conflict",
+            "action_type": "ask_supplier",
+            "requirement_ids": [],
+            "citations": [
+              {
+                "source_id": "capacity-selector",
+                "quote": "720ml",
+                "image_observation": null
+              },
+              {
+                "source_id": "image-v0",
+                "quote": null,
+                "image_observation": "The option image displays 750ml near the top. This example uses a manual reading by the team, not a model-verified measurement."
+              },
+              {
+                "source_id": "image-v1",
+                "quote": null,
+                "image_observation": "The option image displays 750ml near the top. This example uses a manual reading by the team, not a model-verified measurement."
+              },
+              {
+                "source_id": "image-v6",
+                "quote": null,
+                "image_observation": "The option image displays 750ml near the top. This example uses a manual reading by the team, not a model-verified measurement."
+              }
+            ],
+            "interpretation": "Two parts of the saved listing give different capacities for this selection. Neither establishes the delivered volume.",
+            "impact": "Your capacity requirement is unknown; the delivered capacity still needs clarification for an agreed product description.",
+            "priority_reason": "The listing gives two different capacity figures.",
+            "unknowns": [
+              {
+                "text": "A reconciliation of the two figures and the delivered capacity for each option.",
+                "reason": "not_found",
+                "source_ids": [
+                  "capacity-selector",
+                  "image-v0",
+                  "image-v1",
+                  "image-v6"
+                ]
+              }
+            ],
+            "requested_evidence": "Request the delivered capacity and measurement method for each exact option. If the volume is important, compare a sample using the agreed method.",
+            "evidence_limits": "A written capacity is a supplier claim. The image is not a measurement of delivered stock.",
+            "supplier_question": "The selector says 720 ml, while the checked images for A, B and C say 750 ml. Please reconcile the figures and specify the delivered capacity and measurement method for each option."
+          },
+          {
+            "finding_id": "f-use",
+            "title": "Drink-contact parts and use conditions are only partly described.",
+            "option_ids": [
+              "v0",
+              "v1",
+              "v6"
+            ],
+            "kind": "evidence_gap",
+            "action_type": "request_evidence",
+            "requirement_ids": [],
+            "citations": [
+              {
+                "source_id": "interior",
+                "quote": "内胆材质: 316不锈钢",
+                "image_observation": null
+              },
+              {
+                "source_id": "exterior",
+                "quote": "外壳材质: 304不锈钢",
+                "image_observation": null
+              },
+              {
+                "source_id": "lid",
+                "quote": "杯盖材质: PP",
+                "image_observation": null
+              },
+              {
+                "source_id": "report-availability",
+                "quote": "是否有第三方检测报告: 没有",
+                "image_observation": null
+              },
+              {
+                "source_id": "dmsc-food-contact",
+                "quote": "ความเสี่ยงขึ้นอยู่กับชนิดของวัสดุ คุณภาพและมาตรฐานของผลิตภัณฑ์ ประเภทอาหาร อุณหภูมิ ระยะเวลาที่สัมผัสอาหาร และวิธีการใช้งาน",
+                "image_observation": null
+              }
+            ],
+            "interpretation": "The seller identifies a PP lid as well as the steel body, so the body alone does not describe all drink-contact parts. The official guidance makes use conditions relevant; it does not determine the suitability of this model.",
+            "impact": "Your drink conditions are unknown, so no hot- or cold-drink limit can be assumed.",
+            "priority_reason": "The PP lid makes other drink-contact parts relevant even without a stated use condition.",
+            "unknowns": [
+              {
+                "text": "Straw and seal materials, and product-specific support for intended drink conditions in the supplied details.",
+                "reason": "not_found",
+                "source_ids": [
+                  "interior",
+                  "exterior",
+                  "lid",
+                  "report-availability"
+                ]
+              }
+            ],
+            "requested_evidence": "Request every drink-contact material, intended drink types, temperature limits and care instructions. Ask for any available report with its model or sample, method and conditions; if none exists, ask the supplier to confirm that.",
+            "evidence_limits": "No report does not prove the product unsafe. A report only supports its stated sample, method and conditions. General guidance does not certify this product or establish import permission.",
+            "supplier_question": "Please identify all drink-contact materials, including the body, lid, straw and seals, and give intended drink types, temperature limits and care instructions. The listing says no third-party report is available; please confirm this. For any available document, identify the model or sample, method and conditions covered."
+          }
+        ],
+        "coverage": [
+          {
+            "group": "product_match",
+            "status": "limited",
+            "finding_ids": [
+              "f-artwork",
+              "f-capacity"
+            ],
+            "note": "Finish and capacity preferences remain unknown; option wording and capacity sources were reviewed."
+          },
+          {
+            "group": "intended_use",
+            "status": "limited",
+            "finding_ids": [
+              "f-use"
+            ],
+            "note": "Drink conditions were not supplied. Materials and product-specific use support remain incomplete."
+          },
+          {
+            "group": "supporting_evidence",
+            "status": "limited",
+            "finding_ids": [
+              "f-use"
+            ],
+            "note": "Material claims are unverified and the listing states no third-party report is available."
+          }
+        ],
+        "limitations": [
+          "The saved listing contains seller claims, not physical product measurements.",
+          "No physical sample inspected.",
+          "Image readings in this hand-written example were checked manually for these three options only.",
+          "No safety certification, import permission, supplier reliability, landed cost or profitability assessment.",
+          "All three option images here are 150×150 thumbnails; image matching does not confirm the decoration process or durability. Only clearly legible image text may be reported as an image observation, not a product measurement.",
+          "Product-detail images were not reviewed in this version."
+        ],
+        "supplier_draft": "Hello, I am reviewing these exact options:\nA. 暮色316-贴画粉蓝\nB. 暮色316-贴画黑白\nC. 暮色316-字母粉蓝\n\nPlease identify the relevant option names in your reply.\n\n1. My decoration requirement is not yet set. Please name the process for each exact option, explain the 贴画 wording for A and B, and provide close-up photos or a sample and care instructions.\n\n2. The selector says 720 ml, while the checked images for A, B and C say 750 ml. Please reconcile the figures and specify the delivered capacity and measurement method for each option.\n\n3. Please identify all drink-contact materials, including the body, lid, straw and seals, and give intended drink types, temperature limits and care instructions. The listing says no third-party report is available; please confirm this. For any available document, identify the model or sample, method and conditions covered.\n\nI will review your answers before confirming purchase requirements.",
+        "revision": 1
+      }
+    }
+  }
+}
