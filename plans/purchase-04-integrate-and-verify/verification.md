@@ -1,6 +1,10 @@
 # PR-04 verification
 
-Status: not run; no app implementation
+For the public demo, see the [Railway release checks](#railway-release-checks) and [local checks with scripted providers](#public-railway-entry-and-report-evidence-correction).
+
+## Pre-event checklist
+
+Status at handoff: not run; no app implementation
 
 - Branch/base และ tested SHA: pending
 - ส่งต่อได้แล้ว: ยังไม่มีผลจากโค้ดจริง เริ่มงานจาก interface/fixture ได้
@@ -134,3 +138,11 @@ Tested the release based on `a0bbdb3` with the original Website Test.zip and off
 - `python -m pytest -q backend/tests --tb=short` with `PURCHASE_TEST_ZIP` set to the original archive and all three live AI flags at zero passed 529 tests. Ten simultaneous hosted reports kept separate cases and recovered after restart. A registry seeded with the former 100 global and 10 browser requests accepted a translation and a retry through a local SDK transport, then reopened the saved listing using the original cookie.
 - Report regressions checked mixed attached and omitted thumbnails, a readable selector incorrectly marked illegible, and a failed correction. Validated report content reopened with the same source IDs and reasons. A repeated invalid response produced a buyer-facing retry message.
 - `npm --prefix frontend run typecheck`, `npm --prefix frontend run build` and `npm --prefix frontend test -- --workers=3` passed, including 44 Chrome tests. Two separate Chrome profiles opened the hosted production build locally at 1280 and 390 px, retained their cookies after reload and selected different SKUs from the original ZIP. Top, middle and bottom screenshots showed readable controls and no horizontal overflow.
+
+### Railway release checks
+
+On 21 November 2026 we ran one paid report on Railway at `c2c7943` with the [redacted browser-save ZIP](../../samples/raw-save/raw-save-redacted.zip). The importer found 12 SKUs. We selected the pink/blue, blue/white and black/pink variants, checked their thumbnail bytes against the sample inventory, entered “Ready-made only.” and confirmed the brief. The three interview questions were left open.
+
+The saved report reopened with the same 10 findings and 17 claims. It associated a 750 ml thumbnail label with each of the three selected SKUs and classified seven evidence gaps as `not_found`. The unreadable-source error did not recur. All three thumbnails were readable. The scripted checks above cover illegible and omitted images. The live test was bounded at six provider requests including retries. Railway logs did not expose the exact attempt count.
+
+Later that day Railway deployed `d5f0734`, which includes the translation prompt from PR #16. Railway reported a successful deployment for that commit and `GET /healthz` returned `{"status":"ready"}`. This deployment check made no paid requests. Live translation quality for the revised prompt was not evaluated in that check. [PR #16](https://github.com/GeorgieSmile/SEAOAI-HACKATHON/pull/16)

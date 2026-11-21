@@ -1,16 +1,46 @@
-# Purchase review — competition starter
+# DiliDoo! — Purchase Review
 
-ชุดเริ่มงานสำหรับทีม 3 คน: ผู้ซื้อวางลิงก์สินค้า TTP Cargo หรือส่ง ZIP ของหน้าที่บันทึกไว้ เลือก 1–3 SKU ตอบคำถามที่ปรับตามคำตอบสูงสุด 3 รอบ รอบละ 5 ข้อ หรือจบคำถามก่อน ยืนยัน buying brief แล้วดูรายงานอังกฤษพร้อมหลักฐานและข้อความถามผู้ขายที่คัดลอกได้ กู้เคสล่าสุดพร้อมหลักฐานหลัง restart ด้วย SQLite
+Built for the Sea × OpenAI Regional Codex Hackathon in Thailand on 21 November 2026.
 
-แอปแสดงข้อกำหนดตาม SKU หลังกรอกบริบทและหลังบันทึกคำตอบแต่ละรอบ เปิด **Review buying brief** เพื่อตรวจข้อที่ตกลงแล้วและข้อที่ยังเปิดอยู่ กด **Edit buying brief** เพื่อดูผลของการแก้ก่อนบันทึก หรือ **Undo last brief change** เพื่อย้อนการแก้ครั้งล่าสุด จากนั้นกด **Confirm brief and generate review** เพื่อสร้างรายงาน **Before you order** จาก revision ที่แสดงอยู่
+**[Open the live demo](https://dilidoo-production.up.railway.app)** · The app opens directly into a private browser workspace.
 
-ในรายงาน กดข้อสังเกตเพื่อเปิดข้อความหรือภาพของ SKU ที่อ้างถึง แก้และคัดลอกข้อความถามผู้ขายได้ หากรายงานเก่าต้องสร้างใหม่ แอปจะให้ตรวจและยืนยัน brief ก่อน การเปิดเคสเดิมจะใช้ข้อมูลที่บันทึกไว้ใน SQLite
+## Project write-up
+
+Buyers sourcing products for resale can receive a different variant from the one they expected. In the case that inspired DiliDoo!, a buyer expected a screen-printed design and received a sticker. The clue was buried in the Chinese option label.
+
+DiliDoo! turns a TTP Cargo product link or saved listing ZIP into a pre-order review for 1–3 selected SKUs. It brings together the original Chinese listing, English translations, SKU images, and the buyer’s requirements. It asks follow-up questions when the answers could change what to check, shows the buyer an editable brief to confirm, and produces an English report with evidence, open questions, and a supplier message the buyer can edit and copy.
+
+### Build directions
+
+- **AI-Native Products & Operations.** The buyer's answers shape what the app asks next and what the final review checks. The same listing can produce different reviews for a buyer who needs ready-made stock and one who can accept custom production.
+- **Deep Domain AI.** The review follows how sourcing buyers check an order. It ties listing claims to the relevant SKU, tracks buyer requirements, and turns missing or conflicting evidence into supplier questions. It records whether a photo was omitted from the review or reviewed and found unreadable. If a capacity selector says 720 ml and the selected SKU photo says 750 ml, the report can show both sources and ask the supplier to confirm the capacity for that SKU.
+
+## Try the demo
+
+1. Open the demo and import the [sample TTP Cargo listing](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639) or upload the [redacted listing ZIP](samples/raw-save/raw-save-redacted.zip).
+2. Select 1–3 variants and add a buying requirement. Answer the follow-up questions or open **Review buying brief** early. Review the requirements by SKU, edit them if needed, and select **Confirm brief and generate review**.
+   To change a submitted answer, go to **Saved answers**, click **Edit** beside its round, and update the answer. Click **Preview answer changes**, scroll to the preview, then click **Save answer changes**.
+3. In **Before you order**, open a finding to inspect the original text or SKU image. Review and copy the supplier message.
+
+## How we used Codex
+
+We used Codex to implement and integrate the revision-confirmed buying brief, including edit and undo previews, conditional requirements by SKU, and guards against confirming a stale revision. We also used Codex to review the UI and backend integration and exercise the purchase flow in Chrome with a real saved listing. One walkthrough checked that allowing a custom order for the blue cup kept its delivery deadline and left the other two variants ready-made only, including after a restart. [Buying brief implementation](https://github.com/GeorgieSmile/SEAOAI-HACKATHON/commit/95131901dbfa35c0f67b23a08bdbdf7537975d11) · [Verification notes](plans/purchase-02-buyer-questions/verification.md)
+
+The app uses the OpenAI Responses API for listing translation, adaptive questions, and evidence-backed review generation.
+
+## Hackathon declaration
+
+**Prepared before the event.** We brought the problem brief, interface contracts, test plans, a static UI mock, and sample data from a saved TTP Cargo listing. The [starter commit](https://github.com/GeorgieSmile/SEAOAI-HACKATHON/commit/55bbc64) records those materials. [Data provenance](samples/README.md) · [Pre-event handoff](HANDOFF_CHECKS.md)
+
+**Built on 21 November 2026.** We started the application code from scratch on-site in this hackathon repo. We built link and ZIP import, SKU selection and translation, adaptive buyer questions, an editable buying brief, and a report that opens the original evidence and provides a copyable supplier message. We added SQLite recovery, a durable report queue, and a public Railway demo with a separate workspace for each browser. [First app commit](https://github.com/GeorgieSmile/SEAOAI-HACKATHON/commit/a79ec3e) · [Hosted demo implementation](https://github.com/GeorgieSmile/SEAOAI-HACKATHON/commit/c2c7943a68b4897925c7205b3c1b1eea641bd8bb)
+
+**Third-party dependencies and assets.** The app uses React, Vite, FastAPI, and the OpenAI Python SDK. The listing sample comes from TTP Cargo, and the bundled fonts are Inter and Space Grotesk. [Frontend dependencies](frontend/package.json) · [Backend dependencies](backend/requirements.txt) · [Inter license](frontend/public/fonts/inter-LICENSE.txt) · [Space Grotesk license](frontend/public/fonts/space-grotesk-LICENSE.txt)
 
 ## Hosted Railway demo
 
 One HTTPS link serves the React build and the API. Opening the link gives each browser profile a private case, SKU images, answers and report. Tabs in the same profile share progress. Clearing cookies or switching browsers starts another workspace. Cases expire after 48 hours of inactivity by default.
 
-Deploy the repository root using its Dockerfile and `railway.toml`. Attach one Railway volume at `/data`, use one replica and one Uvicorn worker, and generate one HTTPS domain. The healthcheck at `/healthz` opens the volume-backed registry and uses no provider requests. Start from an empty volume; the local demo database and `.env` stay on the developer machine. [Railway volumes](https://docs.railway.com/volumes)
+Deploy the repository root using its Dockerfile and `railway.toml`. Attach one Railway volume at `/data`, use one replica and one Uvicorn worker, and generate one HTTPS domain. The healthcheck at `/healthz` opens the volume-backed registry and uses no provider requests. Use an empty volume for the first deployment. Reuse that same volume for redeployments and rollbacks so returning browsers can reopen their cases. Keep the local demo database and `.env` on the developer machine. [Railway volumes](https://docs.railway.com/volumes)
 
 | Backend variable | Hosted setting |
 |---|---|
@@ -28,9 +58,9 @@ npm --prefix frontend run build
 .venv/bin/python -m backend.tests.hosted_server --data-dir backend/.local/hosted-rehearsal
 ```
 
-## เปิดแอป Phase 3
+## Run locally
 
-รันจาก root ของ repo บนเครื่องเดโม ติดตั้ง dependencies ครั้งแรกด้วย Python และ Node ที่ระบุใน [toolchain](docs/toolchain.md)
+Run from the repository root on the demo machine. Install dependencies once using the Python and Node versions in the [toolchain guide](docs/toolchain.md).
 
 ```sh
 python3 -m venv .venv
@@ -38,63 +68,65 @@ python3 -m venv .venv
 npm --prefix frontend ci
 ```
 
-ทดสอบโดยไม่ใช้เครดิต API เปิด backend ใน terminal แรก โหมดนี้นำเข้าลิงก์สินค้าหรือ ZIP จริง แสดงชื่อจีน และใช้คำถามและรายงานที่เตรียมไว้สำหรับทดสอบการทำงาน เลือก “Custom orders are acceptable” แล้วกด **Continue** เพื่อดูคำถามรอบถัดไป ลองกรณีซื้อแบบมีเงื่อนไขด้วยการเลือกสาม SKU ที่มีตัวเลือกสีน้ำเงินเพียงหนึ่งรายการ ใส่ “Ready-made only. All three must arrive by 1 December.” แล้วแก้ brief เป็น “Actually, custom is fine for the blue cup if it still arrives by then.” ใช้ path เดิมเมื่อต้องการทดสอบกู้เคสหลัง restart หากไม่ระบุ `--database` จะใช้ฐานข้อมูลชั่วคราวเฉพาะการรันครั้งนั้น
+To test without spending API credits, start the offline backend in the first terminal. It imports real product links or ZIPs, displays the original Chinese names, and uses scripted questions and reports. Choose “Custom orders are acceptable” and select **Continue** for the next question round. To test a conditional purchase, select three SKUs with exactly one blue variant, enter “Ready-made only. All three must arrive by 1 December.” Then edit the brief to say “Actually, custom is fine for the blue cup if it still arrives by then.” Reuse the database path to test case recovery after a restart. Omitting `--database` uses a temporary database for that run.
 
 ```sh
 .venv/bin/python -m backend.tests.offline_server --database backend/.local/offline-demo.sqlite3
 ```
 
-เปิด frontend ในอีก terminal จาก root เดียวกัน
+Start the frontend in a second terminal from the same repository root.
 
 ```sh
 npm --prefix frontend run dev
 ```
 
-เปิด [หน้าเลือกสินค้า](http://127.0.0.1:5173) วาง [ลิงก์สินค้าตัวอย่าง](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639) แล้วกด **Import link** รองรับ 1688, Taobao และ Tmall หากลิงก์ระบุ `skuId` ตัวเลือกที่ตรงกันจะแสดง **From your link** ให้ผู้ซื้อเลือกและยืนยัน หากเว็บต้นทางไม่พร้อมหรือเครื่องเดโมออฟไลน์ ใช้ **Choose ZIP** กับ [raw ZIP](samples/raw-save/raw-save-redacted.zip) จากนั้นเลือก SKU 1–3 รายการตามลำดับ กรอกบริบทได้ถ้าต้องการ แล้วเริ่มรอบคำถาม เปิด URL เดิมอีกครั้งเพื่อดูเคสและคำตอบที่บันทึกไว้
+Open the [local app](http://127.0.0.1:5173), paste the [sample product link](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639), and select **Import link**. The importer supports 1688, Taobao, and Tmall. If the link contains a `skuId`, the corresponding variant is marked **From your link** for you to select and confirm. If the source site is unavailable or the demo machine is offline, use **Choose ZIP** with the [redacted browser save](samples/raw-save/raw-save-redacted.zip). Select 1–3 SKUs in your preferred order, add optional buying context, and start the question round. Reopen the same URL to see the saved case and answers.
 
-เมื่อต้องการรัน backend ปกติ ให้หยุด backend ทดสอบก่อนแล้วใช้คำสั่งด้านล่าง โดย SQLite ของแอปอยู่ใน `backend/.local/` การเรียก API จริงมีค่าใช้จ่ายและต้องได้รับอนุมัติก่อน ตั้ง `OPENAI_API_KEY` ใน environment ของ backend แล้วเปิดเฉพาะขั้นที่ได้รับอนุมัติ (`OPENAI_LIVE_TRANSLATION=1` สำหรับแปล `OPENAI_LIVE_QUESTIONS=1` สำหรับคำถาม และ `OPENAI_LIVE_REVIEW=1` สำหรับรายงาน) เมื่อขั้นใดยังไม่เปิด แอปจะแจ้งข้อผิดพลาดที่ขั้นนั้น เก็บ key ไว้เฉพาะเครื่อง เช่นใน `backend/.env` ซึ่ง Git ข้าม ไฟล์นี้ต้องโหลดเข้า environment ของ process ที่จะใช้เอง
+To run the regular backend, stop the offline server and run the command below. The app stores its SQLite database in `backend/.local/`. Live API calls incur charges and require approval. Set `OPENAI_API_KEY` in the backend process environment and enable only the approved stages. Use `OPENAI_LIVE_TRANSLATION=1` for translation, `OPENAI_LIVE_QUESTIONS=1` for questions, and `OPENAI_LIVE_REVIEW=1` for reports. The app reports an error at any disabled stage it reaches. Keep the key local, for example in the Git-ignored `backend/.env`, and load that file into the backend process environment explicitly.
 
 ```sh
 .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-## 30 นาทีแรก
+## Verification
 
-- **B** เตรียม repo และเครื่องเดโม จากนั้นเป็นเจ้าของคำสั่งเปิด frontend/backend จาก repo root และระบุ URL เดโมให้ตรงกับ Origin ที่ backend รับ คือ `http://127.0.0.1:5173` ลง README ของ repo แข่งทันทีที่เปิดแอปได้ ใช้ backend หนึ่ง worker แล้วลองเปิดจาก process ใหม่ร่วมกับ A
-- **A** เริ่ม UI จาก linked fixture และเขียน smoke steps ว่าต้องเลือกไฟล์ไหน กดอะไร และคาดว่าจะเห็นอะไร เริ่มจาก upload → เลือก SKU → ยืนยัน
-- **C** ส่ง schema/signatures และตรวจสิทธิ์ API ตามแผน ระบุในคำสั่งตรวจให้ชัดว่าเป็น **deterministic** (fixture/stub ไม่มี API call) หรือ **live** (ใช้เครดิต API) รันชุด deterministic ได้ระหว่างรอ key
+The [report verification notes](plans/purchase-03-evidence-review/verification.md) document real-ZIP browser walkthroughs and earlier live model checks. The [public demo verification](plans/purchase-04-integrate-and-verify/verification.md#public-railway-entry-and-report-evidence-correction) covers browser isolation, report queue recovery after restart, and evidence correction with scripted providers. The [Railway release checks](plans/purchase-04-integrate-and-verify/verification.md#railway-release-checks) record the live report and the subsequent translation-prompt deployment.
 
-## อ่านแค่นี้ก่อน
+## Pre-event planning and handoff
 
-1. [brief](docs/brief.md): ปัญหา เป้าหมาย และขอบเขต
-2. [ทีมและใบงาน](docs/team-plan.md): A/B/C และงาน 4 ใบ จากนั้นเปิด plan ของงานที่รับ
-3. [ตาราง 6 ชั่วโมง](docs/integration-plan.md#ตาราง-6-ชั่วโมง): จุดส่งต่อและจุดตรวจ
+The sections below record how the team prepared and split the work before building the app.
 
-เมื่อลงมือให้อ่าน [spec](docs/spec.md) ส่วน AI coding agents เริ่มจาก [AGENTS.md](AGENTS.md) เรื่องที่ยังต้องกำหนดคือสมาชิก A/B/C กับเครื่องเดโม
+### First 30 minutes
 
-| รับบท | อ่านรายละเอียดหลัก | เริ่มทำช่วงแรก |
+- **B** prepares the repo and demo machine, owns the commands for starting both services from the repo root, and records the demo URL in the README as soon as the app runs. Use the backend's allowed origin, `http://127.0.0.1:5173`. Run one backend worker and test a fresh process with A.
+- **A** starts the UI from the linked fixture and writes smoke-test steps that identify the file to select, actions to take, and expected results. Start with upload, SKU selection, and confirmation.
+- **C** shares schemas and function signatures, checks API access, and marks each check as **deterministic** (using fixtures or stubs) or **live** (using API credits). Run the deterministic suite while waiting for an API key.
+
+### Where to start
+
+1. Read the problem, goals, and scope in the [project brief](docs/brief.md).
+2. Find the team roles and four tickets in the [team plan](docs/team-plan.md), then open your assigned ticket.
+3. Review the handoffs and checkpoints in the [six-hour schedule](docs/integration-plan.md#%E0%B8%95%E0%B8%B2%E0%B8%A3%E0%B8%B2%E0%B8%87-6-%E0%B8%8A%E0%B8%B1%E0%B9%88%E0%B8%A7%E0%B9%82%E0%B8%A1%E0%B8%87).
+
+Read the [spec](docs/spec.md) before building. AI coding agents start with [AGENTS.md](AGENTS.md). At handoff, the team still needed to assign roles A, B, and C and pick a demo machine.
+
+| Role | Main references | First tasks |
 | --- | --- | --- |
-| A: หน้าเว็บ/เดโม | [report](docs/contracts/report-contract.md), [questions](docs/contracts/question-contract.md) | โครงหน้าและ linked fixture ที่ใช้ IDs/prompt ชุดเดียวกัน |
-| B: ZIP/backend/integration | [intake](docs/contracts/intake-contract.md), [integration](docs/integration-plan.md) | ZIP จริง/state/routes/image serving และ baseline repo |
-| C: schemas/AI/คุณภาพ | [AI plan](docs/ai-execution-plan.md), [report](docs/contracts/report-contract.md), [questions](docs/contracts/question-contract.md) | schema/function names และตรวจ API access/structured output |
+| A — Frontend and demo | [Report contract](docs/contracts/report-contract.md), [question contract](docs/contracts/question-contract.md) | Build the page structure and linked fixture with shared IDs and prompts. |
+| B — ZIP intake, backend, and integration | [Intake contract](docs/contracts/intake-contract.md), [integration plan](docs/integration-plan.md) | Set up the repo baseline and handle real ZIP input, state, routes, and image serving. |
+| C — Schemas, AI, and quality | [AI plan](docs/ai-execution-plan.md), [report contract](docs/contracts/report-contract.md), [question contract](docs/contracts/question-contract.md) | Define schemas and function names, then verify API access and structured outputs. |
 
-## รับงานและส่ง PR
+### Taking work and opening PRs
 
-แต่ละ ticket แยก checklist ของ A/B/C และเกณฑ์ V ของแต่ละคนไว้แล้ว เช่น A เริ่ม [งาน A ของ PR-01](plans/purchase-01-import-and-select/plan.md#งานของแต่ละคนก่อนเปิด-pr) แล้วตรวจ [V01-A](plans/purchase-01-import-and-select/verification.md#ตรวจส่วนของตนก่อนเปิด-pr) ก่อนส่งส่วนงาน ไม่ต้องรับทั้ง ticket
+Each ticket has role-specific checklists and verification criteria. For example, A starts with the [PR-01 role checklist](plans/purchase-01-import-and-select/plan.md#%E0%B8%87%E0%B8%B2%E0%B8%99%E0%B8%82%E0%B8%AD%E0%B8%87%E0%B9%81%E0%B8%95%E0%B9%88%E0%B8%A5%E0%B8%B0%E0%B8%84%E0%B8%99%E0%B8%81%E0%B9%88%E0%B8%AD%E0%B8%99%E0%B9%80%E0%B8%9B%E0%B8%B4%E0%B8%94-pr) and runs [V01-A](plans/purchase-01-import-and-select/verification.md#%E0%B8%95%E0%B8%A3%E0%B8%A7%E0%B8%88%E0%B8%AA%E0%B9%88%E0%B8%A7%E0%B8%99%E0%B8%82%E0%B8%AD%E0%B8%87%E0%B8%95%E0%B8%99%E0%B8%81%E0%B9%88%E0%B8%AD%E0%B8%99%E0%B9%80%E0%B8%9B%E0%B8%B4%E0%B8%94-pr) before handing off their part.
 
-ใช้ [ตัวอย่างคำสั่งให้ coding agent](docs/team-plan.md#ตัวอย่างคำสั่งให้-coding-agent) โดยเปลี่ยน role/ticket/V ให้ตรงงาน อ่าน [วิธีส่ง PR และรูปแบบหลักฐาน](docs/team-plan.md#วิธีส่ง-pr-ของแต่ละคน) ก่อนเปิด PR การรวมส่วนงานเพื่อ integration ยังไม่ใช่การปิด ticket
+Adapt the [example coding-agent prompt](docs/team-plan.md#%E0%B8%95%E0%B8%B1%E0%B8%A7%E0%B8%AD%E0%B8%A2%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B8%84%E0%B8%B3%E0%B8%AA%E0%B8%B1%E0%B9%88%E0%B8%87%E0%B9%83%E0%B8%AB%E0%B9%89-coding-agent) to your role, ticket, and verification criteria. Read the [PR and evidence guidelines](docs/team-plan.md#%E0%B8%A7%E0%B8%B4%E0%B8%98%E0%B8%B5%E0%B8%AA%E0%B9%88%E0%B8%87-pr-%E0%B8%82%E0%B8%AD%E0%B8%87%E0%B9%81%E0%B8%95%E0%B9%88%E0%B8%A5%E0%B8%B0%E0%B8%84%E0%B8%99) before opening a PR. Close tickets after the integrated checks and reviews required by the team plan.
 
-## ของที่ต้องใช้มีอยู่ที่ไหน
+### Reference materials
 
-- [samples/listing.zip](samples/listing.zip) และ [raw-save-redacted.zip](samples/raw-save/raw-save-redacted.zip): ZIP ของสินค้าเดียวกัน ใช้ตรวจ PR-01 ทั้งคู่ ไฟล์หลังเก็บโครง browser save และชื่อไฟล์แบบ Finder [วิธีใช้และข้อจำกัด](samples/README.md)
-- [official-sources.json](samples/official-sources.json) และ [reference pack](docs/reference-pack.md): excerpt ทางการที่คัดไว้สำหรับตั้งคำถาม ไม่ใช่คำรับรองสินค้า
-- [ตัวอย่าง report](docs/contracts/examples/report-contract-example.json) / [ตัวอย่างคำถาม](docs/contracts/examples/question-contract-examples.json): ตัวอย่างที่เขียนขึ้นสำหรับ frontend/tests ไม่ส่ง expected answers เข้า prompt
-- [mock-reference.html](references/mock-reference.html): อ้างอิงหน้าจอและวิธีเปิดหลักฐาน ZIP/AI จำลองไว้และหน้าคำถามเป็นแบบเดิมหนึ่งรอบ ให้ยึดสเปก v0.16 สำหรับ flow จริง ไม่ย้าย fake analysis มาเป็น fallback
-- [toolchain](docs/toolchain.md): candidate dependencies และสิ่งที่ยังไม่ได้ทดสอบบนเครื่องทีม
-- [HANDOFF_CHECKS.md](HANDOFF_CHECKS.md): ผลตรวจชุดที่ส่งมอบและข้อจำกัด
-
-## ยังไม่ได้พิสูจน์อะไร
-
-Phase 1 ทดสอบ API จริงเฉพาะการแปลข้อความจาก raw ZIP แล้ว ดู [ผลตรวจ Phase 1](plans/purchase-01-import-and-select/verification.md) ส่วนคุณภาพรายงาน ต้นทุนและเวลาของเส้นทางเต็ม รวมถึงเกณฑ์ T1–T5 ยังรอการทดสอบในระยะถัดไป เป้าคือเชื่อม ZIP ผ่านอย่างน้อยสองรอบถาม → รายงานจริงครั้งแรกภายใน 2:30 ชั่วโมง แล้วตรวจ/รีวิว/ซ้อมตามแผน
-
-ราคาหรือชื่อโมเดลใน AI plan เป็น baseline ที่บันทึกวันที่ออกแบบ ให้ยืนยันการเข้าถึงและ config จริงก่อนใช้ ไม่สลับเป็น sample เมื่อ API ผิด
+- PR-01 uses two ZIPs for the same product. The raw save preserves the browser-save structure and Finder filenames. [Curated ZIP](samples/listing.zip) · [Raw ZIP](samples/raw-save/raw-save-redacted.zip) · [Sample usage and limitations](samples/README.md)
+- Use excerpts from official sources to inform buyer questions. Product claims still need evidence for the selected item. [Source excerpts](samples/official-sources.json) · [Reference pack](docs/reference-pack.md)
+- The report and question examples are fixtures for frontend development and tests. Keep expected answers out of model prompts. [Report example](docs/contracts/examples/report-contract-example.json) · [Question examples](docs/contracts/examples/question-contract-examples.json)
+- The static mock shows the earlier one-round design and how evidence opens. Its ZIP and AI behavior is simulated. Follow spec v0.16 for the working flow and keep simulated analysis in the mock. [UI mock](references/mock-reference.html) · [Spec](docs/spec.md)
+- Proposed dependencies and the checks that remained open on team machines. [Toolchain guide](docs/toolchain.md)
+- Checks and limitations of the pre-event handoff package. [Handoff checks](HANDOFF_CHECKS.md)

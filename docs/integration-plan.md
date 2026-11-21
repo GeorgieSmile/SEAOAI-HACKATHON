@@ -1,19 +1,25 @@
 # แผนเชื่อมระบบและแบ่งงาน 3 คนใน 6 ชั่วโมง
 
-Status: accepted design under spec v0.16; implementation and runtime unverified
+เอกสารนี้เก็บแผนก่อนแข่ง v0.16 และระบุพฤติกรรมของเดโม Railway ที่เปิดใช้งานวันที่ 21 พ.ย. 2569
 Version: 0.6
 วันที่: 20 พ.ย. 2569
 ต้นทาง: [intent](brief.md), [spec](spec.md), [รับ ZIP](contracts/intake-contract.md), [รอบคำถาม](contracts/question-contract.md), [รายงาน](contracts/report-contract.md), [แผน AI](ai-execution-plan.md)
 
 ยอมรับเป็นส่วนหนึ่งของ [spec v0.15](spec.md) วันที่ 19 พ.ย. ตาม [บันทึกการยอมรับ](acceptance.md) การยอมรับ Design ไม่ใช่หลักฐานว่าแอปทำงานแล้วหรือคำสั่ง Build
 
-## ผลที่ต้องส่งมอบ
+## ระบบที่ใช้บน Railway
+
+ผู้ซื้อเปิดลิงก์สาธารณะได้ทันที เมื่อหน้าเว็บเรียก `GET /api/case` ครั้งแรก backend จะสร้าง workspace และส่ง session cookie ให้เบราว์เซอร์ แท็บในโปรไฟล์เดียวกันใช้เคสเดียวกัน แต่ละ workspace มีไฟล์ SQLite ของตัวเอง เก็บเคสและภาพบน volume ที่ `/data` เมื่อ deploy รุ่นใหม่ให้ใช้ volume เดิม ดู [วิธีตั้งค่า Railway](../README.md#hosted-railway-demo)
+
+บริการใช้ Uvicorn หนึ่ง worker และคิวสร้างรายงานร่วมกันทุก workspace เมื่อผู้ซื้อยืนยัน brief ระบบจะบันทึกงานก่อนตอบ HTTP 202 ระหว่างที่งานอยู่ในคิวหรือกำลังสร้างรายงาน หน้าเว็บอ่านสถานะผ่าน `GET /api/case` จนเปิดรายงานได้ หลัง restart ระบบจะทำงานที่รอคิวต่อ ส่วนงานที่ถูกขัดจังหวะระหว่างสร้างรายงานให้ผู้ซื้อกด **Retry purchase review** ดู [ผลทดสอบการกู้เคส](../plans/purchase-04-integrate-and-verify/verification.md#hosted-demo-rehearsal)
+
+## เป้าหมายของแผนก่อนแข่ง
 
 เดโม local บนเครื่องเดียว ตั้งแต่ ZIP จริง → คำแปล/รูป → ยืนยัน 1–3 SKU → คำถามที่ปรับตามคำตอบ สูงสุด 3 รอบ รอบละ 1–5 ข้อ → รายงานที่เปิดหลักฐานและคัดลอกข้อความถามผู้ขายได้ ต้องกลับมาทำเคสล่าสุดหลัง restart ได้
 
 แผนนี้เป็น baseline ที่ยอมรับสำหรับเชื่อมและแบ่งความรับผิดชอบ ส่วน ticket breakdown ได้รับการยอมรับแล้ววันที่ 19 พ.ย. พร้อมรับงานในวันแข่ง ไม่เริ่มสร้างแอปหรือเปลี่ยน prototype ในรอบ Design งานใหม่ที่ใช้ตัดสินต้องเกิดในวันแข่ง
 
-## โครงที่เสนอ
+## โครงที่เสนอสำหรับเดโม local ก่อนแข่ง
 
 - React + TypeScript + Vite สำหรับ frontend และ Python + FastAPI สำหรับ backend ใช้ HTTP request/response ปกติ ใช้ SQLite ไฟล์เดียวสำหรับกู้เคสล่าสุด ไม่มี queue, WebSocket, polling หรือ agent framework
 - เครื่องเดโมรัน Vite ที่ `127.0.0.1:5173` และ backend ที่ `127.0.0.1:8000` แบบหนึ่ง worker Frontend ใช้ relative `/api/...` ผ่าน Vite proxy ไม่ฝัง backend hostname ในแต่ละหน้าหรือเปิด wildcard CORS
@@ -35,19 +41,19 @@ Version: 0.6
 | `POST /api/brief/preview-answers`, `POST /api/brief/preview-undo` | revision ปัจจุบันพร้อม submission หรือ `undo_change_id` | คำนวณผลก่อนแก้คำตอบหรือ Undo |
 | `POST /api/brief/edit` | revision และ operation ID พร้อม `correction` กับ `proposal` ที่ผ่านการ preview หรือ `undo_change_id` | ตรวจซ้ำและบันทึกเป็น revision ใหม่ |
 | `POST /api/questions/resume` | `{operation_id, case_id, revision}` | ออกรอบแทนรอบที่ brief เปลี่ยนเงื่อนไข เมื่อยังอยู่ในเพดาน |
-| `POST /api/reviews` | `{operation_id, case_id, revision, confirm: true}` | ยืนยัน brief และจองงานสร้างรายงานของ revision เดียวใน transaction เดียว |
-| `POST /api/case/retry` | `{case_id, revision, operation_id}` ของงานล่าสุดที่ล้มเหลว | รันขั้นเดิมจากข้อมูลที่บันทึกไว้ ไม่เพิ่มรอบหรือล้างคำตอบ |
+| `POST /api/reviews` | `{operation_id, case_id, revision, confirm: true}` | ยืนยัน brief และจองงานของ revision นั้น บน Railway คืน 202 พร้อม case ขณะงานรอคิวหรือกำลังทำงาน |
+| `POST /api/case/retry` | `{case_id, revision, operation_id}` ของงานล่าสุดที่ล้มเหลว สำหรับรายงานบน Railway ต้องส่ง `retry_token` จาก `last_operation.retry_token` ของความล้มเหลวครั้งที่แสดงด้วย | รันขั้นเดิมจากข้อมูลที่บันทึกไว้ ไม่เพิ่มรอบหรือล้างคำตอบ |
 | `POST /api/case/reset` | `{snapshot_id, previous_case}` ตรงข้อมูลปัจจุบัน หลังผู้ซื้อเลือก Start over | ล้าง snapshot และเคสปัจจุบัน เพิ่ม generation คืน 200 พร้อม case และ snapshot เป็น null |
-| `GET /api/case` | ไม่มี body | snapshot ปัจจุบันและเคสที่บันทึก หรือ null สำหรับส่วนที่ยังไม่มี อ่านอย่างเดียวและไม่เรียก AI |
+| `GET /api/case` | ไม่มี body | snapshot ปัจจุบันและเคสที่บันทึก หรือ null สำหรับส่วนที่ยังไม่มี บน Railway การอ่านครั้งแรกเปิด workspace ส่วนครั้งถัดไปใช้ cookie เพื่อกู้เคส ทุกครั้งใช้ข้อมูลที่บันทึกไว้โดยไม่เรียก AI |
 | `GET /api/snapshots/{snapshot_id}/images/{source_id}` | รหัสจาก snapshot ปัจจุบัน | bytes ภาพที่ตรวจแล้วพร้อม MIME หรือ 404 |
 
 ผู้ซื้อตอบข้อขัดแย้งเรื่องรูปแบบการสั่งซื้อผ่าน `POST /api/brief` โดยส่ง `submission: null` และ `order_clarification: {requirement_id, option_id, choice}` ใช้รหัสข้อขัดแย้งและ SKU จากเคส revision ปัจจุบัน โดย `choice` เป็น `ready_made_only` หรือ `custom_orders_acceptable` การเลือกจะสร้าง revision ใหม่ การส่ง operation เดิมซ้ำได้ผลเดิม
 
-Case view มี `case_id`, `revision`, `snapshot_id`, `selected_option_ids`, `buyer_context`, `rounds` ตามลำดับ, `phase`, `reason` (ข้อความจบการถามหรือ null), `report` (PurchaseReview ของ revision ปัจจุบันหรือ null) และ `last_operation` (null หรือ `{operation_id, stage, status, code, message}` stage เป็น start/continue/brief/review และ status เป็น running/ready/failed โดย code/message มีค่าเมื่อ failed) แต่ละรอบมี round_id/round_number/reason/questions ตาม question contract และ `answers` เป็น null ทั้ง field ระหว่างรอตอบ หรือรายการครบทุกข้อเมื่อส่งแล้ว phase ใช้ `preparing_questions`, `awaiting_answers`, `ready_for_review`, `generating_review`, `reviewed`, หรือ `failed`
+Case view มี `case_id`, `revision`, `snapshot_id`, `selected_option_ids`, `buyer_context`, `rounds` ตามลำดับ, `phase`, `reason` (ข้อความจบการถามหรือ null), `report` (PurchaseReview ของ revision ปัจจุบันหรือ null) และ `last_operation` (null หรือ `{operation_id, stage, status, code, message}` stage เป็น start/continue/brief/review และ status เป็น queued/running/ready/failed โดย code/message มีค่าเมื่อ failed และมี retry_token เมื่องานรายงานบน Railway พร้อมให้ลองใหม่) แต่ละรอบมี round_id/round_number/reason/questions ตาม question contract และ `answers` เป็น null ทั้ง field ระหว่างรอตอบ หรือรายการครบทุกข้อเมื่อส่งแล้ว phase ใช้ `preparing_questions`, `awaiting_answers`, `ready_for_review`, `generating_review`, `reviewed`, หรือ `failed`
 
-เมื่อขั้นคำถามคืน `ready_for_review` ให้ UI แสดง buying brief พร้อมข้อกำหนดตาม SKU, ผลของการแก้ และ `confirmed_revision` หากยืนยันแล้ว การเปิดหรือกู้เคสใช้ `GET /api/case` และไม่เริ่มงานวิเคราะห์ การสร้างรายงานเริ่มจากคำสั่งยืนยันเท่านั้น คำขอซ้อนของ revision เดียวกันใช้ผลที่มีอยู่หรือได้ 409 ขณะยังประมวลผล
+เมื่อขั้นคำถามคืน `ready_for_review` ให้ UI แสดง buying brief พร้อมข้อกำหนดตาม SKU, ผลของการแก้ และ `confirmed_revision` หากยืนยันแล้ว การเปิดหรือกู้เคสใช้ `GET /api/case` และไม่เริ่มงานวิเคราะห์ การสร้างรายงานเริ่มจากคำสั่งยืนยันเท่านั้น บน Railway การยืนยัน revision เดิมซ้ำระหว่างรอจะคืนสถานะของงานเดิม ส่วนคำขอจากแท็บที่ใช้ revision เก่าจะได้ 409
 
-HTTP 200 ใช้ envelope `{status: "ready", case}` หรือ `{status: "failed", case_id, revision, code, message}` สำหรับ case commands (ค่ารหัสเป็น null ได้ก่อนสร้างเคส) shape ผิดใช้ 422, งานเดิมที่ running หรือ revision หมดอายุใช้ 409, ใหญ่เกินขอบเขตใช้ 413, idempotency key เดิมกับ payload ใหม่ใช้ invalid_input ไม่แปลง error เป็นทางข้ามคำถามหรือรายงานตัวอย่าง ปัญหาตั้งค่า/สิทธิ์/โควตาขั้นแปลคง intake_failed และไม่ publish ready ไม่ส่ง traceback หรือ provider error ดิบ เมื่อ network ล่มให้เก็บร่างใน UI และโหลดสถานะจาก Backend ก่อนอนุมานว่าคำตอบไม่ถูกบันทึก
+HTTP 200 ใช้ envelope `{status: "ready", case}` หรือ `{status: "failed", case_id, revision, code, message}` สำหรับ case commands (ค่ารหัสเป็น null ได้ก่อนสร้างเคส) shape ผิดใช้ 422, revision หมดอายุใช้ 409 งานรายงานบน Railway ที่รอคิวหรือกำลังทำงานใช้ 202, ใหญ่เกินขอบเขตใช้ 413, idempotency key เดิมกับ payload ใหม่ใช้ invalid_input ไม่แปลง error เป็นทางข้ามคำถามหรือรายงานตัวอย่าง ปัญหาตั้งค่า/สิทธิ์/โควตาขั้นแปลคง intake_failed และไม่ publish ready ไม่ส่ง traceback หรือ provider error ดิบ เมื่อ network ล่มให้เก็บร่างใน UI และโหลดสถานะจาก Backend ก่อนอนุมานว่าคำตอบไม่ถูกบันทึก
 
 UploadFile อาจ spool ลง disk ก่อนเข้า handler จึงตรวจ Content-Length ที่แจ้งมาก่อน parse และจำกัด actual request-body bytes ก่อน multipart parser ไม่ใช้ header เป็นข้อพิสูจน์เพียงอย่างเดียว เสนอขอบเขต body 21 MiB สำหรับ ZIP 20 MiB กับ multipart overhead และตรวจขนาดไฟล์ ZIP จริงซ้ำตาม intake-contract ปิด UploadFile ใน finally ไม่เก็บ upload spool ไว้ใช้หลัง request
 
@@ -57,7 +63,7 @@ UploadFile อาจ spool ลง disk ก่อนเข้า handler จึ�
 
 ## เจ้าของข้อมูลและอายุข้อมูล
 
-Backend เก็บ snapshot ล่าสุด, ภาพที่ตรวจแล้ว, เคส, rounds/คำตอบจริง, ผลรายงานพร้อมใช้ และข้อมูลงานล่าสุดสำหรับ Retry ใน SQLite **ไฟล์เดียวแบบ local** ใช้ `backend/.local/` เป็นตำแหน่งแนะนำและ ignore ทั้งไดเรกทอรี เก็บ encoded image bytes และ MIME คู่ source ID เก็บเฉพาะหลักฐานที่สกัดตาม contract ไม่เก็บ ZIP/raw HTML ทั้งชุด ไม่มี API key ในฐานข้อมูล ไม่ commit หรือส่งต่อฐานข้อมูลจริง ใช้หนึ่ง worker และปิด auto-reload ตอนเดโม
+Backend เก็บ snapshot ล่าสุด, ภาพที่ตรวจแล้ว, เคส, rounds/คำตอบจริง, ผลรายงานพร้อมใช้ และข้อมูลงานล่าสุดสำหรับ Retry ใน SQLite หนึ่งไฟล์ต่อ workspace สำหรับเดโม local บนเครื่องนักพัฒนา ใช้ `backend/.local/` เป็นตำแหน่งแนะนำและ ignore ทั้งไดเรกทอรี เก็บ encoded image bytes และ MIME คู่ source ID เก็บเฉพาะหลักฐานที่สกัดตาม contract ไม่เก็บ ZIP/raw HTML ทั้งชุด ไม่มี API key ในฐานข้อมูล ไม่ commit หรือส่งต่อฐานข้อมูลจริง ใช้หนึ่ง worker และปิด auto-reload ตอนเดโม
 
 B ให้ `backend/state.py` เป็นทางเดียวที่เปิดและอ่าน–เขียน SQLite route นำเข้า คำถาม รายงาน และกู้เคส ใช้ตัวเก็บข้อมูลชุดเดียวกัน Frontend เรียก HTTP และโมเดลรับ QuestionInput/ReviewInput ที่ Backend ประกอบให้
 
@@ -74,7 +80,7 @@ B ให้ `backend/state.py` เป็นทางเดียวที่เ�
 ## case IDs, retry และผลเก่า
 
 - Backend ออก `snapshot_id` เมื่อ publish import, `case_id` เมื่อเริ่มเคส (แก้ SKU/ลำดับ/context เริ่มใหม่) และ `round_id`/question IDs เมื่อออกคำถามจริง `revision` เริ่มที่ 0 เพิ่มเมื่อ commit คำตอบของรอบที่ยังไม่ส่งหรือแก้ชุดที่ส่งแล้ว การขอรายงานจากข้อมูลที่บันทึกอยู่แล้วและ Retry ไม่เพิ่ม revision
-- Frontend สร้าง `operation_id` ใหม่ต่อการกระทำ (UUID) การส่งซ้ำใช้ ID และ payload เดิม ตรวจการส่งซ้ำของงานล่าสุดก่อนตรวจ expected revision จึง retry ได้แม้คำขอเดิมเพิ่ม revision ไปแล้ว Binding เก็บ stage, fingerprint ของ normalized payload และเคส/ฉบับที่งานใช้ตลอด snapshot ปัจจุบัน เก็บผล/ข้อมูลที่ใช้ Retry เฉพาะงานล่าสุด งาน running เดิมคืน 409 งาน ready เดิมคืนผลเดิม ผลและคำขอที่ถูกแทนหมดอายุ ปฏิเสธก่อน AI แม้ client ส่งผ่าน shape
+- Frontend สร้าง `operation_id` ใหม่ต่อการกระทำ (UUID) การส่งซ้ำใช้ ID และ payload เดิม ตรวจการส่งซ้ำของงานล่าสุดก่อนตรวจ expected revision จึง retry ได้แม้คำขอเดิมเพิ่ม revision ไปแล้ว Binding เก็บ stage, fingerprint ของ normalized payload และเคส/ฉบับที่งานใช้ตลอด snapshot ปัจจุบัน เก็บผล/ข้อมูลที่ใช้ Retry เฉพาะงานล่าสุด งาน running เดิมคืน 409 ยกเว้นการติดตามงานรายงานบน Railway ตามตาราง HTTP งาน ready เดิมคืนผลเดิม ผลและคำขอที่ถูกแทนหมดอายุ ปฏิเสธก่อน AI แม้ client ส่งผ่าน shape
 - การกระทำใหม่ที่เปลี่ยนข้อมูลครอง state ได้เฉพาะ case/revision ปัจจุบัน ระหว่างประมวลผล UI ปิดคำสั่งซ้อนในเคส แต่เปลี่ยน ZIP/SKU/context ได้ เมื่อการเตรียมคำถามล้มเหลว ผู้ซื้อกด Retry หรือเปิด buying brief จากคำตอบที่บันทึกแล้วได้
 - Retry หลัง failed ใช้ input/operation เดิมจาก SQLite มี deadline และไม่เกิน 2 attempts ต่อ run ใหม่ ไม่เพิ่มรอบ ถ้ามี open round ต้องส่ง submission เมื่อขอรายงาน จะได้ไม่ทิ้งคำตอบที่กรอกไว้ หากชนิดข้อผิดพลาดแก้ไม่ได้ด้วย retry (เช่นสิทธิ์/โควตา) ให้แจ้งสิ่งที่ต้องแก้ตาม AI plan
 - Backend commit ผลหรือปล่อย reservation เฉพาะเมื่อ generation, case_id, revision และ operation_id ยังตรงกัน จัดการ exception/cancellation ใน finally ไม่ปล่อยผลเก่าทับของใหม่ Frontend ใช้ request generation เพิ่มจากรหัสในผลเพื่อกันคำขอเก่ากลับมาทับ เมื่อแก้คำตอบให้ล้างผลเก่าจากหน้าปัจจุบัน
