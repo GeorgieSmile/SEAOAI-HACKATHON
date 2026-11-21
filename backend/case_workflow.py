@@ -18,8 +18,11 @@ from .contracts import (
     AnsweredQuestion, AnswerSubmission, IssuedRound, ListingSnapshot, QuestionInput,
     QuestionResult, ResolvedRequirement, ReviewInput,
 )
-from .report import assemble_review, review_sent_evidence
-from .report_models import BuyerRequirement, PurchaseReview, RequirementSelection, ReviewFailed, ReviewResult, SentReviewEvidence
+from .report import assemble_review, canonicalize_review_content, review_sent_evidence
+from .report_models import (
+    BuyerRequirement, CanonicalReviewContent, PurchaseReview, RequirementSelection, ReviewContent,
+    ReviewFailed, ReviewResult, SentReviewEvidence,
+)
 from .requirements import (
     issue_requirement_plan, legacy_context_rows, recover_direct_legacy_requirement, resolve_requirements,
     validate_submission_effect,
@@ -121,7 +124,9 @@ def _resolved_view(record: CaseRecord, case: CaseView) -> CaseView:
     if record.initial_requirements is None:
         return case
     return case.model_copy(update={
-        "requirements": resolve_requirements(case.case_id, record.initial_requirements, case.rounds),
+        "requirements": resolve_requirements(
+            case.case_id, record.initial_requirements, case.rounds, buyer_context=case.buyer_context,
+        ),
     })
 
 
@@ -178,6 +183,8 @@ def _legacy_review_migration(
     upgraded: CaseRecord, inputs: ReviewInput, restored: PurchaseReview, saved: SavedReview,
 ) -> tuple[CaseRecord, SavedReview | None]:
     content = saved.content
+    if not isinstance(content, ReviewContent):
+        raise ValueError("The original report must identify each verified buyer decision.")
     shown = {row.requirement_id: row for row in restored.buyer_requirements}
     ref_counts = Counter(selection.input_ref for selection in content.buyer_requirements)
     candidates = {
@@ -350,7 +357,10 @@ class CaseWorkflow:
             if operation.status != "ready":
                 raise ValueError("The saved review operation has not completed successfully.")
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
-            if (validated.version == 5) != (inputs.requirements is not None):
+            if (
+                (validated.version >= 5) != (inputs.requirements is not None)
+                or (validated.version == 6) != isinstance(validated.content, CanonicalReviewContent)
+            ):
                 raise ValueError("The saved review has a mismatched requirement contract version.")
             images = self._review_images(inputs)
             digest = _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=validated.version)
@@ -382,8 +392,22 @@ class CaseWorkflow:
             failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
-        if legacy or validated.version < 4:
-            version = 5 if legacy else 4
+        version = max(validated.version, 4)
+        if inputs.requirements is not None and validated.version < 6:
+            canonical = canonicalize_review_content(validated.content)
+            try:
+                unchanged = canonical is not None and rebuilt == assemble_review(
+                    inputs, canonical, sent_evidence=validated.sent_evidence,
+                )
+            except ValueError:
+                unchanged = False
+            if not unchanged:
+                failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
+                self._save(generation, record, failed)
+                return
+            validated = validated.model_copy(update={"content": canonical})
+            version = 6
+        if version != validated.version:
             migrated = validated.model_copy(update={
                 "version": version,
                 "input_digest": _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=version),
@@ -616,7 +640,10 @@ class CaseWorkflow:
             else:
                 operation = record.view.last_operation.model_copy(update={"status": "ready"})
                 scope = result.sent_evidence
-                version = 5 if inputs.requirements is not None else 4
+                canonical = isinstance(result.content, CanonicalReviewContent)
+                if canonical != (inputs.requirements is not None):
+                    raise ValueError("The report selections must follow the current buyer decision contract.")
+                version = 6 if canonical else 4
                 digest = _review_digest(inputs, operation.operation_id, images, scope, version=version)
                 report = assemble_review(inputs, result.content, sent_evidence=scope)
                 if report != result.report:

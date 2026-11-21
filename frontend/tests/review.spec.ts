@@ -181,7 +181,8 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   const optionC = decisions.getByRole("region", { name: "Option C", exact: true });
   await expect(optionA.locator("summary").filter({ hasText: finish })).toBeVisible();
   await expect(optionA.getByText("Question skipped", { exact: false })).toHaveCount(0);
-  await expect(optionB.getByText("Question skipped · Kept prior decision")).toBeVisible();
+  await expect(optionB.locator("summary").filter({ hasText: "Required" })).toHaveText(`Required${finish}`);
+  await expect(optionB.getByText(round.questions[1]!.prompt)).toHaveCount(0);
   await expect(optionC.locator("summary").filter({ hasText: "Waived" })).toBeVisible();
   await expect(optionC.locator("summary").filter({ hasText: "Decision open · Answer left open" })).toBeVisible();
   await optionA.locator("summary").filter({ hasText: finish }).click();
@@ -189,6 +190,10 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   await expect(optionA.locator("blockquote").last()).toHaveText(answerText);
 
   await page.getByRole("link", { name: "Edit answers" }).click();
+  const history = page.getByRole("region", { name: "Saved answers" });
+  await history.getByText("Round 1 answers", { exact: true }).click();
+  await expect(history.getByText(round.questions[1]!.prompt)).toBeVisible();
+  await expect(history.getByText("Skipped / unknown", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Edit round 1" }).click();
   const targetQuestion = page.getByRole("group", { name: round.questions[0]!.prompt });
   await expect(targetQuestion.getByRole("radio", { name: `Keep “${finish}”` })).toBeVisible();

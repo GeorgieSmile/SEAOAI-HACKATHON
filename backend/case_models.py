@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 from pydantic import Field, UUID4
 
 from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ResolvedRequirement, ReviewInput
-from .report_models import PurchaseReview, ReviewContent, SentReviewEvidence
+from .report_models import PurchaseReview, ReviewSelection, SentReviewEvidence
 
 
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
@@ -68,9 +68,9 @@ class CaseView(CaseReference):
 
 
 class SavedReview(ContractModel):
-    version: Literal[2, 3, 4, 5]
+    version: Literal[2, 3, 4, 5, 6]
     input_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-    content: ReviewContent
+    content: ReviewSelection
     sent_evidence: SentReviewEvidence
 
 

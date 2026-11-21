@@ -896,7 +896,6 @@ fieldset {
 .requirement-decisions-list { display: grid; gap: 6px; }
 .requirement-decision { border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
 .requirement-decision summary { padding: 7px 9px; cursor: pointer; }
-.skipped-revisit { padding: 7px 9px; }
 .requirement-status { color: var(--muted); font-size: .82rem; font-weight: 700; }
 .requirement-status.is-active { color: var(--green); }
 .requirement-status.is-unresolved { color: #7e4415; }

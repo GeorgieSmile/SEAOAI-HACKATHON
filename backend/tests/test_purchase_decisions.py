@@ -2,6 +2,7 @@
 from dataclasses import dataclass, replace
 import json
 import os
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,11 +12,13 @@ from openai import AsyncOpenAI
 import pytest
 
 from backend.ai import generate_questions
+from backend.contracts import QuestionResult
 from backend.main import create_app
 from backend.report import generate_review
 from backend.tests.test_cases import initial_request, ready, reference, round_request
 from backend.tests.test_imports import RAW, _upload, stub
-from backend.tests.test_reports import finding_selection, image_claim, minimal_content, response, text_claim
+from backend.tests.test_reports import canonical_content, finding_selection, image_claim, response, text_claim
+from backend.tests.test_review_workflow import retry_request
 
 
 @dataclass(frozen=True)
@@ -140,8 +143,7 @@ def test_original_zip_review_matrix(tmp_path, name):
         def serve(request):
             parts = json.loads(request.content)["input"][0]["content"]
             wire = json.loads(parts[0]["text"])
-            payload = minimal_content(inputs)
-            payload.pop("buyer_requirements")
+            payload = canonical_content(inputs)
             if name in IMAGE_CASES:
                 selector, = [src for src in wire["text_sources"] if src["label"] == "Shared selector value"]
                 assert selector["original_text"] == "720ml"
@@ -158,7 +160,7 @@ def test_original_zip_review_matrix(tmp_path, name):
                 unreadable = name in ("unreadable", "readable-and-unreadable")
                 conflict = name == "different-readings"
                 payload["findings"].append(finding_selection(
-                    [a["option_id"]], claim_ids=[row["claim_id"] for row in payload["claims"]],
+                    [a["option_id"]], decision_id=None, claim_ids=[row["claim_id"] for row in payload["claims"]],
                     kind="listing_conflict" if conflict else "clarification_needed",
                     supplier_action="reconcile_sources" if conflict else "confirm_specification",
                     unknowns=[{"reason": "unreadable", "source_ids": [a["image_source_id"]]}] if unreadable else [],
@@ -174,7 +176,7 @@ def test_original_zip_review_matrix(tmp_path, name):
                 stale_id = question_ids[scenario.stale]
                 payload["findings"].append(finding_selection(
                     inputs.selected_option_ids, topic="deadline" if scenario.stale == DEC_1.answer else "finish",
-                    kind="requirement_unconfirmed", requirement_ids=[stale_id],
+                    kind="requirement_unconfirmed", decision_id=None, requirement_ids=[stale_id],
                 ))
             # Empty findings also exercise automatic, scoped supplier checks for each active typed target.
             return response(request, payload)
@@ -254,3 +256,96 @@ def test_original_zip_review_matrix(tmp_path, name):
         database, translator=unexpected_request, question_generator=unexpected_request, review_generator=unexpected_request,
     )) as client:
         assert client.get("/api/case").json()["case"] == completed
+
+
+def test_skipped_sample_cannot_change_the_deadline_after_edit_and_restart(tmp_path):
+    database = tmp_path / "decisions.db"
+    sample_prompt = "Do you need a pre-production sample?"
+
+    async def questions(inputs):
+        selected = inputs.selected_option_ids
+        return QuestionResult.model_validate({
+            "reason": "Check the revised date and sample preference.",
+            "context_requirements": [{
+                "quote": DEC_1.answer, "statement": DEC_1.answer, "topic": "deadline",
+                "buyer_facet": "delivery_deadline", "option_ids": selected,
+            }],
+            "questions": [
+                {
+                    "prompt": DEC_15.prompt, "why_ask": "Check the delivery date for this option.",
+                    "topic": "deadline", "buyer_facet": "delivery_deadline", "option_ids": selected[:1],
+                    "source_ids": [], "requirement_ids": ["context:1"], "choices": [DEC_15.answer],
+                    "choice_effects": [{
+                        "choice": DEC_15.answer, "action": "replace", "statement": DEC_15.answer,
+                        "requirement_id": "context:1",
+                    }],
+                },
+                {
+                    "prompt": sample_prompt, "why_ask": "Check whether a sample is needed.",
+                    "topic": "sample", "buyer_facet": "other", "option_ids": selected, "source_ids": [],
+                    "requirement_ids": [], "choices": [], "choice_effects": [],
+                },
+            ],
+        })
+
+    submitted_topic = "deadline"
+
+    async def review(inputs, images):
+        def serve(request):
+            wire = json.loads(json.loads(request.content)["input"][0]["content"][0]["text"])
+            sample, = [row for row in wire["requirements"] if row["topic"] == "sample"]
+            payload = canonical_content(inputs)
+            payload["findings"] = [finding_selection(
+                inputs.selected_option_ids, finding_id="sample-choice", topic=submitted_topic,
+                action_type="decide_preference", supplier_action=None, decision_id=sample["requirement_id"],
+            )]
+            return response(request, payload)
+
+        async with scripted_client(serve) as sdk:
+            return await generate_review(inputs, images, client=sdk)
+
+    def assert_decisions(case, selected, expected):
+        report = case["report"]
+        assert report["selected_option_ids"] == selected
+        rows = report["buyer_requirements"]
+        draft = report["supplier_draft"].lower().splitlines()
+        for index, (option_id, quote) in enumerate(zip(selected, expected, strict=True)):
+            requirement, = [r for r in rows if option_id in r["option_ids"]]
+            assert requirement["text"] == quote
+            date_text = "15 december" if quote == DEC_15.answer else "1 december"
+            date_lines = [
+                line for line in draft if "december" in line
+                and (scope := re.search(r"\[options? ([abc](?:, [abc])*)\]", line))
+                and "abc"[index] in scope.group(1).split(", ")
+            ]
+            assert len(date_lines) == 1 and date_text in date_lines[0], draft
+        preference, = report["open_preferences"]
+        assert "sample" in preference["text"].lower()
+        assert preference["option_ids"] == selected
+        assert preference["finding_ids"] == ["sample-choice"]
+        assert [q["question_text"] for q in preference["questions"]] == [sample_prompt]
+
+    with TestClient(create_app(database, translator=stub, question_generator=questions, review_generator=review)) as client:
+        snap = _upload(client, Path(os.environ.get("PURCHASE_TEST_ZIP", RAW))).json()["snapshot"]
+        start = initial_request(snap, buyer_context=DEC_1.answer)
+        selected = start["selected_option_ids"]
+        case = ready(client.post("/api/questions", json=start))
+        invalid = client.post("/api/reviews", json=round_request(case)).json()
+        assert (invalid["status"], invalid["code"]) == ("failed", "invalid_review")
+        failed = client.get("/api/case").json()["case"]
+        assert failed["report"] is None
+
+        submitted_topic = "sample"
+        valid = ready(client.post("/api/case/retry", json=retry_request(failed)))
+        assert_decisions(valid, selected, [DEC_1.answer] * 3)
+        edited = ready(client.post("/api/reviews", json=round_request(valid, texts=[DEC_15.answer, None])))
+        assert edited["revision"] == valid["revision"] + 1
+        assert_decisions(edited, selected, [DEC_15.answer, DEC_1.answer, DEC_1.answer])
+
+    async def forbidden(*args):
+        pytest.fail("Reopening a settled purchase requested a provider.")
+
+    with TestClient(create_app(database, translator=forbidden, question_generator=forbidden, review_generator=forbidden)) as client:
+        restored = client.get("/api/case").json()["case"]
+        assert restored == edited
+        assert_decisions(restored, selected, [DEC_15.answer, DEC_1.answer, DEC_1.answer])

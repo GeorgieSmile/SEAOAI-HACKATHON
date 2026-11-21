@@ -29,6 +29,13 @@ def _quote_start(context: str, quote: str) -> int:
     return start
 
 
+def _with_supplier_target(row: ResolvedRequirement) -> ResolvedRequirement:
+    if row.status != "active" or row.supplier_target is not None:
+        return row
+    target = supplier_target_from_answer(row.statement, row.topic, row.buyer_facet)
+    return row.model_copy(update={"supplier_target": target}) if target is not None else row
+
+
 def _context_rows(inputs: QuestionInput, result: QuestionResult) -> list[ResolvedRequirement]:
     rows = []
     seen = set()
@@ -47,19 +54,18 @@ def _context_rows(inputs: QuestionInput, result: QuestionResult) -> list[Resolve
             if seed.status != "active":
                 raise ValueError("Unresolved context cannot supply a supplier target.")
             validate_supplier_target(seed.supplier_target, seed.quote, seed.topic, seed.buyer_facet)
-        supplier_target = seed.supplier_target
-        if supplier_target is None and seed.status == "active":
-            supplier_target = supplier_target_from_answer(seed.quote, seed.topic, seed.buyer_facet)
-        facet = seed.buyer_facet if supplier_target is None else supplier_target.kind
-        rows.append(ResolvedRequirement(
+        row = _with_supplier_target(ResolvedRequirement(
             requirement_id=f"context:{index}", statement=seed.statement, option_ids=seed.option_ids,
-            status=seed.status, topic=seed.topic, buyer_facet=facet, supplier_target=supplier_target,
+            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=seed.supplier_target,
             provenance=[RequirementProvenance(
                 input_ref="context", quote=seed.quote, question_text=None,
                 action="add" if seed.status == "active" else "unresolved", option_ids=seed.option_ids,
                 context_start=start,
             )],
         ))
+        if row.supplier_target is not None:
+            row = row.model_copy(update={"buyer_facet": row.supplier_target.kind})
+        rows.append(row)
     return rows
 
 
@@ -170,25 +176,30 @@ def recover_direct_legacy_requirement(
     *, case_id: str, input_ref: str, quote: str, question_text: str | None, option_ids: list[str],
     topic: ReviewTopic, buyer_facet: BuyerFacet | None, context_start: int | None,
 ) -> ResolvedRequirement | None:
-    target = supplier_target_from_answer(quote, topic, buyer_facet)
-    if target is None:
-        return None
     origin = "context" if input_ref == "context" else "question"
-    return ResolvedRequirement(
+    row = _with_supplier_target(ResolvedRequirement(
         requirement_id=_derived_id(case_id, origin, "migrated" if origin == "context" else input_ref[7:]),
         statement=quote, option_ids=option_ids, status="active", topic=topic,
-        buyer_facet=target.kind, supplier_target=target,
+        buyer_facet=buyer_facet,
         provenance=[RequirementProvenance(
             input_ref=input_ref, quote=quote, question_text=question_text, action="add",
             option_ids=option_ids, context_start=context_start,
         )],
-    )
+    ))
+    if row.supplier_target is None:
+        return None
+    return row.model_copy(update={"buyer_facet": row.supplier_target.kind})
 
 
 def resolve_requirements(
-    case_id: str, initial: list[ResolvedRequirement], rounds: list[IssuedRound],
+    case_id: str, initial: list[ResolvedRequirement], rounds: list[IssuedRound], *, buyer_context: str,
 ) -> list[ResolvedRequirement]:
     rows = {row.requirement_id: row for row in initial if row.provenance[0].input_ref == "context"}
+    for row in rows.values():
+        if row.status == "active":
+            origin = row.provenance[0]
+            if origin.quote != row.statement or origin.context_start != _quote_start(buyer_context, row.statement):
+                raise ValueError("A stored context requirement must match its original buyer statement.")
     migrated_answers = {row.provenance[0].input_ref: row for row in initial if row.provenance[0].input_ref.startswith("answer:")}
     for issued_round in rounds:
         if issued_round.answers is None:
@@ -215,11 +226,7 @@ def resolve_requirements(
                 question_text=question.prompt, action=action, option_ids=question.option_ids,
             )
             topic = question.topic or "other"
-            supplier_target = None
-            if action in {"add", "replace"} and answer.answer_text is not None:
-                supplier_target = choice.supplier_target if choice is not None else None
-                if supplier_target is None:
-                    supplier_target = supplier_target_from_answer(answer.answer_text, topic, question.buyer_facet)
+            supplier_target = choice.supplier_target if choice is not None and action in {"add", "replace"} else None
             if effect is not None and effect.requirement_id is not None:
                 target_ids = [effect.requirement_id]
             elif effect is None and question.requirement_ids:
@@ -240,14 +247,12 @@ def resolve_requirements(
                     raise ValueError("A requirement change cannot extend beyond the issued scope.")
                 remaining = [option_id for option_id in row.option_ids if option_id not in question.option_ids]
                 status = _updated_status(row.status, row.provenance, effect)
-                retained_target = row.supplier_target
-                if action == "keep" and row.status == "unresolved" and status == "active":
-                    retained_target = supplier_target_from_answer(row.statement, row.topic, row.buyer_facet)
+                retained_target = supplier_target if action == "replace" else row.supplier_target
                 updated = row.model_copy(update={
                     "statement": answer.answer_text if action == "replace" else row.statement,
                     "option_ids": question.option_ids, "status": status, "topic": topic if action == "replace" else row.topic,
                     "buyer_facet": question.buyer_facet if action == "replace" else row.buyer_facet,
-                    "supplier_target": (supplier_target if action == "replace" else retained_target) if status == "active" else None,
+                    "supplier_target": retained_target if status == "active" else None,
                     "provenance": [*row.provenance, provenance],
                 })
                 if remaining:
@@ -256,7 +261,7 @@ def resolve_requirements(
                     rows[fork_id] = updated.model_copy(update={"requirement_id": fork_id})
                 else:
                     rows[target_id] = updated
-    return list(rows.values())
+    return [_with_supplier_target(row) for row in rows.values()]
 
 
 def _updated_status(

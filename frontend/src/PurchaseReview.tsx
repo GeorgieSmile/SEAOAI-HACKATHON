@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
-  ListingOption, ListingSnapshot, PurchaseReview as Review, QuestionRound, ResolvedRequirement, ReviewClaim,
+  ListingOption, ListingSnapshot, PurchaseReview as Review, ResolvedRequirement, ReviewClaim,
   ReviewFinding, ReviewRequirement, Source,
 } from "./api";
 
@@ -231,8 +231,7 @@ const decisionActions = {
 function RequirementDecision({ requirement, optionId }: { requirement: ResolvedRequirement; optionId: string }) {
   const history = requirement.provenance.filter((entry) => entry.option_ids.includes(optionId));
   const latest = history.at(-1);
-  const skipped = requirement.status === "unresolved" && latest?.question_text && latest.quote === null;
-  const leftOpen = requirement.status === "unresolved" && latest?.question_text && latest.quote !== null;
+  const openAnswer = requirement.status === "unresolved" && latest?.action === "unresolved" && latest.question_text;
 
   return (
     <li>
@@ -240,8 +239,7 @@ function RequirementDecision({ requirement, optionId }: { requirement: ResolvedR
         <summary>
           <span className={`requirement-status is-${requirement.status}`}>
             {requirementStatuses[requirement.status]}
-            {skipped && " · Question skipped"}
-            {leftOpen && " · Answer left open"}
+            {openAnswer && (latest.quote === null ? " · Question skipped" : " · Answer left open")}
           </span>
           <span className="requirement-statement">{requirement.statement}</span>
         </summary>
@@ -259,39 +257,27 @@ function RequirementDecision({ requirement, optionId }: { requirement: ResolvedR
   );
 }
 
-function RequirementDecisions({ requirements, selected, snapshot, rounds }: {
+function RequirementDecisions({ requirements, selected, snapshot }: {
   requirements: ResolvedRequirement[];
   selected: string[];
   snapshot: ListingSnapshot;
-  rounds: QuestionRound[];
 }) {
-  const skippedRevisits = rounds.flatMap((round) => round.questions.filter((question) => (
-    question.requirement_ids?.length
-      && round.answers?.some((answer) => answer.question_id === question.question_id && answer.answer_text === null)
-  )));
   return (
     <section className="review-panel requirement-decisions" aria-labelledby="requirement-decisions-heading">
       <h2 id="requirement-decisions-heading">Your requirements by option</h2>
       <div className="requirement-options">
         {selected.map((id) => {
           const decisions = requirements.filter((requirement) => requirement.option_ids.includes(id));
-          const skipped = skippedRevisits.filter((question) => question.option_ids.includes(id));
           const option = snapshot.options.find((option) => option.option_id === id);
           const headingId = `requirement-option-${id}`;
           return (
             <section key={id} className="requirement-option" aria-labelledby={headingId}>
               <h3 id={headingId}>{optionLabel(selected, id)}</h3>
               <div className="requirement-option-name"><OptionName option={option} /></div>
-              {decisions.length === 0 && skipped.length === 0 ? <p className="muted">No requirement decisions recorded.</p> : (
+              {decisions.length === 0 ? <p className="muted">No requirement decisions recorded.</p> : (
                 <ul className="requirement-decisions-list">
                   {decisions.map((requirement) => (
                     <RequirementDecision key={requirement.requirement_id} requirement={requirement} optionId={id} />
-                  ))}
-                  {skipped.map((question) => (
-                    <li key={question.question_id} className="requirement-decision skipped-revisit">
-                      <p className="requirement-status">Question skipped · Kept prior decision</p>
-                      <p>{question.prompt}</p>
-                    </li>
                   ))}
                 </ul>
               )}
@@ -438,11 +424,10 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, requirements, rounds, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, requirements, supplierDraft, onChangeDraft }: {
   report: Review;
   snapshot: ListingSnapshot;
   requirements?: ResolvedRequirement[] | null;
-  rounds: QuestionRound[];
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
 }) {
@@ -459,7 +444,7 @@ export function PurchaseReview({ report, snapshot, requirements, rounds, supplie
   return (
     <div className="purchase-review">
       {requirements && <RequirementDecisions requirements={requirements} selected={context.selected}
-        snapshot={snapshot} rounds={rounds} />}
+        snapshot={snapshot} />}
       <div className="review-workspace">
         <section className="review-findings" aria-labelledby="findings-heading">
           <h2 id="findings-heading">What to resolve</h2>

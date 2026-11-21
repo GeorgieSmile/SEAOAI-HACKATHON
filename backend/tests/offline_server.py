@@ -10,7 +10,7 @@ from backend.case_workflow import ReviewImages
 from backend.contracts import ListingSnapshot, QuestionInput, QuestionResult, ReviewInput
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
-from backend.report_models import ReviewContent, ReviewReady
+from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewReady
 
 
 ORDER_PROMPT = "Would you consider a custom order?"
@@ -153,20 +153,27 @@ def scripted_report(inputs: ReviewInput, attached_image_ids: set[str]) -> dict:
                 "requirement_ids": [row.requirement_id], "claim_ids": [], "unknowns": [],
                 "supplier_action": "confirm_specification",
             })
-    return {
-        "contract_version": 2, "claims": claims, "buyer_requirements": requirements, "open_preferences": [],
-        "comparisons": [{"topic": "capacity", "shared_claim_ids": shared_claim_ids, "values": values}], "findings": findings,
+    content = {
+        "claims": claims,
+        "comparisons": [{"topic": "capacity", "shared_claim_ids": shared_claim_ids, "values": values}],
         "coverage": [
             {"group": "product_match", "status": "limited", "finding_ids": ["decoration"]},
             {"group": "intended_use", "status": "not_assessed", "finding_ids": []},
             {"group": "supporting_evidence", "status": "limited", "finding_ids": ["option-sample"]},
         ],
     }
+    if inputs.requirements is None:
+        return {**content, "contract_version": 2, "buyer_requirements": requirements, "open_preferences": [], "findings": findings}
+    return {
+        **content, "contract_version": 3,
+        "findings": [{**finding, "decision_id": None} for finding in findings],
+    }
 
 
 async def offline_review(inputs: ReviewInput, images: ReviewImages) -> ReviewReady:
     evidence = review_sent_evidence(inputs, images)
-    content = ReviewContent.model_validate(scripted_report(inputs, set(evidence.attached_image_ids)))
+    schema = ReviewContent if inputs.requirements is None else CanonicalReviewContent
+    content = schema.model_validate(scripted_report(inputs, set(evidence.attached_image_ids)))
     return ReviewReady(report=assemble_review(inputs, content, sent_evidence=evidence),
                        content=content, sent_evidence=evidence)
 

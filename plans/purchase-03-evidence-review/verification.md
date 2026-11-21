@@ -196,6 +196,20 @@ The expanded original-ZIP endpoint suite passed 26 cases. The database compariso
 
 All 417 backend tests and 36 Chrome tests passed with the combined implementation. Frontend typechecking, the production build and whitespace checks passed. A separate HTTP test exercised a simulated 1688 product response, linked SKU selection, its original image, purchase review, workspace replacement and restart.
 
+### One buyer decision per requirement and SKU
+
+Both P2 findings reproduced with the local original Website Test.zip before the change. The `0d6749f` backend accepted a settled deadline as open when the only cited answer was a skipped sample question. The contradiction survived restart. Two SQLite databases produced by `2276432` retained the original engraving context and the independent texture waiver. On `0d6749f` the reviewed database reopened with generic supplier wording, while the unfinished case still had no engraving detail.
+
+The original-ZIP endpoint suite now covers 27 scenarios. In the new case, the report provider linked a deadline finding to the unresolved sample decision. The review failed validation. A corrected response left only sample open. Editing A's skipped revisit to 15 December produced a report and supplier draft with 15 December for A and 1 December for B and C. They reopened unchanged after restart.
+
+The completed engraving case required explicit regeneration. The unfinished case used engraving in its first report. Both produced exactly the same supplier draft as a fresh case with identical answers and selected SKUs. Case IDs, requirement IDs, answers, selection order and evidence were retained. A previously published wrong-topic deadline report also required explicit regeneration; its corrected report retained the date and left sample open. For an older valid report, reopening preserved the public report and made no provider request.
+
+Existing SQLite cases from all 26 endpoint scenarios on `0d6749f` also retained their exact public state after two restarts with provider calls forbidden (19 reviewed, seven earlier validation failures). The original ZIP and these local databases were used only for verification.
+
+The full backend suite passed 426 tests. Frontend typechecking, the production build, all 36 Chrome tests and whitespace checks passed. The production browser walkthrough uploaded the original ZIP, changed custom ordering to ready-made, changed only A’s deadline from 15 to 20 December, and checked the copied draft. B and C kept 1 December. Editing removed the dependent sample round and kept the buyer’s exact date text. Three SKU photos and the outbound report image bytes matched the original archive. After restarting the backend, fresh desktop (1280 × 850) and mobile (390 × 850) sessions restored revision 3 with GET requests only. The eight inspected screenshots showed no overlap or horizontal overflow. Providers were scripted throughout.
+
+A separate original-ZIP probe surfaced an interview issue. When the buyer explicitly gave opposite order instructions for one SKU, the question provider could submit both as active. With those two records, even a report response containing zero findings produced both a ready-made-only and a custom-order supplier question for the same SKU. The same report reopened after restart. This case is distinct from mislabeling an unrelated skipped answer and from recovering a missing context detail.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

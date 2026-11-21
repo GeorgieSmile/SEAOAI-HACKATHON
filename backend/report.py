@@ -25,10 +25,11 @@ from .intake import IMAGE_MIME
 from .report_coverage import render_coverage, thumbnail_limitations
 from .report_models import (
     BuyerRequirement,
+    CanonicalFindingSelection,
+    CanonicalReviewContent,
     Citation,
     Comparison,
     ComparisonValue,
-    CurrentReviewContent,
     DisplayClaim,
     DisplayImageDetailClaim,
     DisplayImageMeasurementClaim,
@@ -44,6 +45,7 @@ from .report_models import (
     ReviewFailed,
     ReviewReady,
     ReviewResult,
+    ReviewSelection,
     SentReviewEvidence,
     SourcedClaim,
     TextClaim,
@@ -55,7 +57,7 @@ from .supplier_targets import (
 )
 
 
-REVIEW_PROMPT_VERSION = "purchase-review-v5"
+REVIEW_PROMPT_VERSION = "purchase-review-v6"
 REVIEW_PROMPT = (PROMPT_DIRECTORY / f"{REVIEW_PROMPT_VERSION}.txt").read_text(encoding="utf-8")
 LEGACY_REVIEW_PROMPT = (PROMPT_DIRECTORY / "purchase-review-v4.txt").read_text(encoding="utf-8")
 REVIEW_DEADLINE_SECONDS = 90
@@ -352,15 +354,6 @@ def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, byte
             )
             for requirement in request.requirements
             if requirement.status != "waived"
-        ]
-        data["skipped_questions"] = [
-            {
-                "input_ref": f"answer:{answer.question_id}",
-                "question_text": answer.question_text,
-                "buyer_facet": answer.buyer_facet,
-                "option_ids": option_ids,
-            }
-            for answer, option_ids in _open_skipped_questions(request)
         ]
     content: list[ResponseInputContentParam] = [{"type": "input_text", "text": json.dumps(data, ensure_ascii=False)}]
     included_images: dict[tuple[str, bytes], list[str]] = {}
@@ -813,13 +806,14 @@ def _render_next_step(spec: str, action: str | None, differences: list[str]) -> 
 def _render_finding(
     finding: FindingSelection, claims: list[DisplayClaim], unknowns: list[Unknown], differences: list[str],
     order: OrderTarget | _BuyerTarget | None, product_targets: list[SupplierTarget | _BuyerTarget],
-    *, canonical: bool,
+    *, canonical: bool, decision: ResolvedRequirement | None = None, linked_topic_requirement: bool,
 ) -> Finding:
     label, spec = TOPICS[finding.topic]
+    decision_subject = _decision_subject(decision) if decision is not None else None
     if canonical and finding.topic == "customization":
         spec = "availability and order terms"
     title = {
-        "decide_preference": f"Decide what you need for {label.lower()}",
+        "decide_preference": f"Decide what you need for {decision_subject or label.lower()}",
         "ask_supplier": f"Confirm {label.lower()} with the supplier",
         "request_evidence": f"Request evidence for {label.lower()}",
     }[finding.action_type]
@@ -857,6 +851,14 @@ def _render_finding(
         if isinstance(order, OrderTarget) and order_action == "confirm_custom_order" and action != order_action:
             target_questions.insert(0, "If a custom order is needed, please share the lead time and minimum order quantity.")
         question = " ".join([question, *filter(None, target_questions)])
+    impact = f"Knowing {label.lower()} helps compare what you would receive."
+    priority = "Checking this before ordering can resolve an open detail about the exact item."
+    if decision_subject is not None:
+        impact = "Your choice determines what to check for these options."
+        priority = "The buying criteria for these options are still open."
+    elif linked_topic_requirement:
+        impact = f"Confirm {label.lower()} against the linked buyer requirement before choosing an option."
+        priority = "This check may affect whether an option meets a stated buyer requirement."
     return Finding(
         **finding.model_dump(include={"finding_id", "option_ids", "kind", "action_type", "requirement_ids", "claim_ids"}),
         title=title,
@@ -868,15 +870,12 @@ def _render_finding(
             )
             for claim in claims
         ],
-        interpretation=interpretations[finding.kind],
-        impact=(
-            f"Confirm {label.lower()} against the linked buyer requirement before choosing an option."
-            if finding.requirement_ids else f"Knowing {label.lower()} helps compare what you would receive."
+        interpretation=(
+            f"Your preference for {decision_subject} is still open for these options."
+            if decision_subject is not None else interpretations[finding.kind]
         ),
-        priority_reason=(
-            "This check may affect whether an option meets a stated buyer requirement."
-            if finding.requirement_ids else "Checking this before ordering can resolve an open detail about the exact item."
-        ),
+        impact=impact,
+        priority_reason=priority,
         unknowns=unknowns,
         requested_evidence=requested_evidence,
         evidence_limits=limits,
@@ -884,15 +883,22 @@ def _render_finding(
     )
 
 
-def _supplier_draft(request: ReviewInput, findings: list[Finding]) -> str:
+def _supplier_draft(request: ReviewInput, findings: list[Finding], *, canonical: bool) -> str:
     questions = []
+    asked: set[tuple[str, str]] = set()
     for finding in findings:
-        if finding.supplier_question is None:
+        question = finding.supplier_question
+        if question is None:
             continue
-        letters = [letter for option_id, letter in zip(request.selected_option_ids, OPTION_REFERENCES)
-                   if option_id in finding.option_ids]
+        letters = []
+        for option_id, letter in zip(request.selected_option_ids, OPTION_REFERENCES):
+            if option_id in finding.option_ids and (not canonical or (option_id, question) not in asked):
+                letters.append(letter)
+                asked.add((option_id, question))
+        if not letters:
+            continue
         scope = "Option" if len(letters) == 1 else "Options"
-        questions.append(f"[{scope} {', '.join(letters)}] {finding.supplier_question}")
+        questions.append(f"[{scope} {', '.join(letters)}] {question}")
     if not questions:
         return ""
     options = [
@@ -992,16 +998,20 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
 
 
 def _complete_supplier_findings(
-    content: ReviewContent, requirements: Mapping[str, ResolvedRequirement],
+    content: ReviewSelection, requirements: Mapping[str, ResolvedRequirement],
 ) -> list[FindingSelection]:
-    findings = list(content.findings)
-    used_ids = {finding.finding_id for finding in findings}
+    findings: list[FindingSelection] = list(content.findings)
+    used_ids = {finding.finding_id for finding in content.findings}
+    canonical = isinstance(content, CanonicalReviewContent)
+    if canonical and any(finding_id.startswith("supplier:") for finding_id in used_ids):
+        raise ValueError("Finding IDs cannot use IDs reserved for buyer requirement checks.")
     for requirement in requirements.values():
         if requirement.supplier_target is None:
             continue
         checked_options = {
             option_id for finding in content.findings
             if finding.supplier_action is not None and requirement.requirement_id in finding.requirement_ids
+            and (not canonical or finding.topic == requirement.topic)
             for option_id in finding.option_ids
         }
         missing = [option_id for option_id in requirement.option_ids if option_id not in checked_options]
@@ -1020,11 +1030,15 @@ def _complete_supplier_findings(
 
 
 def _current_finding_targets(
-    finding: FindingSelection, requirements: Mapping[str, ResolvedRequirement],
+    finding: FindingSelection, requirements: Mapping[str, ResolvedRequirement], *, canonical: bool,
 ) -> tuple[OrderTarget | None, list[SupplierTarget]]:
     product_targets = []
     order_targets = set()
-    for requirement_id in finding.requirement_ids:
+    requirement_ids = (
+        [requirement_id for requirement_id in requirements if requirement_id in finding.requirement_ids]
+        if canonical else finding.requirement_ids
+    )
+    for requirement_id in requirement_ids:
         requirement = requirements[requirement_id]
         target = requirement.supplier_target
         if isinstance(target, OrderTarget):
@@ -1046,6 +1060,7 @@ def _current_finding_targets(
 
 def _current_open_preferences(
     request: ReviewInput, findings: Mapping[str, FindingSelection], used_ids: set[str],
+    *, decision_findings: Mapping[str, list[str]] | None = None,
 ) -> list[OpenPreference]:
     options = request.answer_option_ids
     answered = {f"answer:{answer.question_id}": answer for answer in request.answers}
@@ -1057,15 +1072,20 @@ def _current_open_preferences(
         if preference_id in used_ids:
             raise ValueError("Open preference IDs cannot use IDs reserved for unresolved requirements.")
         refs = list(dict.fromkeys(entry.input_ref for entry in row.provenance))
-        preferences.append(OpenPreference(
-            preference_id=preference_id,
-            text=f"Your preference for {TOPICS[row.topic][0].lower()} is still open.",
-            input_refs=refs, option_ids=row.option_ids,
-            finding_ids=[
+        if decision_findings is None:
+            linked = [
                 finding.finding_id for finding in findings.values()
                 if finding.action_type == "decide_preference" and finding.topic == row.topic
                 and set(row.option_ids).issuperset(finding.option_ids)
-            ],
+            ]
+        else:
+            linked = decision_findings.get(row.requirement_id, [])
+        subject = TOPICS[row.topic][0].lower() if decision_findings is None else _decision_subject(row)
+        preferences.append(OpenPreference(
+            preference_id=preference_id,
+            text=f"Your preference for {subject} is still open.",
+            input_refs=refs, option_ids=row.option_ids,
+            finding_ids=linked,
             questions=[
                 PreferenceQuestion(
                     question_id=answer.question_id, question_text=answer.question_text,
@@ -1077,10 +1097,93 @@ def _current_open_preferences(
     return preferences
 
 
+def _decision_subject(row: ResolvedRequirement) -> str:
+    return {
+        "order_type": "stock and customization",
+        "decoration_method": "the decoration method",
+        "surface_finish": "the surface finish",
+    }.get(row.buyer_facet, TOPICS[row.topic][0].lower())
+
+
+def _finding_decision(
+    finding: CanonicalFindingSelection, requirements: Mapping[str, ResolvedRequirement], scope: set[str],
+) -> ResolvedRequirement | None:
+    if finding.action_type != "decide_preference":
+        if finding.decision_id is not None:
+            raise ValueError("Only buyer-decision findings can refer to an unresolved decision.")
+        return None
+    row = requirements.get(finding.decision_id) if finding.decision_id is not None else None
+    if row is None or row.status != "unresolved":
+        raise ValueError("A buyer-decision finding must reference an unresolved decision ID from the current ledger.")
+    if finding.topic != row.topic or scope != set(row.option_ids):
+        raise ValueError("A buyer-decision finding must match the referenced decision's topic and exact option scope.")
+    if finding.kind != "clarification_needed" or finding.requirement_ids or finding.unknowns:
+        raise ValueError("A buyer-decision finding must use clarification_needed, with no active requirements or evidence gaps.")
+    return row
+
+
+def canonicalize_review_content(content: ReviewSelection) -> CanonicalReviewContent | None:
+    """Adapt archived supplier and evidence selections without guessing buyer-decision references."""
+    if isinstance(content, CanonicalReviewContent):
+        return content
+    if content.open_preferences or any(finding.action_type == "decide_preference" for finding in content.findings):
+        return None
+    return CanonicalReviewContent(
+        contract_version=3, claims=content.claims, comparisons=content.comparisons, coverage=content.coverage,
+        findings=[CanonicalFindingSelection(**finding.model_dump(), decision_id=None) for finding in content.findings],
+    )
+
+
+def _legacy_open_preferences(
+    request: ReviewInput, content: ReviewContent, findings: Mapping[str, FindingSelection],
+    inputs: Mapping[str, _BuyerInput],
+) -> list[OpenPreference]:
+    selected = set(request.selected_option_ids)
+    preference_ids = _unique_ids((row.preference_id for row in content.open_preferences), "open preferences")
+    preferences = _current_open_preferences(
+        request, findings, preference_ids,
+    ) if request.requirements is not None else []
+    preference_findings = {finding_id for row in preferences for finding_id in row.finding_ids}
+    for preference in content.open_preferences:
+        _validate_refs(preference.input_refs, inputs, "preference input references")
+        linked_findings = _validate_refs(preference.finding_ids, findings, "preference findings")
+        scope = selected.copy()
+        questions = []
+        for ref in preference.input_refs:
+            entry = inputs[ref]
+            if not entry.option_ids:
+                raise ValueError("Buyer answer preferences need their issued option scope.")
+            scope.intersection_update(entry.option_ids)
+            if entry.question is not None:
+                questions.append(entry.question)
+        if request.requirements is not None and not preference.input_refs and linked_findings:
+            scope = {option_id for finding_id in linked_findings for option_id in findings[finding_id].option_ids}
+        if not scope or any(not scope.issuperset(findings[finding_id].option_ids) for finding_id in linked_findings):
+            raise ValueError("An open preference and its findings must stay within its linked buyer input scopes.")
+        if any(
+            findings[finding_id].action_type == "decide_preference" and findings[finding_id].topic != preference.topic
+            for finding_id in linked_findings
+        ):
+            raise ValueError("A buyer decision must link to an open preference about the same topic.")
+        preference_findings.update(linked_findings)
+        preferences.append(OpenPreference(
+            **preference.model_dump(exclude={"topic"}),
+            text=f"Your preference for {TOPICS[preference.topic][0].lower()} is still open.",
+            option_ids=[option_id for option_id in request.selected_option_ids if option_id in scope], questions=questions,
+        ))
+    if any(finding.action_type == "decide_preference" and finding.finding_id not in preference_findings
+           for finding in findings.values()):
+        raise ValueError("Link every decide_preference finding to an open preference.")
+    return preferences
+
+
 def assemble_review(
-    request: ReviewInput, content: ReviewContent, *, sent_evidence: SentReviewEvidence,
+    request: ReviewInput, content: ReviewSelection, *, sent_evidence: SentReviewEvidence,
 ) -> PurchaseReview:
     """Validate structured selections against the case, then render the public report."""
+    canonical = isinstance(content, CanonicalReviewContent)
+    if canonical and request.requirements is None:
+        raise ValueError("Canonical report selections require a current buyer decision ledger.")
     if sent_evidence.text_ids != tuple(
         source.source_id for source in _relevant_text_sources(request) if source.availability == "available"
     ):
@@ -1103,24 +1206,26 @@ def assemble_review(
         if (topic := _image_claim_topic(claim)) is not None
     }
 
-    if request.requirements is None:
+    all_requirements = {row.requirement_id: row for row in request.requirements or []}
+    if request.requirements is None and isinstance(content, ReviewContent):
         inputs = _buyer_inputs(request)
         current_inputs = _current_buyer_inputs(inputs)
         requirements = _legacy_report_requirements(request, content, inputs, current_inputs)
         requirement_topics = {row.requirement_id: row.topic for row in content.buyer_requirements}
         finding_selections = content.findings
     else:
-        if content.buyer_requirements:
+        if isinstance(content, ReviewContent) and content.buyer_requirements:
             raise ValueError("Use the supplied current requirement IDs instead of proposing buyer requirements.")
-        inputs = {
-            f"answer:{answer.question_id}": _BuyerInput(None, scope, _BuyerPosition(), PreferenceQuestion(
-                question_id=answer.question_id, question_text=answer.question_text,
-                option_ids=request.answer_option_ids[answer.question_id],
-            ))
-            for answer, scope in _open_skipped_questions(request)
-        }
-        requirements = _current_report_requirements(request, request.requirements)
-        current_requirements = {row.requirement_id: row for row in request.requirements if row.status == "active"}
+        if isinstance(content, ReviewContent):
+            inputs = {
+                f"answer:{answer.question_id}": _BuyerInput(None, scope, _BuyerPosition(), PreferenceQuestion(
+                    question_id=answer.question_id, question_text=answer.question_text,
+                    option_ids=request.answer_option_ids[answer.question_id],
+                ))
+                for answer, scope in _open_skipped_questions(request)
+            }
+        requirements = _current_report_requirements(request, request.requirements or [])
+        current_requirements = {row.requirement_id: row for row in all_requirements.values() if row.status == "active"}
         requirement_topics = {requirement_id: row.topic for requirement_id, row in current_requirements.items()}
         finding_selections = _complete_supplier_findings(content, current_requirements)
     requirement_scopes = {row.requirement_id: set(row.option_ids) for row in requirements}
@@ -1173,9 +1278,16 @@ def assemble_review(
     finding_ids = _unique_ids((finding.finding_id for finding in content.findings), "findings")
     finding_by_id = {finding.finding_id: finding for finding in content.findings}
     findings = []
+    decision_findings: dict[str, list[str]] = {}
+    decision_evidence: set[tuple[str, frozenset[str]]] = set()
     for finding in finding_selections:
         scope = _validate_refs(finding.option_ids, selected, "finding options")
+        decision = _finding_decision(finding, all_requirements, scope) if isinstance(finding, CanonicalFindingSelection) else None
         linked_requirements = _validate_refs(finding.requirement_ids, requirement_scopes, "finding requirements")
+        linked_topic_requirement = (
+            any(requirement_topics[requirement_id] == finding.topic for requirement_id in linked_requirements)
+            if canonical else bool(linked_requirements)
+        )
         if any(not scope.issubset(requirement_scopes[requirement_id]) for requirement_id in linked_requirements):
             raise ValueError("A finding must stay within each linked buyer requirement's current option scope.")
         _validate_refs(finding.claim_ids, claims, "finding claims")
@@ -1186,13 +1298,21 @@ def assemble_review(
             if not claim.option_ids and (shared_scope := sources[claim.source_id].option_ids) and not scope.issubset(shared_scope):
                 raise ValueError("A finding using scoped shared text must cover only options associated with that text.")
             _check_claim_topic(claim, sources[claim.source_id], finding.topic)
-        if finding.kind == "requirement_unconfirmed" and not linked_requirements:
-            raise ValueError("A requirement_unconfirmed finding must link to an actual buyer requirement.")
+        if decision is not None:
+            evidence_key = (decision.requirement_id, frozenset(
+                claim.model_dump_json(exclude={"claim_id", "display_text"}) for claim in references
+            ))
+            if evidence_key in decision_evidence:
+                raise ValueError("Combine findings with identical evidence for the same unresolved buyer decision.")
+            decision_evidence.add(evidence_key)
+            decision_findings.setdefault(decision.requirement_id, []).append(finding.finding_id)
+        if finding.kind == "requirement_unconfirmed" and not linked_topic_requirement:
+            raise ValueError("A requirement_unconfirmed finding must link to an actual buyer requirement on the finding's topic.")
         if (finding.kind == "listing_conflict") != (finding.supplier_action == "reconcile_sources"):
             raise ValueError("Use reconcile_sources for a supported listing conflict.")
         if (finding.action_type == "decide_preference") != (finding.supplier_action is None):
             raise ValueError("Every supplier-facing finding must select a supplier action. Use null only for buyer decisions.")
-        if request.requirements is None:
+        if request.requirements is None and isinstance(content, ReviewContent):
             order_refs = {
                 row.input_ref for row in content.buyer_requirements
                 if row.requirement_id in linked_requirements and row.topic == "customization"
@@ -1209,7 +1329,7 @@ def assemble_review(
                 if (target := _linked_target(current_inputs, inputs, facet, finding.option_ids, product_refs)) is not None
             ]
         else:
-            order, product_targets = _current_finding_targets(finding, current_requirements)
+            order, product_targets = _current_finding_targets(finding, current_requirements, canonical=canonical)
 
         unknowns = [
             _render_unknown(unknown, finding, sources, sent, observed_image_topics) for unknown in finding.unknowns
@@ -1217,48 +1337,14 @@ def assemble_review(
         differences = _conflicting_readings(finding, references, sources, aliases) if finding.kind == "listing_conflict" else []
         findings.append(_render_finding(
             finding, references, unknowns, differences, order, product_targets,
-            canonical=request.requirements is not None,
+            canonical=request.requirements is not None, decision=decision, linked_topic_requirement=linked_topic_requirement,
         ))
 
-    preference_ids = _unique_ids((row.preference_id for row in content.open_preferences), "open preferences")
-    preferences = _current_open_preferences(
-        request, finding_by_id, preference_ids,
-    ) if request.requirements is not None else []
-    preference_findings = {finding_id for row in preferences for finding_id in row.finding_ids}
-    for preference in content.open_preferences:
-        _validate_refs(preference.input_refs, inputs, "preference input references")
-        linked_findings = _validate_refs(preference.finding_ids, finding_ids, "preference findings")
-        scope = selected.copy()
-        questions = []
-        for ref in preference.input_refs:
-            entry = inputs[ref]
-            if not entry.option_ids:
-                raise ValueError("Buyer answer preferences need their issued option scope.")
-            scope.intersection_update(entry.option_ids)
-            if entry.question is not None:
-                questions.append(entry.question)
-        if request.requirements is not None and not preference.input_refs and linked_findings:
-            scope = {option_id for finding_id in linked_findings for option_id in finding_by_id[finding_id].option_ids}
-        if not scope or any(
-            not scope.issuperset(finding_by_id[finding_id].option_ids) for finding_id in linked_findings
-        ):
-            raise ValueError("An open preference and its findings must stay within its linked buyer input scopes.")
-        if any(
-            finding_by_id[finding_id].action_type == "decide_preference"
-            and finding_by_id[finding_id].topic != preference.topic
-            for finding_id in linked_findings
-        ):
-            raise ValueError("A buyer decision must link to an open preference about the same topic.")
-        preference_findings.update(linked_findings)
-        preferences.append(OpenPreference(
-            **preference.model_dump(exclude={"topic"}),
-            text=f"Your preference for {TOPICS[preference.topic][0].lower()} is still open.",
-            option_ids=[option_id for option_id in request.selected_option_ids if option_id in scope],
-            questions=questions,
-        ))
-    if any(finding.action_type == "decide_preference" and finding.finding_id not in preference_findings
-           for finding in content.findings):
-        raise ValueError("Link every decide_preference finding to an open preference.")
+    preferences = (
+        _legacy_open_preferences(request, content, finding_by_id, inputs)
+        if isinstance(content, ReviewContent) else
+        _current_open_preferences(request, finding_by_id, set(), decision_findings=decision_findings)
+    )
 
     if _unique_ids((row.group for row in content.coverage), "coverage groups") != COVERAGE_GROUPS:
         raise ValueError("Return all three coverage groups exactly once.")
@@ -1266,7 +1352,7 @@ def assemble_review(
         _validate_refs(row.finding_ids, finding_ids, "coverage findings")
 
     return PurchaseReview(
-        contract_version=content.contract_version,
+        contract_version=2,
         claims=list(claims.values()),
         buyer_requirements=requirements,
         open_preferences=preferences,
@@ -1284,7 +1370,7 @@ def assemble_review(
         revision=request.revision,
         snapshot_id=request.snapshot.snapshot_id,
         selected_option_ids=request.selected_option_ids,
-        supplier_draft=_supplier_draft(request, findings),
+        supplier_draft=_supplier_draft(request, findings, canonical=canonical),
     )
 
 
@@ -1309,12 +1395,8 @@ async def generate_review(
         REVIEW_PROMPT_VERSION, sent.text_ids, sent.attached_image_ids, evidence.metadata_only_image_ids,
     )
 
-    def validate(selection: CurrentReviewContent) -> ReviewReady:
-        content = (
-            selection if isinstance(selection, ReviewContent)
-            else ReviewContent(**selection.model_dump(), buyer_requirements=[])
-        )
-        return ReviewReady(content=content, sent_evidence=sent, report=assemble_review(request, content, sent_evidence=sent))
+    def validate(selection: ReviewSelection) -> ReviewReady:
+        return ReviewReady(content=selection, sent_evidence=sent, report=assemble_review(request, selection, sent_evidence=sent))
 
     legacy = request.requirements is None
     try:
@@ -1322,8 +1404,8 @@ async def generate_review(
             client=client,
             payload=evidence.payload,
             prompt=LEGACY_REVIEW_PROMPT if legacy else REVIEW_PROMPT,
-            schema_name="purchase_review_v2" if legacy else "purchase_review",
-            schema=ReviewContent if legacy else CurrentReviewContent,
+            schema_name="purchase_review_v2" if legacy else "purchase_review_v3",
+            schema=ReviewContent if legacy else CanonicalReviewContent,
             validate=validate,
             deadline_seconds=REVIEW_DEADLINE_SECONDS,
             max_output_tokens=REVIEW_MAX_OUTPUT_TOKENS,

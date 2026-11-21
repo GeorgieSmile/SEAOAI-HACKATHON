@@ -4,15 +4,31 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import requirements
+from backend.case_models import SavedReview
+from backend.case_workflow import _review_digest
 from backend.contracts import ContextRequirement, QuestionDraft, QuestionResult
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
 from backend.report_models import ReviewContent, ReviewReady
 from backend.tests.offline_server import offline_review
 from backend.tests.test_cases import initial_request, ready, reference, round_request
-from backend.tests.test_imports import _upload, stub
+from backend.tests.test_imports import RAW, _image_url, _upload, stub
 from backend.tests.test_reports import finding_selection, minimal_content
 from backend.tests.test_review_workflow import _replace_saved_case, retry_request
+
+
+def _install_v5_report(database, case, inputs, images, content):
+    evidence = review_sent_evidence(inputs, images)
+    report = assemble_review(inputs, content, sent_evidence=evidence).model_dump(mode="json")
+    digest = _review_digest(inputs, case["last_operation"]["operation_id"], images, evidence, version=5)
+    saved = SavedReview(version=5, input_digest=digest, content=content, sent_evidence=evidence)
+
+    def replace(record):
+        record["view"]["report"] = report
+        record["saved_review"] = saved.model_dump(mode="json")
+
+    _replace_saved_case(database, replace)
+    return {**case, "report": report}
 
 
 @pytest.mark.parametrize("buyer_context, excerpt", [
@@ -93,6 +109,9 @@ def test_skip_preserves_scoped_requirement_but_ambiguous_text_reopens_it(tmp_pat
         assert replaced["requirement_id"] == unresolved["requirement_id"]
         assert replaced["status"] == "active"
         assert replaced["statement"] == explicit_choice
+        assert replaced["supplier_target"] == {
+            "kind": "decoration_method", "method": "screen_printing", "intent": "require",
+        }
         assert [entry["quote"] for entry in replaced["provenance"]] == [context, explicit_choice]
 
     with TestClient(create_app(database, **options)) as client:
@@ -311,3 +330,195 @@ def test_expanded_supplier_wording_preserves_saved_answer(tmp_path, monkeypatch,
             regenerated = ready(client.post("/api/reviews", json=command))
         assert regenerated["requirements"] == recovered["requirements"]
         assert "laser engraving" in regenerated["report"]["supplier_draft"]
+
+
+@pytest.mark.parametrize("state", ["reviewed", "unfinished", "damaged-review", "qualified-context"])
+def test_reopening_replays_initial_context_without_reinterpreting_texture(tmp_path, monkeypatch, state):
+    database = tmp_path / "case.db"
+    quote = "The logo needs to be laser engraved."
+    if state == "qualified-context":
+        quote = "The logo needs to be laser engraved if our customer approves it."
+    context = f"  {quote}  "
+    any_texture = "Any surface texture is acceptable."
+    infer = requirements.supplier_target_from_answer
+
+    async def ask(inputs):
+        if inputs.round_number > 1:
+            return QuestionResult(reason="There are no remaining questions.", questions=[])
+        return QuestionResult(
+            reason="Check whether the buyer has a surface preference.",
+            context_requirements=[ContextRequirement(
+                statement=quote, quote=quote, topic="finish", option_ids=inputs.selected_option_ids,
+            )],
+            questions=[QuestionDraft.model_validate({
+                "prompt": "Which surface textures work?", "why_ask": "The texture can vary between items.",
+                "topic": "finish", "buyer_facet": "surface_finish", "option_ids": inputs.selected_option_ids,
+                "source_ids": [], "choices": [any_texture], "requirement_ids": [],
+                "choice_effects": [{"choice": any_texture, "action": "waive", "statement": None, "requirement_id": None}],
+            })],
+        )
+
+    prior_inputs = []
+
+    async def capture_review(inputs, images):
+        prior_inputs.append((inputs, images))
+        return await offline_review(inputs, images)
+
+    options = dict(translator=stub, question_generator=ask, review_generator=offline_review)
+    with monkeypatch.context() as patch:
+        patch.setattr(requirements, "supplier_target_from_answer",
+                      lambda text, topic, facet: None if text == quote else infer(text, topic, facet))
+        with TestClient(create_app(database, **{**options, "review_generator": capture_review})) as client:
+            snapshot = _upload(client, RAW).json()["snapshot"]
+            start = initial_request(snapshot, buyer_context=context)
+            start["selected_option_ids"].reverse()
+            case = ready(client.post("/api/questions", json=start))
+            issue = round_request(case, texts=[any_texture])
+            endpoint = "/api/questions/continue" if state == "unfinished" else "/api/reviews"
+            previous = ready(client.post(endpoint, json=issue))
+            assert previous["requirements"][0]["supplier_target"] is None
+            image_url = _image_url(snapshot, snapshot["options"][2])
+            image = client.get(image_url)
+            assert image.status_code == 200
+            original_image = image.content
+
+    if state != "unfinished":
+        (inputs, images), = prior_inputs
+        content = ReviewContent.model_validate(minimal_content(inputs, topic="finish"))
+        previous = _install_v5_report(database, previous, inputs, images, content)
+        assert "laser engraving" not in previous["report"]["supplier_draft"]
+
+    if state == "damaged-review":
+        _replace_saved_case(database, lambda record: record["saved_review"].update(input_digest="0" * 64))
+
+    async def forbidden(*args):
+        pytest.fail("Recovery must not call a question or review generator.")
+
+    recovery_options = {**options, "question_generator": forbidden, "review_generator": forbidden}
+    expected = previous["requirements"]
+    if state != "qualified-context":
+        expected = [
+            {**expected[0], "supplier_target": {
+                "kind": "decoration_method", "method": "laser_engraving", "intent": "require",
+            }},
+            expected[1],
+        ]
+    for _ in range(2):
+        with TestClient(create_app(database, **recovery_options)) as client:
+            workspace = client.get("/api/case").json()
+            assert workspace["snapshot"] == snapshot
+            assert client.get(image_url).content == original_image
+            recovered = workspace["case"]
+            for field in ("case_id", "revision", "snapshot_id", "selected_option_ids", "buyer_context", "rounds"):
+                assert recovered[field] == previous[field]
+            assert recovered["requirements"] == expected
+            if state == "qualified-context":
+                assert recovered == previous
+            elif state == "unfinished":
+                assert recovered["phase"] == "ready_for_review"
+                assert recovered["last_operation"] == previous["last_operation"]
+            else:
+                assert recovered["report"] is None
+                code = "invalid_review" if state == "damaged-review" else "review_regeneration_required"
+                assert recovered["last_operation"]["code"] == code
+                assert client.post("/api/reviews", json=issue).json()["code"] == code
+
+    if state == "qualified-context":
+        return
+    requests = []
+
+    async def review(inputs, images):
+        requests.append(inputs)
+        return await offline_review(inputs, images)
+
+    with TestClient(create_app(database, **{**recovery_options, "review_generator": review})) as client:
+        if state == "unfinished":
+            endpoint = "/api/reviews"
+            command = {**reference(recovered), "operation_id": str(uuid4()), "submission": None}
+        else:
+            endpoint = "/api/case/retry"
+            command = retry_request(recovered)
+        reviewed = ready(client.post(endpoint, json=command))
+        assert ready(client.post(endpoint, json=command)) == reviewed
+        assert len(requests) == 1
+        assert reviewed["requirements"] == expected
+        assert reviewed["report"]["buyer_requirements"][0]["quote"] == quote
+        draft = reviewed["report"]["supplier_draft"]
+        assert "laser engraving" in draft
+        assert "matte finish" not in draft and "glossy finish" not in draft
+
+    with TestClient(create_app(database, **recovery_options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+
+
+@pytest.mark.parametrize("invented_preference", [False, True])
+def test_old_report_is_kept_only_if_its_projection_follows_the_saved_decisions(tmp_path, invented_preference):
+    database = tmp_path / "case.db"
+    deadline = "The order must be delivered by 1 December."
+    prompt = "Do you need a pre-production sample?"
+
+    async def ask(inputs):
+        return QuestionResult(
+            reason="Check the need for a sample.",
+            context_requirements=[ContextRequirement(
+                statement=deadline, quote=deadline, topic="deadline", option_ids=inputs.selected_option_ids,
+            )],
+            questions=[QuestionDraft(
+                prompt=prompt, why_ask="Sample approval may affect timing.", topic="sample", buyer_facet="other",
+                option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[], requirement_ids=[], choice_effects=[],
+            )],
+        )
+
+    prior_reports = []
+
+    async def incompatible_review(inputs, images):
+        if prior_reports:
+            return await offline_review(inputs, images)
+        values = minimal_content(inputs)
+        if invented_preference:
+            values["open_preferences"] = [{
+                "preference_id": "extra", "topic": "deadline",
+                "input_refs": [f"answer:{inputs.answers[0].question_id}"], "finding_ids": [],
+            }]
+        content = ReviewContent.model_validate(values)
+        prior_reports.append((inputs, images, content))
+        evidence = review_sent_evidence(inputs, images)
+        return ReviewReady(report=assemble_review(inputs, content, sent_evidence=evidence),
+                           content=content, sent_evidence=evidence)
+
+    with TestClient(create_app(database, translator=stub, question_generator=ask,
+                               review_generator=incompatible_review)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        asking = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=deadline)))
+        rejected = client.post("/api/reviews", json=round_request(asking)).json()
+        assert rejected["code"] == "invalid_review"
+        failed = client.get("/api/case").json()["case"]
+        assert failed["report"] is None
+        reviewed = ready(client.post("/api/case/retry", json=retry_request(failed)))
+    (inputs, images, content), = prior_reports
+    old = _install_v5_report(database, reviewed, inputs, images, content)
+    assert len(old["report"]["open_preferences"]) == (2 if invented_preference else 1)
+
+    async def forbidden(*args):
+        pytest.fail("Opening a saved case must not ask for questions or a review.")
+
+    for _ in range(2):
+        with TestClient(create_app(database, translator=stub, question_generator=forbidden,
+                                   review_generator=forbidden)) as client:
+            reopened = client.get("/api/case").json()["case"]
+            assert reopened["requirements"] == old["requirements"]
+            assert reopened["rounds"] == old["rounds"]
+            if invented_preference:
+                assert reopened["report"] is None
+                assert reopened["last_operation"]["code"] == "review_regeneration_required"
+            else:
+                assert reopened == old
+
+    if invented_preference:
+        with TestClient(create_app(database, translator=stub, question_generator=forbidden,
+                                   review_generator=offline_review)) as client:
+            rebuilt = ready(client.post("/api/case/retry", json=retry_request(reopened)))
+            sample, = rebuilt["report"]["open_preferences"]
+            assert sample["text"] == "Your preference for samples is still open."
+            assert sample["option_ids"] == rebuilt["selected_option_ids"][:1]
+            assert "1 December" in rebuilt["report"]["supplier_draft"]

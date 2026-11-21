@@ -93,26 +93,35 @@ class FindingSelection(ContractModel):
     supplier_action: SupplierAction | None
 
 
+class CanonicalFindingSelection(FindingSelection):
+    decision_id: NonEmptyText | None
+
+
 class CoverageSelection(ContractModel):
     group: CoverageGroup
     status: CoverageStatus
     finding_ids: list[NonEmptyText]
 
 
-class CurrentReviewContent(ContractModel):
-    """Model selections for a case with backend-resolved buyer requirements."""
-
-    contract_version: Literal[2]
+class _ReviewSelections(ContractModel):
     claims: list[SourcedClaim]
-    open_preferences: list[PreferenceSelection]
     comparisons: Annotated[list[ComparisonSelection], Field(min_length=1)]
-    findings: list[FindingSelection]
     coverage: Annotated[list[CoverageSelection], Field(min_length=3, max_length=3)]
 
 
-class ReviewContent(CurrentReviewContent):
-    # Historical generation records contain model-selected buyer quotes.
+class ReviewContent(_ReviewSelections):
+    contract_version: Literal[2]
+    open_preferences: list[PreferenceSelection]
+    findings: list[FindingSelection]
     buyer_requirements: list[RequirementSelection]
+
+
+class CanonicalReviewContent(_ReviewSelections):
+    contract_version: Literal[3]
+    findings: list[CanonicalFindingSelection]
+
+
+ReviewSelection = Annotated[ReviewContent | CanonicalReviewContent, Field(discriminator="contract_version")]
 
 
 class SentReviewEvidence(ContractModel):
@@ -223,7 +232,7 @@ class PurchaseReview(ContractModel):
 class ReviewReady(ContractModel):
     status: Literal["ready"] = "ready"
     report: PurchaseReview
-    content: ReviewContent
+    content: ReviewSelection
     sent_evidence: SentReviewEvidence
 
 

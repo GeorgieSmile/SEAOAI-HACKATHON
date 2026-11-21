@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 
 from .contracts import Option, Source
-from .report_models import Comparison, Coverage, CoverageSelection, ReviewContent, SentReviewEvidence
+from .report_models import Comparison, Coverage, CoverageSelection, ReviewSelection, SentReviewEvidence
 
 
 def _count(count: int, singular: str) -> str:
@@ -32,7 +32,7 @@ def thumbnail_limitations(
 
 
 def render_coverage(
-    row: CoverageSelection, content: ReviewContent, comparisons: list[Comparison],
+    row: CoverageSelection, content: ReviewSelection, comparisons: list[Comparison],
     aliases: Mapping[str, str], sources: Mapping[str, Source], sent: SentReviewEvidence,
     *, requirement_topics: set[str],
 ) -> Coverage:
