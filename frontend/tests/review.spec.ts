@@ -297,7 +297,11 @@ test("settles one option's conflicting order instructions from a report with no 
   await openWorkspace(page, () => saved);
 
   await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(before);
-  await page.getByRole("button", { name: "Review buying brief", exact: true }).click();
+  const inputs = page.getByRole("region", { name: "Buyer inputs" });
+  await inputs.locator("summary").getByText(conflict.statement, { exact: true }).click();
+  await expect(inputs.getByText(stock, { exact: true })).toBeVisible();
+  await expect(inputs.getByText(custom, { exact: true })).toBeVisible();
+  await inputs.getByRole("button", { name: "Revisit open decisions in buying brief" }).click();
   const clarification = page.getByRole("region", { name: "Clarify order type for Option A" });
   await expect(clarification.getByText(stock, { exact: true })).toBeVisible();
   await expect(clarification.getByText(custom, { exact: true })).toBeVisible();
@@ -367,7 +371,8 @@ test("opens scoped source evidence and compares ordered options while draft edit
   for (const row of [findings.nth(1), findings.nth(2)]) {
     await row.getByText("See the evidence", { exact: true }).click();
   }
-  await expect(findings.nth(0).locator(".review-scope span")).toHaveText(["Requirement unconfirmed", "Option A", "Option B", "Option C"]);
+  await expect(findings.nth(0).getByText("Requirement unconfirmed", { exact: true })).toBeVisible();
+  await expect(findings.nth(0).getByText("Applies to Option A, Option B, Option C", { exact: true })).toBeVisible();
   await expect(findings.nth(0).locator("blockquote").getByText("Screen printing is required.", { exact: true })).toBeVisible();
   await expect(findings.nth(0).getByText(report.findings[0]!.priority_reason, { exact: false })).toBeVisible();
 
@@ -383,7 +388,8 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(methods.getByText(original.original_text!, { exact: true })).toBeVisible();
   await expect(methods.getByText(original.text_en!, { exact: true })).toBeVisible();
   await expect(methods.getByText("Seller listing claim · listing level", { exact: true })).toBeVisible();
-  await expect(findings.nth(1).locator(".review-scope span")).toHaveText(["Listing conflict", "Option C"]);
+  await expect(findings.nth(1).getByText("Listing conflict", { exact: true })).toBeVisible();
+  await expect(findings.nth(1).getByText("Applies to Option C", { exact: true })).toBeVisible();
   await findings.nth(1).getByText(`${imageClaim.display_text} · Option C`, { exact: true }).click();
   const image = findings.nth(1).getByRole("img", { name: "Seller image for option v6" });
   await expect(image).toHaveAttribute("src", `/api/snapshots/${snapshot.snapshot_id}/images/image-v6`);
@@ -437,6 +443,93 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(message).toBeFocused();
   await message.fill(" ");
   await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);
+});
+
+test("traces findings to the confirmed SKU terms and linked cutoff", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const correction = "Custom is fine for the blue cup if it still arrives by then.";
+  const delivery = "The blue cup needs to arrive by 15 December.";
+  const otherDelivery = "The black and white cup needs to arrive by 15 December.";
+  const arrival = { kind: "delivery_deadline" as const, day: 15, month: 12, year: null };
+  const conditionalOrder: ResolvedRequirement = {
+    requirement_id: "custom-c", statement: correction, status: "active", option_ids: ["v6"],
+    topic: "customization", buyer_facet: "order_type", delivery_condition: { follows_deadline: true, latest_arrival: arrival },
+    provenance: [{ input_ref: "brief:custom-only-c", quote: correction, question_text: null, action: "replace", option_ids: ["v6"] }],
+  };
+  const deadline: ResolvedRequirement = {
+    requirement_id: "deadline-c", statement: delivery, status: "active", option_ids: ["v6"], topic: "deadline",
+    buyer_facet: "delivery_deadline", supplier_target: arrival,
+    provenance: [{ input_ref: "context", quote: delivery, question_text: null, action: "add", option_ids: ["v6"] }],
+  };
+  const unrelatedDeadline: ResolvedRequirement = {
+    ...deadline, requirement_id: "deadline-b", statement: otherDelivery, option_ids: ["v1"],
+    provenance: [{ ...deadline.provenance[0]!, quote: otherDelivery, option_ids: ["v1"] }],
+  };
+  const question = "Do you need a sample before ordering this option?";
+  const open: ResolvedRequirement = {
+    requirement_id: "sample-a", statement: "A sample has not been decided.", status: "unresolved", option_ids: ["v0"],
+    provenance: [{ input_ref: "answer:sample-a", quote: null, question_text: question, action: "unresolved", option_ids: ["v0"] }],
+  };
+  const nameClaim = richReport.claims.find((claim) => claim.source_id === "name-v6")!;
+  const imageClaim = richReport.claims.find((claim) => claim.source_id === "image-v6")!;
+  const report: PurchaseReview = {
+    ...richReport,
+    buyer_requirements: [{
+      requirement_id: conditionalOrder.requirement_id, text: correction, quote: correction,
+      input_ref: conditionalOrder.provenance[0]!.input_ref, option_ids: ["v6"], question_text: null,
+    }],
+    findings: [{
+      ...richReport.findings[0]!, finding_id: "confirm-custom-c", title: "Check the custom order cutoff",
+      option_ids: ["v6"], claim_ids: [nameClaim.claim_id, imageClaim.claim_id], unknowns: [],
+      requirement_ids: [conditionalOrder.requirement_id], supplier_question: "Can you deliver this custom option by 15 December?",
+    }, {
+      ...richReport.findings[0]!, finding_id: "decide-sample-a", title: "Decide whether to see a sample",
+      kind: "clarification_needed", option_ids: ["v0"], action_type: "decide_preference",
+      claim_ids: [], requirement_ids: [], unknowns: [], supplier_question: null,
+    }],
+    open_preferences: [{
+      preference_id: "requirement:sample-a", text: open.statement, option_ids: ["v0"], input_refs: ["answer:sample-a"],
+      finding_ids: ["decide-sample-a"], questions: [{ question_id: "sample-a", question_text: question, option_ids: ["v0"] }],
+    }],
+  };
+  await openWorkspace(page, () => reviewed(report, {
+    confirmed_revision: report.revision, requirements: [conditionalOrder, deadline, unrelatedDeadline, open],
+  }));
+
+  const orderFinding = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Check the custom order cutoff" }) });
+  await orderFinding.getByText("See the evidence", { exact: true }).click();
+  await orderFinding.getByText("Applies to Option C", { exact: true }).click();
+  const option = snapshot.options.find(({ option_id }) => option_id === "v6")!;
+  const applicableOptions = orderFinding.getByRole("list", { name: "Applicable selected options" });
+  await expect(applicableOptions.getByText(option.name_en!, { exact: true })).toBeVisible();
+  await expect(applicableOptions.getByText(option.name_original, { exact: true })).toBeVisible();
+  await expect(applicableOptions.getByRole("listitem")).toHaveCount(1);
+  await expect(orderFinding.getByRole("heading", { name: "Confirmed buyer terms" })).toBeVisible();
+  await orderFinding.getByText("Custom allowed if it arrives by 15 December", { exact: true }).click();
+  await expect(orderFinding.getByText(correction, { exact: true })).toBeVisible();
+  await expect(orderFinding.getByText("Replaced · Your brief correction", { exact: true })).toBeVisible();
+  await expect(orderFinding.getByText("Linked delivery deadline", { exact: true })).toBeVisible();
+  await orderFinding.locator("summary").getByText(delivery, { exact: true }).click();
+  await expect(orderFinding.locator("blockquote").getByText(delivery, { exact: true })).toBeVisible();
+  await expect(orderFinding.getByText(otherDelivery, { exact: true })).toHaveCount(0);
+  const evidence = orderFinding.getByRole("region", { name: "Source evidence" });
+  await evidence.locator("summary").filter({ hasText: imageClaim.display_text }).click();
+  await expect(evidence.getByRole("img")).toHaveAttribute("src", "/api/snapshots/" + snapshot.snapshot_id + "/images/image-v6");
+
+  const draft = page.getByRole("textbox", { name: "Supplier message draft" });
+  await draft.fill("Please confirm the 15 December arrival for the blue cup.");
+  const sampleFinding = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Decide whether to see a sample" }) });
+  await sampleFinding.getByText("See the evidence", { exact: true }).click();
+  await sampleFinding.getByText("Decision open · Question skipped", { exact: true }).click();
+  await expect(sampleFinding.getByText(`Your answer to “${question}”`, { exact: false })).toBeVisible();
+  await expect(sampleFinding.getByText("No answer submitted.", { exact: true })).toBeVisible();
+  await sampleFinding.getByRole("button", { name: "Revisit decision in buying brief" }).click();
+  await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Edit buying brief" })).toBeVisible();
+  await page.getByRole("button", { name: "Back to purchase review" }).click();
+  await expect(page.getByRole("region", { name: "Confirmed buying brief" })).toBeVisible();
+  await page.getByRole("button", { name: "Copy message" }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Please confirm the 15 December arrival for the blue cup.");
 });
 
 test("shows an option's thumbnail limitation beside its available comparison evidence", async ({ page }) => {

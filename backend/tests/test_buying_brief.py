@@ -92,6 +92,17 @@ def test_conditional_order_previews_edits_confirms_and_reopens_on_original_zip(t
         assert len(requests) == 1
         assert set(requests[0][1]) == {row["image_source_id"] for row in snapshot["options"] if row["option_id"] in selected}
 
+        correction, impact = preview(client, reviewed, "Move the delivery deadline to 15 December.", option_id=selected[0])
+        moved = apply(client, correction, impact)
+        assert len(requests) == 1
+        reviewed = ready(client.post("/api/reviews", json=confirm_command(moved)))
+        draft = reviewed["report"]["supplier_draft"]
+        assert "[Option A] Can this option ship from ready-made stock and also arrive by 15 December?" in draft
+        assert "[Option B] Can this option be custom-made and still arrive by 1 December?" in draft
+        assert "[Option C] Can this option ship from ready-made stock and also arrive by 1 December?" in draft
+        assert "[Options A, C]" not in draft
+        assert len(requests) == 2
+
     async def forbidden(*args):
         raise AssertionError("Restore contacted a provider")
 

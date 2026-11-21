@@ -56,6 +56,9 @@ Preserve independent decisions that share a topic, such as decoration method and
 A supplier_target supports a specific seller question only in its active requirement's scope.
 An active delivery_condition allows custom ordering only by its recorded arrival cutoff.
 Link customization checks to that scoped requirement so the server can render the cutoff.
+Group order checks only when the exact options share the same order and arrival terms.
+Split ready-made checks if their confirmed arrival dates differ, including when a date is set
+for only some options. Leave an unresolved or waived requirement out of supplier actions.
 
 For an optional buyer-decision finding, choose decide_preference and set decision_id to the
 exact requirement_id of one unresolved ledger row. Set topic and option_ids to that row's
@@ -84,7 +87,7 @@ specification, measurement basis when relevant, and evidence identifying each op
 Use requirement_unconfirmed only with a linked active requirement about the same topic.
 Select a concrete supplier action for ask_supplier or request_evidence. Use null for decide_preference.
 Use confirm_ready_made or confirm_custom_order only if a linked active order_type
-supplier_target supports that action. Otherwise select confirm_specification,
+supplier_target or delivery_condition supports that action. Otherwise select confirm_specification,
 request_documentation, request_sample, or request_close_up as appropriate. The backend
 renders known targets in the supplier question using the linked IDs and scope. It can
 also add a basic pending supplier check for an omitted active target. Custom availability does

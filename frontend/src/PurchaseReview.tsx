@@ -138,13 +138,45 @@ function Requirement({ requirement, selected }: { requirement: ReviewRequirement
   );
 }
 
-function FindingCard({ finding, report, context }: {
+function followsDeliveryDeadline(requirement: ResolvedRequirement, deadline: ResolvedRequirement) {
+  const condition = requirement.delivery_condition;
+  const date = condition?.latest_arrival;
+  const target = deadline.supplier_target;
+  return condition?.follows_deadline && date && deadline.status === "active"
+    && target?.kind === "delivery_deadline"
+    && target.day === date.day && target.month === date.month && target.year === date.year
+    && requirement.option_ids.every((id) => deadline.option_ids.includes(id));
+}
+
+type OpenPreference = Review["open_preferences"][number];
+
+function openDecision(preference: OpenPreference, terms: Map<string, ResolvedRequirement>) {
+  const prefix = "requirement:";
+  if (!preference.preference_id.startsWith(prefix)) return undefined;
+  const decision = terms.get(preference.preference_id.slice(prefix.length));
+  return decision?.status === "unresolved" ? decision : undefined;
+}
+
+function FindingCard({ finding, report, context, snapshot, terms, confirmed, onReviewBrief }: {
   finding: ReviewFinding;
   report: Review;
   context: EvidenceContext;
+  snapshot: ListingSnapshot;
+  terms: Map<string, ResolvedRequirement>;
+  confirmed: boolean;
+  onReviewBrief: () => void;
 }) {
+  const scope = context.selected.filter((id) => finding.option_ids.includes(id));
   const requirements = report.buyer_requirements.filter((requirement) =>
     finding.requirement_ids.includes(requirement.requirement_id),
+  );
+  const resolved = requirements.flatMap(({ requirement_id }) => {
+    const term = terms.get(requirement_id);
+    return term?.status === "active" ? [term] : [];
+  });
+  const linkedDeadlines = [...terms.values()].filter((deadline) =>
+    !finding.requirement_ids.includes(deadline.requirement_id)
+    && resolved.some((term) => followsDeliveryDeadline(term, deadline)),
   );
   const preferences = report.open_preferences.filter((preference) => preference.finding_ids.includes(finding.finding_id));
   return (
@@ -156,15 +188,35 @@ function FindingCard({ finding, report, context }: {
         <details className="finding-evidence">
           <summary>See the evidence</summary>
           <div className="review-finding-content">
-            <p className="review-scope">
-              <span>{findingKinds[finding.kind]}</span>{" "}
-              {context.selected.filter(id => finding.option_ids.includes(id)).map(id =>
-                <span key={id}>{optionLabel(context.selected, id)}</span>)}
-            </p>
+            <p className="review-scope"><span>{findingKinds[finding.kind]}</span></p>
+            <details className="review-source review-skus">
+              <summary>Applies to {scope.map((id) => optionLabel(context.selected, id)).join(", ")}</summary>
+              <ul className="review-source-body" aria-label="Applicable selected options">
+                {scope.map((id) => (
+                  <li key={id}>
+                    <strong>{optionLabel(context.selected, id)}</strong>
+                    <OptionName option={snapshot.options.find((option) => option.option_id === id)} />
+                  </li>
+                ))}
+              </ul>
+            </details>
             {requirements.length > 0 && (
               <div>
-                <h4>Buyer requirement{requirements.length === 1 ? "" : "s"}</h4>
-                {requirements.map((requirement) => (
+                <h4>{confirmed ? "Confirmed buyer terms" : "Buyer requirements"}</h4>
+                {resolved.length > 0 && <ul className="requirement-decisions-list">
+                  {resolved.map((term) => (
+                    <RequirementDecision key={term.requirement_id} requirement={term} optionIds={scope} selected={context.selected} />
+                  ))}
+                </ul>}
+                {linkedDeadlines.length > 0 && <div className="review-linked-deadlines">
+                  <p className="muted">Linked delivery deadline</p>
+                  <ul className="requirement-decisions-list">
+                    {linkedDeadlines.map((term) => (
+                      <RequirementDecision key={term.requirement_id} requirement={term} optionIds={scope} selected={context.selected} />
+                    ))}
+                  </ul>
+                </div>}
+                {requirements.filter((requirement) => !resolved.some((term) => term.requirement_id === requirement.requirement_id)).map((requirement) => (
                   <Requirement key={requirement.requirement_id} requirement={requirement} selected={context.selected} />
                 ))}
               </div>
@@ -199,7 +251,19 @@ function FindingCard({ finding, report, context }: {
             )}
             <div className="review-next">
               <h4>What to do next</h4>
-              {preferences.map((preference) => <p key={preference.preference_id}>{preference.text}</p>)}
+              {preferences.map((preference) => {
+                const decision = openDecision(preference, terms);
+                return decision ? (
+                  <ul key={preference.preference_id} className="requirement-decisions-list">
+                    <RequirementDecision requirement={decision} optionIds={scope} selected={context.selected} />
+                  </ul>
+                ) : <p key={preference.preference_id}>{preference.text}</p>;
+              })}
+              {preferences.some((preference) => openDecision(preference, terms)) && (
+                <button className="button button-secondary" type="button" onClick={onReviewBrief}>
+                  Revisit decision in buying brief
+                </button>
+              )}
               {finding.supplier_question && <p>{finding.supplier_question}</p>}
               <p><strong>What to request</strong> {finding.requested_evidence}</p>
               <p><strong>Evidence limits</strong> {finding.evidence_limits}</p>
@@ -306,15 +370,20 @@ export function briefDecisionText(requirement: ResolvedRequirement) {
   return condition ? "Custom-order cutoff needs a delivery date" : requirement.statement;
 }
 
-function RequirementDecision({ requirement, optionId, changed, buyingBrief }: {
+function RequirementDecision({ requirement, optionIds, selected, changed, buyingBrief }: {
   requirement: ResolvedRequirement;
-  optionId: string;
+  optionIds: string[];
+  selected: string[];
   changed?: boolean;
   buyingBrief?: boolean;
 }) {
-  const history = requirement.provenance.filter((entry) => entry.option_ids.includes(optionId));
+  const history = requirement.provenance.flatMap((entry) => {
+    const scope = optionIds.filter((id) => entry.option_ids.includes(id));
+    return scope.length > 0 ? [{ entry, scope }] : [];
+  });
   const latest = history.at(-1);
-  const openAnswer = requirement.status === "unresolved" && latest?.action === "unresolved" && latest.question_text;
+  const openAnswer = latest && requirement.status === "unresolved" && latest.scope.length === optionIds.length
+    && latest.entry.action === "unresolved" && latest.entry.question_text;
 
   return (
     <li>
@@ -322,7 +391,7 @@ function RequirementDecision({ requirement, optionId, changed, buyingBrief }: {
         <summary>
           <span className={`requirement-status is-${requirement.status}`}>
             {buyingBrief && requirement.status === "active" ? "Settled" : requirementStatuses[requirement.status]}
-            {openAnswer && (latest.quote === null ? " · Question skipped" : " · Answer left open")}
+            {openAnswer && (latest.entry.quote === null ? " · Question skipped" : " · Answer left open")}
             {changed && " · Changed"}
           </span>
           <span className="requirement-statement">
@@ -333,11 +402,13 @@ function RequirementDecision({ requirement, optionId, changed, buyingBrief }: {
           </span>
         </summary>
         <ol className="requirement-history" aria-label="Decision history">
-          {history.map((entry, index) => (
+          {history.map(({ entry, scope }, index) => (
             <li key={`${entry.input_ref}-${index}`}>
               <p><strong>{decisionActions[entry.action]}</strong> · {entry.question_text
                 ? `Your answer to “${entry.question_text}”` : entry.input_ref.startsWith("brief:")
-                  ? "Your brief correction" : "Your purchase context"}</p>
+                  ? "Your brief correction" : "Your purchase context"}
+                {scope.length < optionIds.length && " · " + scope.map((id) => optionLabel(selected, id)).join(", ")}
+              </p>
               {entry.quote === null ? <p className="muted">No answer submitted.</p> : <blockquote>{entry.quote}</blockquote>}
             </li>
           ))}
@@ -364,11 +435,12 @@ export function groupBriefRequirements(requirements: ResolvedRequirement[]) {
   return [...groups.values()];
 }
 
-export function RequirementDecisions({ requirements, selected, snapshot, buyingBrief, changed }: {
+export function RequirementDecisions({ requirements, selected, snapshot, buyingBrief, confirmed, changed }: {
   requirements: ResolvedRequirement[];
   selected: string[];
   snapshot: ListingSnapshot;
   buyingBrief?: boolean;
+  confirmed?: boolean;
   changed?: ResolvedRequirement[];
 }) {
   const shared = buyingBrief && selected.length > 1 ? groupBriefRequirements(requirements).filter(
@@ -377,13 +449,13 @@ export function RequirementDecisions({ requirements, selected, snapshot, buyingB
   const sharedIds = new Set(shared.flatMap(({ ids }) => ids));
   return (
     <section className="review-panel requirement-decisions" aria-labelledby="requirement-decisions-heading">
-      <h2 id="requirement-decisions-heading">Your requirements by option</h2>
+      <h2 id="requirement-decisions-heading">{confirmed ? "Confirmed buying brief" : "Your requirements by option"}</h2>
       {shared.length > 0 && (
         <section className="requirement-option brief-shared" aria-label="All selected options">
           <h3>All selected options</h3>
           <ul className="requirement-decisions-list">
             {shared.map(({ row, ids }) => <RequirementDecision key={row.requirement_id} requirement={row}
-              buyingBrief optionId={selected[0]!}
+              buyingBrief optionIds={selected} selected={selected}
               changed={changed?.some((change) => ids.includes(change.requirement_id))} />)}
           </ul>
         </section>
@@ -400,7 +472,7 @@ export function RequirementDecisions({ requirements, selected, snapshot, buyingB
               {decisions.length === 0 ? <p className="muted">{shared.length ? "Shared requirements apply." : "No requirement decisions recorded."}</p> : (
                 <ul className="requirement-decisions-list">
                   {decisions.map((requirement) => (
-                    <RequirementDecision key={requirement.requirement_id} requirement={requirement} optionId={id}
+                    <RequirementDecision key={requirement.requirement_id} requirement={requirement} optionIds={[id]} selected={selected}
                       buyingBrief={buyingBrief}
                       changed={changed?.some((item) => item.requirement_id === requirement.requirement_id && item.option_ids.includes(id))} />
                   ))}
@@ -554,10 +626,12 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, requirements, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, requirements, confirmed, onReviewBrief, supplierDraft, onChangeDraft }: {
   report: Review;
   snapshot: ListingSnapshot;
   requirements?: ResolvedRequirement[] | null;
+  confirmed: boolean;
+  onReviewBrief: () => void;
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
 }) {
@@ -574,6 +648,7 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
     sources: new Map(snapshot.sources.map((source) => [source.source_id, source])),
     claims: new Map(report.claims.map((claim) => [claim.claim_id, claim])),
   };
+  const terms = new Map(requirements?.map((row) => [row.requirement_id, row]));
   const otherRequirements = report.buyer_requirements.filter((requirement) => (
     !report.findings.some((finding) => finding.requirement_ids.includes(requirement.requirement_id))
   ));
@@ -593,7 +668,8 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
           {report.findings.length > 0 && (
             <div className="finding-list">
               {report.findings.map((finding) => (
-                <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} />
+                <FindingCard key={finding.finding_id} finding={finding} report={report} context={context}
+                  snapshot={snapshot} terms={terms} confirmed={confirmed} onReviewBrief={onReviewBrief} />
               ))}
             </div>
           )}
@@ -603,7 +679,7 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
       <ReportCoverage report={report} />
       <Comparisons report={report} snapshot={snapshot} context={context} />
       {requirements && <RequirementDecisions requirements={requirements} selected={context.selected}
-        snapshot={snapshot} />}
+        snapshot={snapshot} confirmed={confirmed} />}
       {((!requirements && otherRequirements.length > 0) || report.open_preferences.length > 0) && (
         <section className="review-panel review-buyer-inputs" aria-labelledby="buyer-inputs-heading">
           <h2 id="buyer-inputs-heading">Buyer inputs</h2>
@@ -621,11 +697,14 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
               <ul>
                 {report.open_preferences.map((preference) => {
                   const scope = narrowerScope(context.selected, preference.option_ids);
+                  const decision = openDecision(preference, terms);
                   return (
                     <li key={preference.preference_id}>
                       <p>{preference.text}{scope && ` · ${scope}`}</p>
-                      {preference.input_refs.includes("context") && <p className="muted">Your purchase context</p>}
-                      {preference.questions.map((question) => {
+                      {decision ? <ul className="requirement-decisions-list">
+                        <RequirementDecision requirement={decision} optionIds={preference.option_ids} selected={context.selected} />
+                      </ul> : preference.input_refs.includes("context") && <p className="muted">Your purchase context</p>}
+                      {!decision && preference.questions.map((question) => {
                         const questionScope = narrowerScope(context.selected, question.option_ids);
                         return (
                           <p key={question.question_id} className="muted">
@@ -638,6 +717,11 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
                   );
                 })}
               </ul>
+              {report.open_preferences.some((preference) => openDecision(preference, terms)) && (
+                <button className="button button-secondary" type="button" onClick={onReviewBrief}>
+                  Revisit open decisions in buying brief
+                </button>
+              )}
             </div>
           )}
         </section>

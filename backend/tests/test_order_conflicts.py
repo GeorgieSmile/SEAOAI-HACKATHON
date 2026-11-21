@@ -142,10 +142,15 @@ def test_conflicting_targeted_answer_has_one_buyer_choice_and_neutral_supplier_s
     chosen, = [row for row in resolved["report"]["buyer_requirements"] if row["option_ids"] == [first]]
     assert chosen["quote"] == ORDER_CONFLICT_CHOICES[choice]
     assert chosen["question_text"] == ORDER_CONFLICT_PROMPT and chosen["input_ref"].startswith("clarification:")
-    a_term, = [line for line in resolved["report"]["supplier_draft"].splitlines() if "[Option A]" in line]
-    assert ("requires a custom order" in a_term) == (choice == "custom_orders_acceptable")
-    assert ("ready-made stock" in a_term) == (choice == "ready_made_only")
-    assert any("[Options B, C]" in line and "ready-made stock" in line for line in resolved["report"]["supplier_draft"].splitlines())
+    draft_lines = resolved["report"]["supplier_draft"].splitlines()
+    stock, = [line for line in draft_lines if "Please answer for ready-made stock." in line]
+    if choice == "ready_made_only":
+        assert "[Options A, B, C]" in stock
+        assert not any("requires a custom order" in line for line in draft_lines)
+    else:
+        assert "[Options B, C]" in stock
+        custom, = [line for line in draft_lines if "requires a custom order" in line]
+        assert "[Option A]" in custom
     assert "matte finish" in resolved["report"]["supplier_draft"]
 
     with TestClient(create_app(database, **options)) as client:

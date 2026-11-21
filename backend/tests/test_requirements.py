@@ -4,9 +4,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import case_workflow, requirements
-from backend.case_models import SavedReview
-from backend.case_workflow import _review_digest
-from backend.contracts import ContextRequirement, QuestionDraft, QuestionResult
+from backend.case_models import CaseView, SavedReview
+from backend.case_workflow import _review_digest, _review_input
+from backend.contracts import ContextRequirement, ListingSnapshot, QuestionDraft, QuestionResult
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
 from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewReady
@@ -21,16 +21,40 @@ def _install_archived_report(database, case, inputs, images, content, *, version
     evidence = review_sent_evidence(inputs, images)
     report = assemble_review(
         inputs, content, sent_evidence=evidence, historical_decision_labels=version == 6,
+        historical_supplier_questions=True,
     ).model_dump(mode="json")
     digest = _review_digest(inputs, case["last_operation"]["operation_id"], images, evidence, version=version)
     saved = SavedReview(version=version, input_digest=digest, content=content, sent_evidence=evidence)
+    archive = {**case, "report": report}
+    if version < 5:
+        archive["phase"] = "reviewed"
+        archive["last_operation"] = {**case["last_operation"], "stage": "review"}
+        archive.pop("requirements")
+        archive.pop("confirmed_revision", None)
 
     def replace(record):
-        record["view"]["report"] = report
+        record.pop("confirmed_review_digest", None)
+        if version < 5:
+            record.pop("requirement_version")
+            record.pop("initial_requirements")
+            record.pop("order_conflict_version")
+        record["view"] = archive
         record["saved_review"] = saved.model_dump(mode="json")
 
     _replace_saved_case(database, replace)
-    return {**case, "report": report}
+    return archive
+
+
+def _save_raw_report_fixture(client, database, snapshot, case, content_for):
+    legacy_view = CaseView.model_validate(case).model_copy(update={"requirements": None})
+    inputs = _review_input(ListingSnapshot.model_validate(snapshot), legacy_view)
+    images = {}
+    for option in snapshot["options"]:
+        if option["option_id"] in inputs.selected_option_ids and option["image_source_id"] is not None:
+            response = client.get(_image_url(snapshot, option))
+            assert response.status_code == 200
+            images[option["image_source_id"]] = (response.headers["content-type"], response.content)
+    return _install_archived_report(database, case, inputs, images, content_for(inputs), version=4)
 
 
 @pytest.mark.parametrize(("source", "topic", "facet", "accepted"), [
@@ -176,7 +200,7 @@ def test_legacy_review_only_reuses_decisions_with_direct_stored_provenance(tmp_p
             ))
         return QuestionResult(reason="Check decisions affecting the order.", questions=questions)
 
-    async def old_review(inputs, images):
+    def old_content(inputs):
         assert inputs.requirements is None
         content = minimal_content(inputs, topic="finish")
         if source in {"context", "answer"}:
@@ -184,19 +208,16 @@ def test_legacy_review_only_reuses_decisions_with_direct_stored_provenance(tmp_p
             selected = inputs.selected_option_ids if source == "context" else inputs.selected_option_ids[:1]
             content["buyer_requirements"] = [{"requirement_id": "legacy-id", "topic": "finish", "input_ref": input_ref, "quote": quote}]
             content["findings"] = [finding_selection(selected, topic="finish", requirement_ids=["legacy-id"])]
-        evidence = review_sent_evidence(inputs, images)
-        exact = ReviewContent.model_validate(content)
-        return ReviewReady(report=assemble_review(inputs, exact, sent_evidence=evidence), content=exact, sent_evidence=evidence)
+        return ReviewContent.model_validate(content)
 
-    with TestClient(create_app(database, translator=stub, question_generator=ask, review_generator=old_review)) as client:
+    with TestClient(create_app(database, translator=stub, question_generator=ask)) as client:
         snapshot = _upload(client).json()["snapshot"]
         case = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=buyer_context)))
         command = {**reference(case), "operation_id": str(uuid4()), "submission": None}
         if source in {"answer", "ambiguous"}:
             command = round_request(case, texts=[quote if source == "answer" else "No."])
-        previous = ready(finish_review(client, command))
-
-    _replace_saved_case(database, lambda record: record.pop("requirement_version"))
+        brief = ready(client.post("/api/brief", json=command))
+        previous = _save_raw_report_fixture(client, database, snapshot, brief, old_content)
 
     async def forbidden(*args):
         pytest.fail("Startup must not call question or report generation.")
@@ -270,7 +291,7 @@ def test_legacy_migration_preserves_independent_direct_decisions(tmp_path, case_
             ),
         ])
 
-    async def old_review(inputs, images):
+    def old_content(inputs):
         accepted = {"same-facet": (1,), "indirect-overlap": (0,), "independent-unknown": (0,)}.get(case_type, (0, 1))
         content = minimal_content(inputs, topic="finish")
         for index in accepted:
@@ -284,15 +305,13 @@ def test_legacy_migration_preserves_independent_direct_decisions(tmp_path, case_
                 inputs.answer_option_ids[answer.question_id], finding_id=f"finish-{index}",
                 topic="finish", requirement_ids=[old_id],
             ))
-        evidence = review_sent_evidence(inputs, images)
-        exact = ReviewContent.model_validate(content)
-        return ReviewReady(report=assemble_review(inputs, exact, sent_evidence=evidence), content=exact, sent_evidence=evidence)
+        return ReviewContent.model_validate(content)
 
-    with TestClient(create_app(database, translator=stub, question_generator=ask, review_generator=old_review)) as client:
+    with TestClient(create_app(database, translator=stub, question_generator=ask)) as client:
         snapshot = _upload(client).json()["snapshot"]
         case = ready(client.post("/api/questions", json=initial_request(snapshot)))
-        old = ready(finish_review(client, round_request(case, texts=[first_quote, second_quote])))
-    _replace_saved_case(database, lambda record: record.pop("requirement_version"))
+        brief = ready(client.post("/api/brief", json=round_request(case, texts=[first_quote, second_quote])))
+        old = _save_raw_report_fixture(client, database, snapshot, brief, old_content)
 
     async def forbidden(*args):
         pytest.fail("Startup must not call a provider.")

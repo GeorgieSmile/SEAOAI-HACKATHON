@@ -22,7 +22,7 @@ from backend.state import Store
 from backend.tests.offline_server import offline_review
 from backend.tests.test_cases import confirm_command, finish_review, drafts, initial_request, ready, reference, reopen_brief, round_request
 from backend.tests.test_imports import INVENTORY, RAW, _copy_zip, _image_url, _upload, stub
-from backend.tests.test_reports import finding_selection, minimal_content, response as provider_response
+from backend.tests.test_reports import canonical_content, finding_selection, minimal_content, response as provider_response
 
 
 def retry_request(case):
@@ -270,7 +270,8 @@ def test_cancelled_review_releases_reservation_without_restart(tmp_path):
     asyncio.run(scenario())
 
 
-def test_review_restarts_after_a_process_is_killed_with_a_reserved_report(tmp_path):
+@pytest.mark.parametrize("saved_binding", ["confirmed", "archived", "changed_pending_input", "malformed_pending_input"])
+def test_review_restarts_after_a_process_is_killed_with_a_reserved_report(tmp_path, saved_binding):
     database = tmp_path / "case.db"
     process = subprocess.run([sys.executable, "-c", """
 import os
@@ -290,8 +291,19 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
 """, str(database)], check=False, timeout=15)
     assert process.returncode == 23
 
-    # The old persisted input did not carry scope. Retry must read it from the actual questions.
-    _replace_saved_case(database, lambda record: record["review_input"].pop("answer_option_ids"))
+    if saved_binding == "archived":
+        def archive_pending_input(record):
+            record.pop("confirmed_review_digest")
+            record["review_input"].pop("requirements")
+            record["review_input"].pop("answer_option_ids")
+
+        _replace_saved_case(database, archive_pending_input)
+    elif saved_binding == "changed_pending_input":
+        _replace_saved_case(database, lambda record: record["review_input"].update(
+            buyer_context="This was never confirmed",
+        ))
+    elif saved_binding == "malformed_pending_input":
+        _replace_saved_case(database, lambda record: record["review_input"].update(answers="invalid"))
     calls = []
 
     async def review(inputs, images):
@@ -305,14 +317,24 @@ with TestClient(create_app(sys.argv[1], translator=stub, question_generator=draf
         assert saved["phase"] == "failed"
         assert saved["revision"] == 1
         assert saved["last_operation"]["stage"] == "review"
-        assert saved["last_operation"]["code"] == "analysis_failed"
-        assert "Review generation was interrupted" in saved["last_operation"]["message"]
         assert saved["rounds"][0]["answers"][0]["answer_text"] == "Already saved"
         assert calls == []
-        resumed = ready(client.post("/api/case/retry", json=retry_request(saved)))
+        if saved_binding == "confirmed":
+            assert saved["confirmed_revision"] == saved["revision"]
+            assert saved["last_operation"]["code"] == "analysis_failed"
+            assert "Review generation was interrupted" in saved["last_operation"]["message"]
+            resumed = ready(client.post("/api/case/retry", json=retry_request(saved)))
+        else:
+            assert saved["last_operation"]["code"] == "review_regeneration_required"
+            assert "confirmed_revision" not in saved
+            assert client.post("/api/case/retry", json=retry_request(saved)).status_code == 422
+            assert client.post("/api/reviews", json=confirm_command(saved)).status_code == 422
+            assert calls == []
+            resumed = ready(client.post("/api/reviews", json=confirm_command(reopen_brief(client, saved))))
         assert resumed["phase"] == "reviewed"
         assert resumed["rounds"] == saved["rounds"]
         (inputs, images), = calls
+        assert inputs.requirements is not None
         assert inputs.snapshot.snapshot_id == snapshot["snapshot_id"]
         assert [answer.answer_text for answer in inputs.answers] == ["Already saved", None]
         assert inputs.answer_option_ids == {
@@ -379,28 +401,28 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
 
     async def ask_about_first_sku(inputs):
         assert "answer_option_ids" not in inputs.model_dump()
-        return QuestionResult(reason="Identify the first option's requirement.", questions=[QuestionDraft(
+        return QuestionResult(reason="Identify the first option's requirement.", context_requirements=[], questions=[QuestionDraft(
             prompt="What capacity is required for Option A?", why_ask="This applies to the first selected option.",
-            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[],
+            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[answer],
+            topic="capacity", requirement_ids=[], choice_effects=[
+                {"choice": answer, "action": "add", "statement": answer, "requirement_id": None},
+            ],
         )])
 
     async def review(inputs, images):
         option_a, option_b = inputs.selected_option_ids
 
         def serve(request):
-            wire_input = json.loads(request.content)["input"][0]["content"][0]["text"]
-            (wire_answer,) = json.loads(wire_input)["answers"]
-            requests.append(wire_answer)
+            wire = json.loads(json.loads(request.content)["input"][0]["content"][0]["text"])
+            assert "buyer_context" not in wire and "answers" not in wire
+            (requirement,) = wire["requirements"]
+            requests.append(requirement)
             payload = minimal_content(inputs)
-            payload["buyer_requirements"] = [{
-                "requirement_id": "only-option-a", "topic": "capacity",
-                "input_ref": f"answer:{wire_answer['question_id']}", "quote": answer,
-            }]
             payload["findings"] = [finding_selection(
                 [option_b if wrong_sku else option_a], kind="requirement_unconfirmed",
-                requirement_ids=["only-option-a"],
+                requirement_ids=[requirement["requirement_id"]],
             )]
-            return provider_response(request, payload)
+            return provider_response(request, canonical_content(inputs, payload=payload))
 
         async with AsyncOpenAI(
             api_key="offline-test-placeholder", max_retries=0, base_url="https://api.openai.com/v1",
@@ -422,9 +444,13 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
         assert saved["phase"] == "failed"
         assert saved["rounds"][0]["answers"] == [{"question_id": issued["question_id"], "answer_text": answer}]
 
-    expected_wire = {"question_id": issued["question_id"], "question_text": issued["prompt"],
-                     "answer_text": answer, "option_ids": issued["option_ids"]}
-    assert requests == [expected_wire, expected_wire]
+    assert len(requests) == 2
+    expected_wire = requests[0]
+    assert expected_wire["statement"] == answer
+    assert expected_wire["option_ids"] == issued["option_ids"]
+    assert expected_wire["status"] == "active"
+    assert "provenance" not in expected_wire
+    assert requests == [expected_wire] * 2
 
     wrong_sku = False
     with TestClient(create_app(database, **options)) as client:
@@ -443,12 +469,18 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
         assert len(requests) == 3
 
     # Same case, same quote, and same snapshot are insufficient if the issued scope itself changed.
-    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update({
-        "option_ids": start["selected_option_ids"],
-    }))
+    def change_recorded_sku_scope(record):
+        view = record["view"]
+        changed_scope = start["selected_option_ids"]
+        view["rounds"][0]["questions"][0]["option_ids"] = changed_scope
+        requirement, = view["requirements"]
+        requirement["option_ids"] = changed_scope
+        requirement["provenance"][0]["option_ids"] = changed_scope
+
+    _replace_saved_case(database, change_recorded_sku_scope)
     with TestClient(create_app(database, **options)) as client:
         recovered = client.get("/api/case").json()["case"]
-        assert recovered["last_operation"]["code"] == "invalid_review"
+        assert recovered["last_operation"]["code"] == "review_regeneration_required"
         assert recovered["report"] is None
         assert reference(recovered) == reference(reviewed)
         assert recovered["rounds"][0]["answers"] == saved["rounds"][0]["answers"]
@@ -479,12 +511,15 @@ def test_saved_review_is_bound_to_the_issued_question_facet(tmp_path):
     with TestClient(create_app(database, **options)) as client:
         assert client.get("/api/case").json()["case"] == reviewed
 
-    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update(
-        buyer_facet="surface_finish",
-    ))
+    def change_recorded_facet(record):
+        view = record["view"]
+        view["rounds"][0]["questions"][0]["buyer_facet"] = "surface_finish"
+        view["requirements"][0]["buyer_facet"] = "surface_finish"
+
+    _replace_saved_case(database, change_recorded_facet)
     with TestClient(create_app(database, **options)) as client:
         saved = client.get("/api/case").json()["case"]
-        assert saved["last_operation"]["code"] == "invalid_review"
+        assert saved["last_operation"]["code"] == "review_regeneration_required"
         assert saved["report"] is None
         assert saved["rounds"][0]["answers"] == reviewed["rounds"][0]["answers"]
 
@@ -498,7 +533,12 @@ def test_saved_review_is_bound_to_the_issued_question_facet(tmp_path):
     ("invalid_claim_reference", "invalid_review"),
     ("missing_text", "invalid_review"),
     ("unselected_attachment", "invalid_review"),
-    ("changed_attachment_bytes", "invalid_review"),
+    ("changed_attachment_bytes", "review_regeneration_required"),
+    ("missing_confirmation", "review_regeneration_required"),
+    ("wrong_confirmed_revision", "review_regeneration_required"),
+    ("malformed_confirmed_revision", "review_regeneration_required"),
+    ("changed_confirmation_digest", "review_regeneration_required"),
+    ("malformed_confirmation_digest", "review_regeneration_required"),
     ("changed_input_binding", "invalid_review"),
     ("changed_public_report", "invalid_review"),
 ])
@@ -539,6 +579,16 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
             saved_review["sent_evidence"]["attached_image_ids"].append(snapshot["options"][1]["image_source_id"])
         elif damage == "changed_input_binding":
             saved_review["input_digest"] = "f" * 64
+        elif damage == "missing_confirmation":
+            del record["confirmed_review_digest"]
+        elif damage == "wrong_confirmed_revision":
+            record["view"]["confirmed_revision"] += 1
+        elif damage == "malformed_confirmed_revision":
+            record["view"]["confirmed_revision"] = "invalid"
+        elif damage == "changed_confirmation_digest":
+            record["confirmed_review_digest"] = "f" * 64
+        elif damage == "malformed_confirmation_digest":
+            record["confirmed_review_digest"] = "invalid"
         elif damage == "changed_public_report":
             report["supplier_draft"] = "This draft was never validated."
 
@@ -581,8 +631,11 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
         retries.append(inputs)
         return await offline_review(inputs, images)
 
+    requires_confirmation = expected_code == "review_regeneration_required"
     with TestClient(create_app(database, **{**options, "review_generator": review})) as client:
-        if damage == "legacy":
+        if requires_confirmation:
+            assert "confirmed_revision" not in recovered
+            assert client.post("/api/case/retry", json=retry_request(recovered)).status_code == 422
             confirmation = confirm_command(reopen_brief(client, recovered))
             reviewed = ready(client.post("/api/reviews", json=confirmation))
         else:
@@ -590,7 +643,7 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
         assert reviewed["rounds"] == original["rounds"]
         assert reference(reviewed) == reference(original)
         assert reviewed["phase"] == "reviewed"
-        expected_operation = confirmation["operation_id"] if damage == "legacy" else original["last_operation"]["operation_id"]
+        expected_operation = confirmation["operation_id"] if requires_confirmation else original["last_operation"]["operation_id"]
         assert reviewed["last_operation"]["operation_id"] == expected_operation
         if damage == "legacy":
             assert reviewed["report"]["buyer_requirements"] == []
@@ -599,7 +652,7 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
             assert reviewed["report"]["open_preferences"]
         else:
             assert reviewed["report"] == original["report"]
-        if damage == "legacy":
+        if requires_confirmation:
             assert ready(client.post("/api/reviews", json=confirmation)) == reviewed
         else:
             assert ready(client.post("/api/case/retry", json=retry_request(recovered))) == reviewed

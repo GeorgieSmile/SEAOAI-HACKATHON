@@ -348,7 +348,7 @@ def _prepare_evidence(request: ReviewInput, images: Mapping[str, tuple[str, byte
         data["requirements"] = [
             requirement.model_dump(
                 exclude={"provenance"} if requirement.status == "active"
-                else {"provenance", "statement", "supplier_target"},
+                else {"provenance", "statement", "supplier_target", "delivery_condition"},
             )
             for requirement in request.requirements
             if requirement.status != "waived" and not requirement.order_conflict
@@ -801,12 +801,29 @@ def _render_next_step(spec: str, action: str | None, differences: list[str]) -> 
     )
 
 
+@dataclass(frozen=True)
+class _SupplierQuestion:
+    text: str
+    multiple_options: str | None = None
+
+    @classmethod
+    def with_order_cutoff(cls, terms: str, arrival: DeliveryTarget, extra: list[str]) -> "_SupplierQuestion":
+        condition = f"{terms} arrive by {arrival.display_date()}?"
+        return cls(
+            " ".join([f"Can this option {condition}", *extra]),
+            " ".join([f"Can these options {condition}", *extra]),
+        )
+
+    def for_options(self, count: int) -> str:
+        return self.multiple_options if count > 1 and self.multiple_options is not None else self.text
+
+
 def _render_finding(
     finding: FindingSelection, claims: list[DisplayClaim], unknowns: list[Unknown], differences: list[str],
     order: OrderTarget | DeliveryCondition | _BuyerTarget | None, product_targets: list[SupplierTarget | _BuyerTarget],
     *, canonical: bool, decision_subject: str | None, linked_topic_requirement: bool,
-    stock_arrival: DeliveryTarget | None = None,
-) -> Finding:
+    stock_arrival: DeliveryTarget | None = None, current_supplier_questions: bool,
+) -> tuple[Finding, _SupplierQuestion | None]:
     label, spec = TOPICS[finding.topic]
     if canonical and finding.topic == "customization":
         spec = "availability and order terms"
@@ -839,6 +856,7 @@ def _render_finding(
     elif target_types == {SurfaceTarget}:
         spec = "the surface finish"
     question, requested_evidence, limits = _render_next_step(spec, action, differences)
+    draft_question = None
     if question is not None:
         target_questions = [
             _target_question(target) if isinstance(target, _BuyerTarget) else _supplier_target_question(target)
@@ -848,13 +866,26 @@ def _render_finding(
             target_questions.insert(0, "Please answer for ready-made stock.")
         if isinstance(order, OrderTarget) and order_action == "confirm_custom_order" and action != order_action:
             target_questions.insert(0, "If a custom order is needed, please share the lead time and minimum order quantity.")
-        question = " ".join([question, *filter(None, target_questions)])
+        target_questions = [target_question for target_question in target_questions if target_question]
+        question = " ".join([question, *target_questions])
+        extra = target_questions if finding.topic == "customization" else [question]
         if isinstance(order, DeliveryCondition) and order.latest_arrival is not None:
-            conditional = f"Can this option be custom-made and still arrive by {order.latest_arrival.display_date()}?"
-            question = conditional if action == "confirm_specification" else f"{conditional} {question}"
+            if action != "confirm_specification":
+                extra = [question]
+            if current_supplier_questions:
+                draft_question = _SupplierQuestion.with_order_cutoff(
+                    "be custom-made and still", order.latest_arrival, extra,
+                )
+            else:
+                conditional = f"Can this option be custom-made and still arrive by {order.latest_arrival.display_date()}?"
+                question = conditional if action == "confirm_specification" else f"{conditional} {question}"
         elif stock_arrival is not None and action == "confirm_ready_made":
-            quantity = "this option" if len(finding.option_ids) == 1 else "these options"
-            question = f"Can {quantity} ship from ready-made stock and also arrive by {stock_arrival.display_date()}?"
+            draft_question = _SupplierQuestion.with_order_cutoff(
+                "ship from ready-made stock and also", stock_arrival, extra if current_supplier_questions else [],
+            )
+        if draft_question is None:
+            draft_question = _SupplierQuestion(question)
+        question = draft_question.for_options(len(finding.option_ids))
     impact = f"Knowing {label.lower()} helps compare what you would receive."
     priority = "Checking this before ordering can resolve an open detail about the exact item."
     if decision_subject is not None:
@@ -884,19 +915,26 @@ def _render_finding(
         requested_evidence=requested_evidence,
         evidence_limits=limits,
         supplier_question=question,
-    )
+    ), draft_question
 
 
-def _supplier_draft(request: ReviewInput, findings: list[Finding], *, canonical: bool) -> str:
+def _supplier_draft(
+    request: ReviewInput, findings: list[tuple[list[str], _SupplierQuestion]], *,
+    canonical: bool, current_supplier_questions: bool,
+) -> str:
+    if current_supplier_questions:
+        grouped: dict[_SupplierQuestion, list[str]] = {}
+        for option_ids, question in findings:
+            grouped.setdefault(question, []).extend(option_ids)
+        findings = [(option_ids, question) for question, option_ids in grouped.items()]
+
     questions = []
     asked: set[tuple[str, str]] = set()
-    for finding in findings:
-        question = finding.supplier_question
-        if question is None:
-            continue
+    for option_ids, draft_question in findings:
+        question = draft_question.for_options(len(set(option_ids)))
         letters = []
         for option_id, letter in zip(request.selected_option_ids, OPTION_REFERENCES):
-            if option_id in finding.option_ids and (not canonical or (option_id, question) not in asked):
+            if option_id in option_ids and (not canonical or (option_id, question) not in asked):
                 letters.append(letter)
                 asked.add((option_id, question))
         if not letters:
@@ -953,7 +991,9 @@ def _legacy_report_requirements(
     return requirements
 
 
-def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequirement]) -> list[BuyerRequirement]:
+def _current_report_requirements(
+    request: ReviewInput, rows: list[ResolvedRequirement], *, current_supplier_questions: bool,
+) -> list[BuyerRequirement]:
     answers = {f"answer:{answer.question_id}": answer for answer in request.answers}
     clarifications = {f"clarification:{item.clarification_id}": item for item in request.order_clarifications}
     corrections = {f"brief:{item.change_id}": item for item in request.brief_changes}
@@ -1004,9 +1044,14 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
             if row.supplier_target is not None:
                 raise ValueError("Only an active requirement can supply a seller-facing detail.")
             continue
-        origin = next(
-            (entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"}), None,
-        )
+        origins = (entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"})
+        if current_supplier_questions and row.delivery_condition is not None:
+            origin = next((entry for entry in origins if entry.quote == row.statement and entry.input_ref in corrections
+                           and corrections[entry.input_ref].proposal.kind == "custom_by_deadline"), None)
+            if origin is None or row.topic != "customization" or row.buyer_facet != "order_type" or row.order_conflict:
+                raise ValueError("A custom-order condition must belong to a confirmed order requirement.")
+        else:
+            origin = next(origins, None)
         if (
             origin is None or origin.quote != row.statement
             or row.provenance[-1].action not in {"add", "replace", "keep"}
@@ -1028,7 +1073,13 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
                 raise ValueError("The requirement target must match the saved brief correction.")
             if proposal.kind == "custom_by_deadline":
                 condition = row.delivery_condition
-                expected = proposal.date or arrival_cutoff(rows, row.option_ids)
+                expected = proposal.date
+                if expected is None:
+                    if current_supplier_questions:
+                        cutoffs = {arrival_cutoff(rows, [option_id]) for option_id in row.option_ids}
+                        expected = next(iter(cutoffs)) if len(cutoffs) == 1 else None
+                    else:
+                        expected = arrival_cutoff(rows, row.option_ids)
                 if condition is None or expected is None or condition != DeliveryCondition(
                     follows_deadline=proposal.date is None, latest_arrival=expected,
                 ):
@@ -1042,8 +1093,18 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
     return requirements
 
 
+def _scopes_with_matching_arrival(
+    option_ids: Iterable[str], arrivals: Mapping[str, DeliveryTarget | None],
+) -> dict[DeliveryTarget | None, list[str]]:
+    by_arrival: dict[DeliveryTarget | None, list[str]] = {}
+    for option_id in option_ids:
+        by_arrival.setdefault(arrivals.get(option_id), []).append(option_id)
+    return by_arrival
+
+
 def _complete_supplier_findings(
-    content: ReviewSelection, requirements: Mapping[str, ResolvedRequirement],
+    content: ReviewSelection, requirements: Mapping[str, ResolvedRequirement], *,
+    stock_arrivals: Mapping[str, DeliveryTarget | None], custom_arrivals: Mapping[str, DeliveryTarget | None],
 ) -> list[FindingSelection]:
     findings: list[FindingSelection] = list(content.findings)
     used_ids = {finding.finding_id for finding in content.findings}
@@ -1062,20 +1123,29 @@ def _complete_supplier_findings(
         missing = [option_id for option_id in requirement.option_ids if option_id not in checked_options]
         if not missing:
             continue
-        finding_id = f"supplier:{requirement.requirement_id}"
-        if finding_id in used_ids:
-            raise ValueError("Finding IDs cannot use IDs reserved for buyer requirement checks.")
-        used_ids.add(finding_id)
-        findings.append(FindingSelection(
-            finding_id=finding_id, topic=requirement.topic, option_ids=missing, kind="requirement_unconfirmed",
-            action_type="ask_supplier", requirement_ids=[requirement.requirement_id], claim_ids=[], unknowns=[],
-            supplier_action="confirm_specification",
-        ))
+        target = requirement.supplier_target
+        arrivals = {}
+        if isinstance(target, OrderTarget):
+            arrivals = stock_arrivals if target.value == "ready_made_only" else custom_arrivals
+        scopes = _scopes_with_matching_arrival(missing, arrivals)
+        for scope in scopes.values():
+            finding_id = f"supplier:{requirement.requirement_id}"
+            if len(scopes) > 1:
+                finding_id += f":{scope[0]}"
+            if finding_id in used_ids:
+                raise ValueError("Finding IDs cannot use IDs reserved for buyer requirement checks.")
+            used_ids.add(finding_id)
+            findings.append(FindingSelection(
+                finding_id=finding_id, topic=requirement.topic, option_ids=scope, kind="requirement_unconfirmed",
+                action_type="ask_supplier", requirement_ids=[requirement.requirement_id], claim_ids=[], unknowns=[],
+                supplier_action="confirm_specification",
+            ))
     return findings
 
 
 def _current_finding_targets(
-    finding: FindingSelection, requirements: Mapping[str, ResolvedRequirement], *, canonical: bool,
+    finding: FindingSelection, requirements: Mapping[str, ResolvedRequirement], *,
+    canonical: bool, current_supplier_questions: bool,
 ) -> tuple[OrderTarget | DeliveryCondition | None, list[SupplierTarget]]:
     product_targets = []
     order_targets: list[OrderTarget | DeliveryCondition] = []
@@ -1088,14 +1158,20 @@ def _current_finding_targets(
         target = requirement.supplier_target
         order_target = requirement.delivery_condition or (target if isinstance(target, OrderTarget) else None)
         if order_target is not None:
+            if current_supplier_questions and isinstance(order_target, DeliveryCondition):
+                order_target = DeliveryCondition(follows_deadline=False, latest_arrival=order_target.latest_arrival)
             if order_target not in order_targets:
                 order_targets.append(order_target)
         elif requirement.topic != finding.topic:
             raise ValueError("Use the finding topic that matches the linked requirement's decision.")
         elif target is not None and target not in product_targets:
             product_targets.append(target)
+    if current_supplier_questions and any(isinstance(target, DeliveryCondition) for target in order_targets):
+        order_targets = [target for target in order_targets if not (
+            isinstance(target, OrderTarget) and target.value == "custom_orders_acceptable"
+        )]
     if len(order_targets) > 1:
-        raise ValueError("A supplier question cannot select conflicting order types for the same options.")
+        raise ValueError("A supplier question cannot select conflicting order terms for the same options.")
     order = order_targets[0] if order_targets else None
     requested_order = {"confirm_ready_made": "ready_made_only", "confirm_custom_order": "custom_orders_acceptable"}.get(
         finding.supplier_action or "",
@@ -1236,10 +1312,11 @@ def _legacy_open_preferences(
 
 def assemble_review(
     request: ReviewInput, content: ReviewSelection, *, sent_evidence: SentReviewEvidence,
-    historical_decision_labels: bool = False,
+    historical_decision_labels: bool = False, historical_supplier_questions: bool = False,
 ) -> PurchaseReview:
     """Validate structured selections against the case, then render the public report."""
     canonical = isinstance(content, CanonicalReviewContent)
+    current_supplier_questions = canonical and not historical_supplier_questions
     if canonical and request.requirements is None:
         raise ValueError("Canonical report selections require a current buyer decision ledger.")
     if sent_evidence.text_ids != tuple(
@@ -1265,6 +1342,8 @@ def assemble_review(
     }
 
     all_requirements = {row.requirement_id: row for row in request.requirements or []}
+    stock_arrivals: dict[str, DeliveryTarget | None] = {}
+    custom_arrivals: dict[str, DeliveryTarget | None] = {}
     if request.requirements is None and isinstance(content, ReviewContent):
         inputs = _buyer_inputs(request)
         current_inputs = _current_buyer_inputs(inputs)
@@ -1282,10 +1361,27 @@ def assemble_review(
                 ))
                 for answer, scope in _open_skipped_questions(request)
             }
-        requirements = _current_report_requirements(request, request.requirements or [])
+        requirements = _current_report_requirements(
+            request, request.requirements or [], current_supplier_questions=current_supplier_questions,
+        )
         current_requirements = {row.requirement_id: row for row in all_requirements.values() if row.status == "active"}
         requirement_topics = {requirement_id: row.topic for requirement_id, row in current_requirements.items()}
-        finding_selections = _complete_supplier_findings(content, current_requirements)
+        if current_supplier_questions:
+            stock_arrivals = {
+                option_id: arrival_cutoff(list(all_requirements.values()), [option_id])
+                for option_id in request.selected_option_ids
+            }
+            for row in current_requirements.values():
+                if row.delivery_condition is None:
+                    continue
+                date = row.delivery_condition.latest_arrival
+                for option_id in row.option_ids:
+                    if option_id in custom_arrivals and custom_arrivals[option_id] != date:
+                        raise ValueError("An option cannot have conflicting confirmed custom-order cutoffs.")
+                    custom_arrivals[option_id] = date
+        finding_selections = _complete_supplier_findings(
+            content, current_requirements, stock_arrivals=stock_arrivals, custom_arrivals=custom_arrivals,
+        )
     requirement_scopes = {row.requirement_id: set(row.option_ids) for row in requirements}
 
     comparisons = []
@@ -1336,6 +1432,7 @@ def assemble_review(
     finding_ids = _unique_ids((finding.finding_id for finding in content.findings), "findings")
     finding_by_id = {finding.finding_id: finding for finding in content.findings}
     findings = []
+    draft_questions = []
     decision_findings: dict[str, list[str]] = {}
     decision_evidence: set[tuple[str, frozenset[str]]] = set()
     for finding in finding_selections:
@@ -1387,26 +1484,42 @@ def assemble_review(
                 if (target := _linked_target(current_inputs, inputs, facet, finding.option_ids, product_refs)) is not None
             ]
         else:
-            order, product_targets = _current_finding_targets(finding, current_requirements, canonical=canonical)
+            order, product_targets = _current_finding_targets(
+                finding, current_requirements, canonical=canonical, current_supplier_questions=current_supplier_questions,
+            )
 
         unknowns = [
             _render_unknown(unknown, finding, sources, sent, observed_image_topics) for unknown in finding.unknowns
         ]
         differences = _conflicting_readings(finding, references, sources, aliases) if finding.kind == "listing_conflict" else []
         stock_arrival = None
-        if isinstance(order, OrderTarget) and order.value == "ready_made_only" and any(
-            row.delivery_condition is not None for row in current_requirements.values()
-        ):
-            dates = {arrival_cutoff(list(all_requirements.values()), [option_id]) for option_id in finding.option_ids}
-            if len(dates) == 1:
-                stock_arrival = next(iter(dates))
-        findings.append(_render_finding(
+        if isinstance(order, OrderTarget):
+            if current_supplier_questions:
+                arrivals = stock_arrivals if order.value == "ready_made_only" else custom_arrivals
+                dates = _scopes_with_matching_arrival(finding.option_ids, arrivals)
+                if len(dates) != 1:
+                    raise ValueError("A supplier order question must group only options with the same confirmed arrival terms.")
+                date = next(iter(dates))
+                if order.value == "ready_made_only":
+                    stock_arrival = date
+                elif date is not None:
+                    order = DeliveryCondition(follows_deadline=False, latest_arrival=date)
+            elif order.value == "ready_made_only" and any(
+                row.delivery_condition is not None for row in current_requirements.values()
+            ):
+                dates = {arrival_cutoff(list(all_requirements.values()), [option_id]) for option_id in finding.option_ids}
+                if len(dates) == 1:
+                    stock_arrival = next(iter(dates))
+        rendered, question = _render_finding(
             finding, references, unknowns, differences, order, product_targets,
             canonical=request.requirements is not None,
             decision_subject=_decision_subject(decision, historical=historical_decision_labels) if decision is not None else None,
             linked_topic_requirement=linked_topic_requirement,
-            stock_arrival=stock_arrival,
-        ))
+            stock_arrival=stock_arrival, current_supplier_questions=current_supplier_questions,
+        )
+        findings.append(rendered)
+        if question is not None:
+            draft_questions.append((finding.option_ids, question))
 
     preferences = (
         _legacy_open_preferences(request, content, finding_by_id, inputs)
@@ -1441,7 +1554,9 @@ def assemble_review(
         revision=request.revision,
         snapshot_id=request.snapshot.snapshot_id,
         selected_option_ids=request.selected_option_ids,
-        supplier_draft=_supplier_draft(request, findings, canonical=canonical),
+        supplier_draft=_supplier_draft(
+            request, draft_questions, canonical=canonical, current_supplier_questions=current_supplier_questions,
+        ),
     )
 
 
