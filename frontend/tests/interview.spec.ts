@@ -225,7 +225,7 @@ test("shows zero-question brief without starting a report and reloads it read-on
   await page.getByRole("button", { name: "Confirm options" }).click();
   await expect(page.getByRole("heading", { name: "Review buying brief" })).toBeVisible();
   await expect(page.getByRole("list", { name: "Case progress" }).locator("[aria-current=step]")).toContainText("Buying brief");
-  await expect(page).toHaveTitle("Review buying brief · Proofly");
+  await expect(page).toHaveTitle("Review buying brief · DiliDoo!");
   await expect(page.locator(".interview-question")).toHaveCount(0);
   expect(writes).toEqual(["/api/questions"]);
 

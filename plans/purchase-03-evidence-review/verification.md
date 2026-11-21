@@ -245,7 +245,7 @@ The one-off browser harness ran `PURCHASE_BACKEND_URL=http://127.0.0.1:18110 fro
 
 ## Confirmed buying brief on main
 
-This replacement for PR #7 starts at `9513190`. Phase 2 owns the buyer’s decisions. The report reads their saved revision, scopes findings and original evidence to the selected SKUs, and builds the supplier draft from the validated terms. The original Website Test.zip and all SQLite files stayed on the local machine.
+This replacement for PR #7 starts at `9513190` and integrates PR #14 at `3bbba39`. The combined DiliDoo! UI retains the compact finding rows, opens details through “See the evidence” and follows coverage links to the specific finding. Phase 2 owns the buyer’s decisions. The report reads their saved revision, scopes findings and original evidence to the selected SKUs, and builds the supplier draft from the validated terms. The original Website Test.zip and all SQLite files stayed on the local machine.
 
 | Check | Result |
 | --- | --- |
@@ -256,7 +256,7 @@ This replacement for PR #7 starts at `9513190`. Phase 2 owns the buyer’s decis
 | Legacy cases | Opened historical databases written before the buying brief and by the baseline at `9513190`. Both reviewed cases retained their report, SKU selection, rounds, revision and original confirmation state with providers disabled. |
 | Layout | Inspected the top, middle and bottom of the report at 1280 × 850 and 390 × 850. The report and sticky draft stayed within their columns on desktop, and the mobile page fit the viewport. |
 
-The integrated suite passed 487 backend tests and 42 Chrome tests. Frontend typecheck, production build, and whitespace checks passed. The original-ZIP HTTP suite also moved only A’s stock deadline to 15 December. B kept conditional custom and C kept stock, both by 1 December. Other regressions cover preserving an independent capacity requirement when combining it with order and arrival terms.
+The integrated suite passed 490 backend tests and 42 Chrome tests. Frontend typecheck, production build, and whitespace checks passed. The original-ZIP HTTP suite also moved only A’s stock deadline to 15 December. B kept conditional custom and C kept stock, both by 1 December. Other regressions cover preserving an independent capacity requirement when combining it with order and arrival terms.
 
 ### Reproduction
 

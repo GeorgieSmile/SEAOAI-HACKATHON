@@ -364,6 +364,13 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeFocused();
   const findings = page.getByRole("article");
   await expect(findings.getByRole("heading", { level: 3 })).toHaveText(report.findings.map((finding) => finding.title));
+  await expect(findings.first().locator(".review-finding-content")).toBeHidden();
+  const firstFindingLink = page.getByRole("link", { name: report.findings[0]!.title, exact: true }).first();
+  await firstFindingLink.click();
+  await expect(findings.first().locator(".review-finding-content")).toBeVisible();
+  for (const row of [findings.nth(1), findings.nth(2)]) {
+    await row.getByText("See the evidence", { exact: true }).click();
+  }
   await expect(findings.nth(0).getByText("Requirement unconfirmed", { exact: true })).toBeVisible();
   await expect(findings.nth(0).getByText("Applies to Option A, Option B, Option C", { exact: true })).toBeVisible();
   await expect(findings.nth(0).locator("blockquote").getByText("Screen printing is required.", { exact: true })).toBeVisible();
@@ -490,6 +497,7 @@ test("traces findings to the confirmed SKU terms and linked cutoff", async ({ pa
   }));
 
   const orderFinding = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Check the custom order cutoff" }) });
+  await orderFinding.getByText("See the evidence", { exact: true }).click();
   await orderFinding.getByText("Applies to Option C", { exact: true }).click();
   const option = snapshot.options.find(({ option_id }) => option_id === "v6")!;
   const applicableOptions = orderFinding.getByRole("list", { name: "Applicable selected options" });
@@ -511,6 +519,7 @@ test("traces findings to the confirmed SKU terms and linked cutoff", async ({ pa
   const draft = page.getByRole("textbox", { name: "Supplier message draft" });
   await draft.fill("Please confirm the 15 December arrival for the blue cup.");
   const sampleFinding = page.getByRole("article").filter({ has: page.getByRole("heading", { name: "Decide whether to see a sample" }) });
+  await sampleFinding.getByText("See the evidence", { exact: true }).click();
   await sampleFinding.getByText("Decision open · Question skipped", { exact: true }).click();
   await expect(sampleFinding.getByText(`Your answer to “${question}”`, { exact: false })).toBeVisible();
   await expect(sampleFinding.getByText("No answer submitted.", { exact: true })).toBeVisible();
