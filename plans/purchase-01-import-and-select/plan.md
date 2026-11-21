@@ -4,7 +4,7 @@
 
 **Blocked by:** None (เริ่มได้ในวันแข่งเมื่อ breakdown ยอมรับแล้ว)
 
-**Status:** ready-for-agent; execution on competition day after selecting this Build task; implementation not started
+**Status:** Phase 1 implemented on the review branch. See [verification](verification.md) for tested scope and remaining gates.
 
 **ผู้ประสานหลัก:** B; A ทำหน้าเว็บ, B รับหลักฐาน/HTTP/state, C schema/translation
 

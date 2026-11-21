@@ -1,10 +1,10 @@
 # Toolchain และการเริ่มงาน
 
-แอปที่จะสร้างวันแข่งใช้ React/TypeScript/Vite + Python/FastAPI ตาม [integration plan](integration-plan.md) ยังไม่มี frontend/backend scaffolds หรือ npm dev command ใน starter
+Phase 1 ใช้ React/TypeScript/Vite และ Python/FastAPI ตาม [integration plan](integration-plan.md) ดูคำสั่งติดตั้งและเปิดแอปจาก root ใน [README](../README.md)
 
-Candidate backend versions ที่เคยติดตั้งแบบ binary-only ใน venv แยกบน macOS ARM/Python 3.15.2 เมื่อ 18 พ.ย.:
+เวอร์ชันที่ติดตั้งใน venv ของ Phase 1 บน macOS ARM/Python 3.15.2
 
-| Package | Candidate version |
+| Package | Version |
 | --- | --- |
 | fastapi | 0.163.2 |
 | uvicorn | 0.54.0 |
@@ -16,7 +16,7 @@ Candidate backend versions ที่เคยติดตั้งแบบ bina
 | httpx | 0.28.1 |
 | pytest | 9.2.0 |
 
-Node ที่รายงานในเครื่องต้นทางคือ 26.13.1/npm 11.20.0 ไม่ใช่การกำหนดว่าทุกคนต้องใช้เวอร์ชันนี้ ยังไม่ได้ติดตั้ง frontend dependencies หรือทดสอบเครื่องเพื่อน ไม่คัด venv/node_modules มาในชุด
+Node ที่รายงานในเครื่องต้นทางคือ 26.13.1/npm 11.20.0 ไม่ใช่การกำหนดว่าทุกคนต้องใช้เวอร์ชันนี้ ใช้ package-lock.json ของ frontend เมื่อติดตั้งบนเครื่องอื่น
 
 ## 30 นาทีแรกในวันพัฒนา
 
