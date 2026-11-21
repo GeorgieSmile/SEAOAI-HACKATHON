@@ -4,7 +4,7 @@ Status: Phase 2 handoff for issue #2. The internal `ReviewInput` is available to
 
 - Branch `phase-2/buyer-questions` from `dcabdf1`, the merge of PR #5 at `547341a`.
 - [Local run instructions](../../README.md) include an offline mode and a persistent test database for restarting the app.
-- Tested implementation `b0bc146`, including the frontend recovery follow-up to `b80b07a`. With live question and translation calls disabled, `.venv/bin/python -m pytest -q backend/tests` passed all 99 tests. The frontend typecheck, production build and all 15 Playwright tests passed using the installed Chrome. `git diff --check` passed.
+- Tested implementation `16cced4`, including the frontend recovery follow-up and mobile history fix. With live question and translation calls disabled, `.venv/bin/python -m pytest -q backend/tests` passed all 99 tests. The frontend typecheck, production build and all 15 Playwright tests passed using the installed Chrome. `git diff --check` passed.
 Authority: [plan](plan.md), [question contract](../../docs/contracts/question-contract.md)
 
 ## ตรวจส่วนของตนก่อนเปิด PR
@@ -51,16 +51,17 @@ The 15 case workflow tests cover all 15 submitted answers at the 3×5 limit, zer
 
 ## ผลจริงของ C
 
-Two authorized checks sent the redacted raw ZIP's selected text through the production question adapter and the normal start/continue routes. Translation was offline. Each request contained the same 3 selected SKUs and 46 available text sources (including public guidance). There was no application cache or retry. Both responses passed validation.
+Three authorized requests sent the redacted raw ZIP's selected text through the production question adapter and the normal start/continue routes. Translation was offline. Each request contained the same 3 selected SKUs and 46 available text sources (including public guidance). There was no application cache or retry. All three responses passed validation.
 
 | Prompt | Step | Input tokens | Output tokens (reasoning) | Provider time |
 | --- | --- | ---: | ---: | ---: |
 | buyer-questions-v1 | Start, sparse resale context | 3,609 | 1,062 (385) | 16.12 s |
 | buyer-questions-v1 | Continue, four synthetic answers and a skip | 3,870 | 1,159 (433) | 14.62 s |
+| buyer-questions-v2 | Fresh first round, same sparse context | 3,720 | 1,233 (516) | 16.19 s |
 
-Both used `gpt-6.1-terra` at medium reasoning. The first round asked five questions. After the buyer specified cold use and required test reports, the second round asked about independent testing, report coverage, drink type, cold retention, and leak resistance. It did not re-ask the skipped rights question. The cited report, material, and performance attributes were checked against the parsed originals. Neither round raised the differences in the option names. This matters for T1, where the buyer has supplied little context. Prompt v1 SHA-256 was `ccef1a90147a4decd75b697af525bc502aecee16c2aa7a8ac808cbdd1545dabc`.
+All used `gpt-6.1-terra` at medium reasoning. With v1, the first round asked five questions. After the buyer specified cold use and required test reports, the second round asked about independent testing, report coverage, drink type, cold retention, and leak resistance. It did not re-ask the skipped rights question. The cited report, material, and performance attributes were checked against the parsed originals. Neither round raised the differences in the option names. This matters for T1, where the buyer has supplied little context. Prompt v1 SHA-256 was `ccef1a90147a4decd75b697af525bc502aecee16c2aa7a8ac808cbdd1545dabc`.
 
-The active `buyer-questions-v2` prompt asks the model to compare the selected names and their scoped text, and prioritize material buying decisions before general logistics. It passed offline validation. A live assessment of this revision is pending. The final integrated checks still need to assess the quality of the questions on T1–T5.
+The active `buyer-questions-v2` prompt asks the model to compare the selected names and their scoped text, and prioritize material buying decisions before general logistics. With the same options and buyer context, the live first-round recheck returned four questions. It led with the buyer's preference for picture-style designs, lettering, or a mix. The explanation attributed 贴画 to A/B and 字母 to C using the three correct option-name sources. Its separate logo question attributed customization to a general seller claim and asked whether to verify availability for the selected options. This was one first-round recheck. Follow-up quality under v2 and the integrated T1–T5 cases remain to be assessed.
 
 ## Review รวมก่อนปิด ticket
 
