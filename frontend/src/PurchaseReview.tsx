@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
-  ListingOption, ListingSnapshot, PurchaseReview as Review, ResolvedRequirement, ReviewClaim,
+  ListingOption, ListingSnapshot, OrderClarification, PurchaseReview as Review, ResolvedRequirement, ReviewClaim,
   ReviewFinding, ReviewRequirement, Source,
 } from "./api";
 
@@ -211,6 +211,56 @@ function OptionName({ option }: { option: ListingOption | undefined }) {
       {option.name_en && <span className="review-option-name">{option.name_en}</span>}
       <span className="original" lang="zh-Hans">{option.name_original}</span>
     </>
+  );
+}
+
+const orderChoices = [
+  ["ready_made_only", "Ready-made stock only"],
+  ["custom_orders_acceptable", "Custom orders are acceptable"],
+] as const satisfies ReadonlyArray<readonly [OrderClarification["choice"], string]>;
+
+function OrderClarificationForm({ requirement, snapshot, selected, onConfirm }: {
+  requirement: ResolvedRequirement;
+  snapshot: ListingSnapshot;
+  selected: string[];
+  onConfirm: (clarification: OrderClarification) => void;
+}) {
+  const [choice, setChoice] = useState<OrderClarification["choice"] | null>(null);
+  const optionId = requirement.option_ids[0]!;
+  const option = snapshot.options.find((item) => item.option_id === optionId);
+  const label = optionLabel(selected, optionId);
+  const headingId = `clarify-order-${requirement.requirement_id}`;
+
+  return (
+    <section className="review-panel order-clarification" aria-labelledby={headingId}>
+      <h2 id={headingId}>Clarify order type for {label}</h2>
+      {option && <p className="order-clarification-option"><OptionName option={option} /></p>}
+      <div className="order-clarification-quotes">
+        {requirement.provenance.map((entry, index) => entry.quote !== null && (
+          <blockquote key={`${entry.input_ref}-${index}`}>
+            <p>{entry.quote}</p>
+            <footer>{entry.question_text ? `Your answer to “${entry.question_text}”` : "Your purchase context"}</footer>
+          </blockquote>
+        ))}
+      </div>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        if (choice) onConfirm({ requirement_id: requirement.requirement_id, option_id: optionId, choice });
+      }}>
+        <fieldset className="interview-question">
+          <legend>Which order type should apply to {label}?</legend>
+          <div className="question-choices">
+            {orderChoices.map(([value, text]) => (
+              <label key={value} className="question-choice">
+                <input type="radio" name={headingId} checked={choice === value} onChange={() => setChoice(value)} />
+                <span>{text}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        <button className="button button-primary" type="submit" disabled={!choice}>Save and update review</button>
+      </form>
+    </section>
   );
 }
 
@@ -424,12 +474,13 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, requirements, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, requirements, supplierDraft, onChangeDraft, onConfirmOrder }: {
   report: Review;
   snapshot: ListingSnapshot;
   requirements?: ResolvedRequirement[] | null;
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
+  onConfirmOrder: (clarification: OrderClarification) => void;
 }) {
   const context = {
     snapshotId: snapshot.snapshot_id,
@@ -440,10 +491,16 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
   const otherRequirements = report.buyer_requirements.filter((requirement) => (
     !report.findings.some((finding) => finding.requirement_ids.includes(requirement.requirement_id))
   ));
+  const orderConflicts = (requirements ?? []).filter((requirement) => requirement.order_conflict);
+  const otherPreferences = report.open_preferences.filter((preference) => (
+    !orderConflicts.some((requirement) => preference.preference_id === `requirement:${requirement.requirement_id}`)
+  ));
 
   return (
     <div className="purchase-review">
-      {requirements && <RequirementDecisions requirements={requirements} selected={context.selected}
+      {orderConflicts.map((requirement) => <OrderClarificationForm key={requirement.requirement_id} requirement={requirement}
+        snapshot={snapshot} selected={context.selected} onConfirm={onConfirmOrder} />)}
+      {requirements && <RequirementDecisions requirements={requirements.filter((requirement) => !requirement.order_conflict)} selected={context.selected}
         snapshot={snapshot} />}
       <div className="review-workspace">
         <section className="review-findings" aria-labelledby="findings-heading">
@@ -456,7 +513,7 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
         <Comparisons report={report} snapshot={snapshot} context={context} />
         <SupplierDraft draft={report.supplier_draft} text={supplierDraft} onChange={onChangeDraft} />
       </div>
-      {((!requirements && otherRequirements.length > 0) || report.open_preferences.length > 0) && (
+      {((!requirements && otherRequirements.length > 0) || otherPreferences.length > 0) && (
         <section className="review-panel review-buyer-inputs" aria-labelledby="buyer-inputs-heading">
           <h2 id="buyer-inputs-heading">Buyer inputs</h2>
           {!requirements && otherRequirements.length > 0 && (
@@ -467,11 +524,11 @@ export function PurchaseReview({ report, snapshot, requirements, supplierDraft, 
               ))}
             </div>
           )}
-          {report.open_preferences.length > 0 && (
+          {otherPreferences.length > 0 && (
             <div>
               <h3>Open preferences</h3>
               <ul>
-                {report.open_preferences.map((preference) => {
+                {otherPreferences.map((preference) => {
                   const scope = narrowerScope(context.selected, preference.option_ids);
                   return (
                     <li key={preference.preference_id}>

@@ -93,6 +93,12 @@ export interface Submission {
   answers: Answer[];
 }
 
+export interface OrderClarification {
+  requirement_id: string;
+  option_id: string;
+  choice: "ready_made_only" | "custom_orders_acceptable";
+}
+
 export interface QuestionRound {
   round_id: string;
   round_number: number;
@@ -112,6 +118,7 @@ export interface ReviewRequirement {
 
 export interface ResolvedRequirement extends RequirementTarget {
   status: "active" | "waived" | "unresolved";
+  order_conflict?: true;
   provenance: {
     input_ref: string;
     quote: string | null;
@@ -296,14 +303,17 @@ export function continueQuestions(view: CaseView, submission: Submission, operat
   });
 }
 
-export function requestReview(view: CaseView, submission: Submission | null, operationId: string) {
+export function requestReview(
+  view: CaseView, submission: Submission | null, operationId: string, clarification?: OrderClarification,
+) {
   return postCaseCommand("/api/reviews", {
     ...caseVersion(view), operation_id: operationId, submission,
+    ...(clarification && { order_clarification: clarification }),
   }).then((result) => {
     const saved = view.rounds.find((round) => round.round_id === submission?.round_id)?.answers;
-    const changed = submission !== null && (!saved || submission.answers.some((answer) => (
+    const changed = clarification !== undefined || (submission !== null && (!saved || submission.answers.some((answer) => (
       !sameAnswer(saved.find((prior) => prior.question_id === answer.question_id), answer)
-    )));
+    ))));
     return checkReviewResponse(result, view, operationId, changed ? 1 : 0);
   });
 }

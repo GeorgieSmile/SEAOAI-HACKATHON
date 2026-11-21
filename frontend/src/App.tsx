@@ -470,6 +470,9 @@ export function App() {
             onSubmit={(submission, action) => activeInterview
               ? interview.submit(activeInterview, submission, action)
               : Promise.resolve(null)}
+            onConfirmOrder={(clarification) => {
+              if (activeInterview) void interview.submit(activeInterview, null, "review", clarification);
+            }}
           />
         )}
       </main>

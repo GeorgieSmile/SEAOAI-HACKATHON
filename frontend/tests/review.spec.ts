@@ -216,6 +216,67 @@ test("shows scoped requirement decisions and saves an effect-only change to an e
   await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(saved.report!.supplier_draft);
 });
 
+test("settles one option's conflicting order instructions from a report with no interview rounds", async ({ page }) => {
+  const stock = "Ready-made stock only.";
+  const custom = "Custom orders are acceptable.";
+  const deadline = "The order must be delivered by 1 December.";
+  const stockSource: ResolvedRequirement["provenance"][number] = { input_ref: "context", quote: stock, question_text: null,
+    action: "add", option_ids: ["v0", "v1", "v6"] };
+  const customSource: ResolvedRequirement["provenance"][number] = {
+    ...stockSource, quote: custom, option_ids: ["v0"],
+  };
+  const conflict: ResolvedRequirement = {
+    requirement_id: "order-conflict-a", order_conflict: true, status: "unresolved",
+    statement: "Clarify the order type", option_ids: ["v0"],
+    provenance: [stockSource, customSource],
+  };
+  const unaffected: ResolvedRequirement[] = [
+    { requirement_id: "stock-bc", statement: stock, status: "active", option_ids: ["v1", "v6"],
+      provenance: [stockSource] },
+    { requirement_id: "deadline", statement: deadline, status: "active", option_ids: ["v0", "v1", "v6"],
+      provenance: [{ ...stockSource, quote: deadline }] },
+  ];
+  const before = "[Options B, C] Do you have ready-made stock?\n[Options A, B, C] Can you deliver by 1 December?";
+  const after = `${before}\n[Option A] If a custom order is needed, what are the lead time and minimum order quantity?`;
+  let saved = reviewed({ ...skipReport, revision: 0, findings: [], supplier_draft: before,
+    open_preferences: [{ preference_id: `requirement:${conflict.requirement_id}`, text: conflict.statement,
+      option_ids: conflict.option_ids, input_refs: ["context"], finding_ids: [], questions: [] }],
+  }, { rounds: [], requirements: [conflict, ...unaffected] });
+  const requests: unknown[] = [];
+  await page.route("**/api/reviews", async (route) => {
+    const request = route.request().postDataJSON();
+    requests.push(request);
+    saved = reviewed({ ...saved.report!, revision: 1, open_preferences: [], supplier_draft: after }, {
+      rounds: [], requirements: [...unaffected, { requirement_id: "custom-a", statement: custom,
+        status: "active", option_ids: ["v0"], provenance: [customSource] }],
+      last_operation: { ...saved.last_operation!, operation_id: request.operation_id },
+    });
+    await route.fulfill({ json: ready(saved) });
+  });
+  await openWorkspace(page, () => saved);
+
+  const clarification = page.getByRole("region", { name: "Clarify order type for Option A" });
+  await expect(clarification.getByText(stock, { exact: true })).toBeVisible();
+  await expect(clarification.getByText(custom, { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Clarify order type for Option/ })).toHaveCount(1);
+  await expect(page.getByText(conflict.statement, { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Saved answers" })).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(before);
+  const save = clarification.getByRole("button", { name: "Save and update review" });
+  await expect(save).toBeDisabled();
+  await clarification.getByRole("radio", { name: "Custom orders are acceptable" }).check();
+  await save.click();
+  await expect(clarification).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(after);
+  expect(requests).toEqual([{
+    case_id: skipReport.case_id, revision: 0, operation_id: expect.any(String), submission: null,
+    order_clarification: { requirement_id: conflict.requirement_id, option_id: "v0", choice: "custom_orders_acceptable" },
+  }]);
+  await page.reload();
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(after);
+  expect(requests).toHaveLength(1);
+});
+
 test("opens scoped source evidence and compares ordered options while draft edits stay separate", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const [shared, capacity, use] = richReport.findings;

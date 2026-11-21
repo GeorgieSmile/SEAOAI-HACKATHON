@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { currentPurchaseReview, sameAnswer } from "./api";
-import type { Answer, CaseView, ListingSnapshot, Question, QuestionRound, RequirementEffect, Submission } from "./api";
+import type { Answer, CaseView, ListingSnapshot, OrderClarification, Question, QuestionRound, RequirementEffect, Submission } from "./api";
 import { OptionImage } from "./Listing";
 import { PurchaseReview } from "./PurchaseReview";
 
@@ -230,11 +230,12 @@ interface Props {
   onRetry: () => void;
   onRefresh: () => void;
   onSubmit: (submission: Submission | null, action: "continue" | "review") => Promise<CaseView | null>;
+  onConfirmOrder: (clarification: OrderClarification) => void;
 }
 
 export function Interview({
   hidden, snapshot, selected, context, view, busy, blocked, workingMessage, error, needsRefresh,
-  onChangeSelection, onStartAgain, onRetry, onRefresh, onSubmit,
+  onChangeSelection, onStartAgain, onRetry, onRefresh, onSubmit, onConfirmOrder,
 }: Props) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [editingRound, setEditingRound] = useState<string | null>(null);
@@ -336,8 +337,10 @@ export function Interview({
 
       {showReport && report && view ? (
         <>
+          {error && <p className="interview-error" role="alert">{error}</p>}
           <PurchaseReview key={report.revision} report={report} snapshot={snapshot}
             requirements={view.requirements}
+            onConfirmOrder={onConfirmOrder}
             supplierDraft={draftEdit?.revision === report.revision ? draftEdit.text : report.supplier_draft}
             onChangeDraft={(text) => setDraftEdit({ revision: report.revision, text })} />
           {history}

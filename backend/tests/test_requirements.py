@@ -9,19 +9,21 @@ from backend.case_workflow import _review_digest
 from backend.contracts import ContextRequirement, QuestionDraft, QuestionResult
 from backend.main import create_app
 from backend.report import assemble_review, review_sent_evidence
-from backend.report_models import ReviewContent, ReviewReady
+from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewReady
 from backend.tests.offline_server import offline_review
 from backend.tests.test_cases import initial_request, ready, reference, round_request
 from backend.tests.test_imports import RAW, _image_url, _upload, stub
-from backend.tests.test_reports import finding_selection, minimal_content
+from backend.tests.test_reports import canonical_content, finding_selection, minimal_content
 from backend.tests.test_review_workflow import _replace_saved_case, retry_request
 
 
-def _install_v5_report(database, case, inputs, images, content):
+def _install_archived_report(database, case, inputs, images, content, *, version):
     evidence = review_sent_evidence(inputs, images)
-    report = assemble_review(inputs, content, sent_evidence=evidence).model_dump(mode="json")
-    digest = _review_digest(inputs, case["last_operation"]["operation_id"], images, evidence, version=5)
-    saved = SavedReview(version=5, input_digest=digest, content=content, sent_evidence=evidence)
+    report = assemble_review(
+        inputs, content, sent_evidence=evidence, historical_decision_labels=version == 6,
+    ).model_dump(mode="json")
+    digest = _review_digest(inputs, case["last_operation"]["operation_id"], images, evidence, version=version)
+    saved = SavedReview(version=version, input_digest=digest, content=content, sent_evidence=evidence)
 
     def replace(record):
         record["view"]["report"] = report
@@ -29,6 +31,47 @@ def _install_v5_report(database, case, inputs, images, content):
 
     _replace_saved_case(database, replace)
     return {**case, "report": report}
+
+
+@pytest.mark.parametrize(("source", "topic", "facet", "accepted"), [
+    ("question", "sample", "order_type", False),
+    ("question", "other", "order_type", False),
+    ("context", "sample", "order_type", False),
+    ("context", "sample", "other", True),
+    ("question", "sample", None, True),
+    ("question", "customization", "order_type", True),
+])
+def test_issue_only_matching_known_buyer_facets(tmp_path, source, topic, facet, accepted):
+    prompt = "What should we confirm before the order?"
+    excerpt = "I still need to decide."
+
+    async def ask(inputs):
+        context_rows = []
+        questions = []
+        if source == "context":
+            context_rows.append(ContextRequirement(
+                topic=topic, buyer_facet=facet, status="unresolved", statement=excerpt, quote=excerpt,
+                option_ids=inputs.selected_option_ids,
+            ))
+        else:
+            questions.append(QuestionDraft(
+                prompt=prompt, why_ask="The answer will affect what we request.", topic=topic, buyer_facet=facet,
+                option_ids=inputs.selected_option_ids, source_ids=[], choices=[], requirement_ids=[], choice_effects=[],
+            ))
+        return QuestionResult(reason="Clarify what would change the order.", questions=questions, context_requirements=context_rows)
+
+    with TestClient(create_app(tmp_path / "case.db", translator=stub, question_generator=ask)) as client:
+        snapshot = _upload(client).json()["snapshot"]
+        context = excerpt if source == "context" else ""
+        response = client.post("/api/questions", json=initial_request(snapshot, buyer_context=context))
+        if accepted:
+            case = ready(response)
+            assert case["phase"] == ("ready_for_review" if source == "context" else "awaiting_answers")
+        else:
+            assert response.json()["code"] == "invalid_questions"
+            case = client.get("/api/case").json()["case"]
+            assert case["buyer_context"] == context
+            assert not case["rounds"] and not case.get("requirements")
 
 
 @pytest.mark.parametrize("buyer_context, excerpt", [
@@ -385,7 +428,7 @@ def test_reopening_replays_initial_context_without_reinterpreting_texture(tmp_pa
     if state != "unfinished":
         (inputs, images), = prior_inputs
         content = ReviewContent.model_validate(minimal_content(inputs, topic="finish"))
-        previous = _install_v5_report(database, previous, inputs, images, content)
+        previous = _install_archived_report(database, previous, inputs, images, content, version=5)
         assert "laser engraving" not in previous["report"]["supplier_draft"]
 
     if state == "damaged-review":
@@ -496,7 +539,7 @@ def test_old_report_is_kept_only_if_its_projection_follows_the_saved_decisions(t
         assert failed["report"] is None
         reviewed = ready(client.post("/api/case/retry", json=retry_request(failed)))
     (inputs, images, content), = prior_reports
-    old = _install_v5_report(database, reviewed, inputs, images, content)
+    old = _install_archived_report(database, reviewed, inputs, images, content, version=5)
     assert len(old["report"]["open_preferences"]) == (2 if invented_preference else 1)
 
     async def forbidden(*args):
@@ -522,3 +565,221 @@ def test_old_report_is_kept_only_if_its_projection_follows_the_saved_decisions(t
             assert sample["text"] == "Your preference for samples is still open."
             assert sample["option_ids"] == rebuilt["selected_option_ids"][:1]
             assert "1 December" in rebuilt["report"]["supplier_draft"]
+
+
+@pytest.mark.parametrize(("facet", "damaged", "expected_code"), [
+    ("other", False, None),
+    ("order_type", False, "review_regeneration_required"),
+    ("order_type", True, "invalid_review"),
+])
+def test_v6_recovery_verifies_original_labels_before_requesting_regeneration(
+    tmp_path, monkeypatch, facet, damaged, expected_code,
+):
+    database = tmp_path / "case.db"
+    prompt = "Do you need a pre-production sample?"
+    stock = "Ready-made stock only."
+
+    async def ask(inputs):
+        prior = next((row.requirement_id for row in inputs.requirements or [] if row.topic == "sample"), None)
+        return QuestionResult(
+            reason="Check the sample separately from the buyer's other decisions.",
+            context_requirements=None if prior else [ContextRequirement(
+                statement=stock, quote=stock, topic="customization", buyer_facet="order_type", option_ids=inputs.selected_option_ids,
+            )],
+            questions=[QuestionDraft(
+                prompt="Do you need to approve a sample before ordering?" if prior else prompt,
+                why_ask="Sample approval may affect timing.", topic="sample", buyer_facet="other" if prior else facet,
+                option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[],
+                requirement_ids=[prior] if prior else [], choice_effects=[],
+            )],
+        )
+
+    calls = []
+
+    async def review(inputs, images):
+        values = canonical_content(inputs)
+        row, = [row for row in inputs.requirements if row.status == "unresolved"]
+        values["findings"] = [finding_selection(
+            row.option_ids, topic="sample", finding_id="sample-choice", action_type="decide_preference",
+            supplier_action=None, decision_id=row.requirement_id,
+        )]
+        content = CanonicalReviewContent.model_validate(values)
+        evidence = review_sent_evidence(inputs, images)
+        calls.append((inputs, images, content))
+        return ReviewReady(report=assemble_review(inputs, content, sent_evidence=evidence),
+                           content=content, sent_evidence=evidence)
+
+    app_options = dict(translator=stub, question_generator=ask, review_generator=review)
+    with monkeypatch.context() as patch:
+        patch.setattr(requirements, "_validate_topic_facet", lambda topic, facet: None)
+        with TestClient(create_app(database, **app_options)) as client:
+            snapshot = _upload(client, RAW).json()["snapshot"]
+            asking = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=stock)))
+            reviewed = ready(client.post("/api/reviews", json=round_request(asking)))
+    (inputs, images, content), = calls
+    old = _install_archived_report(database, reviewed, inputs, images, content, version=6)
+    subject = "stock and customization" if facet == "order_type" else "samples"
+    assert old["report"]["open_preferences"][0]["text"] == f"Your preference for {subject} is still open."
+    if damaged:
+        def change_label(record):
+            record["view"]["report"]["open_preferences"][0]["text"] = "The stored report was edited directly."
+
+        _replace_saved_case(database, change_label)
+
+    async def forbidden(*args):
+        pytest.fail("Opening a saved case must not ask for questions or a review.")
+
+    restore_options = {**app_options, "question_generator": forbidden, "review_generator": forbidden}
+    for _ in range(2):
+        with TestClient(create_app(database, **restore_options)) as client:
+            reopened = client.get("/api/case").json()["case"]
+            for field in ("case_id", "revision", "buyer_context", "rounds", "requirements", "selected_option_ids"):
+                assert reopened[field] == old[field]
+            if expected_code:
+                assert reopened["last_operation"]["code"] == expected_code
+                assert reopened["report"] is None
+            else:
+                assert reopened == old
+
+    if expected_code == "review_regeneration_required":
+        with TestClient(create_app(database, **{**restore_options, "review_generator": review})) as client:
+            rebuilt = ready(client.post("/api/case/retry", json=retry_request(reopened)))
+            sample, = rebuilt["report"]["open_preferences"]
+            assert sample["text"] == "Your preference for samples is still open."
+            assert sample["finding_ids"] == ["sample-choice"]
+            assert sample["questions"][0]["question_text"] == prompt
+            assert len(calls) == 2
+        with TestClient(create_app(database, **restore_options)) as client:
+            assert client.get("/api/case").json()["case"] == rebuilt
+        with TestClient(create_app(database, **{**app_options, "review_generator": forbidden})) as client:
+            revised = ready(client.post("/api/questions/continue", json=round_request(rebuilt, texts=["Still deciding."])))
+            follow_up, = revised["rounds"][-1]["questions"]
+            assert follow_up["topic"] == "sample"
+            assert follow_up["buyer_facet"] == "other"
+            assert follow_up["requirement_ids"] == [inputs.requirements[-1].requirement_id]
+
+
+def test_targeted_add_conflict_can_be_resolved_then_edited_or_waived(tmp_path):
+    stock = "Ready-made stock only."
+    custom = "Custom orders are acceptable."
+    matte = "A matte finish is required."
+    prompt = "Is the first option still restricted to stock?"
+
+    async def ask(inputs):
+        return QuestionResult(
+            reason="Confirm the order type for the first selected option.",
+            context_requirements=[
+                ContextRequirement(statement=quote, quote=quote, topic=topic, option_ids=inputs.selected_option_ids)
+                for quote, topic in [(stock, "customization"), (matte, "finish")]
+            ],
+            questions=[QuestionDraft(
+                prompt=prompt, why_ask="The first option may have different order terms.",
+                topic="customization", buyer_facet="order_type", option_ids=inputs.selected_option_ids[:1],
+                source_ids=[], choices=[], requirement_ids=["context:1"], choice_effects=[],
+            )],
+        )
+
+    with TestClient(create_app(tmp_path / "case.db", translator=stub, question_generator=ask,
+                               review_generator=offline_review)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        initial = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=f"{stock} {matte}")))
+        first, *others = initial["selected_option_ids"]
+        stock_id, = initial["rounds"][0]["questions"][0]["requirement_ids"]
+
+        def edit(case, answer, action, target):
+            command = round_request(case, texts=[answer])
+            command["submission"]["answers"][0]["requirement_effect"] = {"action": action, "requirement_id": target}
+            return ready(client.post("/api/reviews", json=command))
+
+        open_case = edit(initial, custom, "add", None)
+        conflict, = [row for row in open_case["requirements"] if row.get("order_conflict")]
+        assert conflict["option_ids"] == [first]
+        assert [(entry["quote"], entry["question_text"]) for entry in conflict["provenance"]] == [(stock, None), (custom, prompt)]
+        command = {
+            **reference(open_case), "operation_id": str(uuid4()), "submission": None,
+            "order_clarification": {
+                "requirement_id": conflict["requirement_id"], "option_id": first, "choice": "custom_orders_acceptable",
+            },
+        }
+        wrong_option = {**command, "order_clarification": {**command["order_clarification"], "option_id": others[0]}}
+        assert client.post("/api/reviews", json=wrong_option).status_code == 422
+        clarified = ready(client.post("/api/reviews", json=command))
+        assert clarified["rounds"] == open_case["rounds"]
+        assert clarified["report"]["open_preferences"] == []
+        resolved = [row for row in clarified["requirements"] if row["option_ids"] == [first]]
+        assert {row["provenance"][0]["quote"] for row in resolved} == {stock, custom}
+        assert {row["status"] for row in resolved} == {"active", "waived"}
+
+        replaced = edit(clarified, custom, "replace", stock_id)
+        assert not replaced.get("order_clarifications")
+        assert replaced["report"]["open_preferences"] == []
+        assert [(row["quote"], row["option_ids"]) for row in replaced["report"]["buyer_requirements"]] == [
+            (stock, others), (matte, [first, *others]), (custom, [first]),
+        ]
+        waived = edit(replaced, "No order type is required for this option.", "waive", stock_id)
+        assert not waived.get("order_clarifications")
+        assert waived["report"]["open_preferences"] == []
+        assert [(row["quote"], row["option_ids"]) for row in waived["report"]["buyer_requirements"]] == [
+            (stock, others), (matte, [first, *others]),
+        ]
+
+
+@pytest.mark.parametrize(("had_review", "scoped"), [(False, False), (True, False), (True, True)])
+def test_saved_order_conflict_replays_without_automatic_generation(tmp_path, monkeypatch, had_review, scoped):
+    database = tmp_path / "case.db"
+    stock = "Ready-made stock only."
+    custom = "For Option A, custom orders are acceptable." if scoped else "Custom orders are acceptable."
+
+    async def ask(inputs):
+        return QuestionResult(
+            reason="The buyer provided two order preferences.", questions=[],
+            context_requirements=[
+                ContextRequirement(
+                    statement=quote, quote=quote, topic="customization", buyer_facet="order_type", option_ids=scope,
+                )
+                for quote, scope in [(stock, inputs.selected_option_ids), (custom, inputs.selected_option_ids[:1])]
+            ],
+        )
+
+    options = dict(translator=stub, question_generator=ask, review_generator=offline_review)
+    with monkeypatch.context() as patch:
+        patch.setattr(requirements, "_project_order_conflicts", lambda case_id, rows, options: rows)
+        patch.setattr(requirements, "scoped_order_target", lambda *args, **kwargs: None)
+        with TestClient(create_app(database, **options)) as client:
+            snapshot = _upload(client, RAW).json()["snapshot"]
+            previous = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=f"{stock} {custom}")))
+            assert (previous["requirements"][1]["supplier_target"] is None) == scoped
+            if had_review:
+                previous = ready(client.post("/api/reviews", json={**reference(previous), "operation_id": str(uuid4()), "submission": None}))
+                assert ("requires a custom order" in previous["report"]["supplier_draft"]) == (not scoped)
+                assert "ready-made stock" in previous["report"]["supplier_draft"]
+
+    _replace_saved_case(database, lambda record: record.pop("order_conflict_version"))
+
+    async def forbidden(*args):
+        pytest.fail("Opening a saved case must not ask for questions or a review.")
+
+    restore_options = {**options, "question_generator": forbidden, "review_generator": forbidden}
+    for _ in range(2):
+        with TestClient(create_app(database, **restore_options)) as client:
+            reopened = client.get("/api/case").json()["case"]
+            for field in ("case_id", "revision", "buyer_context", "rounds", "selected_option_ids"):
+                assert reopened[field] == previous[field]
+            conflict, = [row for row in reopened["requirements"] if row.get("order_conflict")]
+            assert [entry["quote"] for entry in conflict["provenance"]] == [stock, custom]
+            assert reopened["report"] is None
+            if had_review:
+                assert reopened["last_operation"]["code"] == "review_regeneration_required"
+            else:
+                assert reopened["phase"] == "ready_for_review"
+
+    with TestClient(create_app(database, **options)) as client:
+        if had_review:
+            generated = ready(client.post("/api/case/retry", json=retry_request(reopened)))
+        else:
+            generated = ready(client.post("/api/reviews", json={**reference(reopened), "operation_id": str(uuid4()), "submission": None}))
+        assert generated["report"]["open_preferences"][0]["option_ids"] == reopened["selected_option_ids"][:1]
+        assert "requires a custom order" not in generated["report"]["supplier_draft"]
+        assert "[Options B, C]" in generated["report"]["supplier_draft"]
+    with TestClient(create_app(database, **restore_options)) as client:
+        assert client.get("/api/case").json()["case"] == generated

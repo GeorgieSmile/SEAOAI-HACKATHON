@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from pydantic import Field, UUID4
+from pydantic import Field, UUID4, model_validator
 
-from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ResolvedRequirement, ReviewInput
+from .contracts import (
+    AnswerSubmission, ContractModel, IssuedRound, OrderClarification, OrderClarificationSelection,
+    QuestionInput, ResolvedRequirement, ReviewInput,
+)
 from .report_models import PurchaseReview, ReviewSelection, SentReviewEvidence
 
 
@@ -36,6 +39,13 @@ class ContinueCase(CaseReference):
 class ReviewCase(CaseReference):
     operation_id: OperationId
     submission: AnswerSubmission | None
+    order_clarification: OrderClarificationSelection | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def one_change_at_a_time(self) -> "ReviewCase":
+        if self.submission is not None and self.order_clarification is not None:
+            raise ValueError("Submit one round or one order clarification at a time.")
+        return self
 
 
 class RetryCase(CaseReference):
@@ -61,6 +71,7 @@ class CaseView(CaseReference):
     buyer_context: str
     rounds: list[IssuedRound]
     requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+    order_clarifications: list[OrderClarification] = Field(default_factory=list, exclude_if=lambda rows: not rows)
     phase: CasePhase
     reason: str | None = None
     report: PurchaseReview | None = None
@@ -68,7 +79,7 @@ class CaseView(CaseReference):
 
 
 class SavedReview(ContractModel):
-    version: Literal[2, 3, 4, 5, 6]
+    version: Literal[2, 3, 4, 5, 6, 7]
     input_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     content: ReviewSelection
     sent_evidence: SentReviewEvidence
@@ -80,6 +91,7 @@ class CaseRecord(ContractModel):
     review_input: ReviewInput | None = None
     saved_review: SavedReview | None = None
     requirement_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
+    order_conflict_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
     initial_requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
 

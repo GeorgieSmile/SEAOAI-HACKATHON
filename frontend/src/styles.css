@@ -904,6 +904,13 @@ fieldset {
 .requirement-history li + li { margin-top: 8px; }
 .requirement-history blockquote { margin: 3px 0 0; padding-left: 8px; border-left: 2px solid var(--line); white-space: pre-wrap; }
 
+.order-clarification-option { margin-top: 6px; }
+.order-clarification-quotes { display: grid; gap: 8px; margin-block: 12px; }
+.order-clarification-quotes blockquote { margin: 0; padding-left: 12px; border-left: 2px solid var(--line); white-space: pre-wrap; }
+.order-clarification-quotes footer { font-size: .85rem; color: var(--muted); }
+.order-clarification form { display: grid; justify-items: start; gap: 14px; margin-top: 12px; }
+.order-clarification .interview-question { width: 100%; }
+
 .review-no-comparisons { margin-top: 12px; }
 .review-no-comparisons ul { margin-bottom: 0; padding-left: 20px; }
 

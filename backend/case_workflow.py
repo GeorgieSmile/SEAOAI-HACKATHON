@@ -15,7 +15,7 @@ from .case_models import (
     ResetCase, RetryCase, ReviewCase, SavedReview, StartCase,
 )
 from .contracts import (
-    AnsweredQuestion, AnswerSubmission, IssuedRound, ListingSnapshot, QuestionInput,
+    AnsweredQuestion, AnswerSubmission, IssuedRound, ListingSnapshot, OrderClarification, QuestionInput,
     QuestionResult, ResolvedRequirement, ReviewInput,
 )
 from .report import assemble_review, canonicalize_review_content, review_sent_evidence
@@ -35,6 +35,7 @@ ReviewImages = Mapping[str, tuple[str, bytes]]
 ReviewGenerator = Callable[[ReviewInput, ReviewImages], Awaitable[ReviewResult]]
 UserCommand = StartCase | ContinueCase | ReviewCase
 REVIEW_RESULT = TypeAdapter(ReviewResult)
+CURRENT_CANONICAL_REVIEW_VERSION = 7
 INVALID_REVIEW = "The review could not be validated. Your answers are saved."
 REGENERATE_REVIEW = "This saved review needs to be regenerated. Your answers are saved."
 LEGACY_REPORT_FIELDS = frozenset({
@@ -94,7 +95,7 @@ def _input_fields(snapshot: ListingSnapshot, case: CaseView) -> dict:
     return {
         "case_id": case.case_id, "revision": case.revision, "snapshot": snapshot,
         "selected_option_ids": case.selected_option_ids, "buyer_context": case.buyer_context, "answers": answers,
-        "requirements": case.requirements,
+        "requirements": case.requirements, "order_clarifications": case.order_clarifications,
     }
 
 
@@ -120,12 +121,14 @@ def _question_input(snapshot: ListingSnapshot, case: CaseView, round_number: int
     )
 
 
-def _resolved_view(record: CaseRecord, case: CaseView) -> CaseView:
+def _resolved_view(record: CaseRecord, case: CaseView, *, include_order_conflicts: bool = True) -> CaseView:
     if record.initial_requirements is None:
         return case
     return case.model_copy(update={
         "requirements": resolve_requirements(
             case.case_id, record.initial_requirements, case.rounds, buyer_context=case.buyer_context,
+            selected_option_ids=case.selected_option_ids, order_clarifications=case.order_clarifications,
+            include_order_conflicts=include_order_conflicts,
         ),
     })
 
@@ -249,6 +252,24 @@ def _apply_submission(case: CaseView, submission: AnswerSubmission) -> CaseView:
     updated = round.model_copy(update={"answers": answers})
     return case.model_copy(update={
         "revision": case.revision + 1, "rounds": [*case.rounds[:index], updated], "reason": None, "report": None,
+        "order_clarifications": [row for row in case.order_clarifications if row.after_round <= index],
+    })
+
+
+def _apply_order_clarification(case: CaseView, command: ReviewCase) -> CaseView:
+    selection = command.order_clarification
+    assert selection is not None
+    if not any(
+        row.order_conflict and row.requirement_id == selection.requirement_id and row.option_ids == [selection.option_id]
+        for row in case.requirements or []
+    ):
+        raise _invalid("Choose an open order-type conflict for this option.", case)
+    clarification = OrderClarification(
+        **selection.model_dump(), clarification_id=str(command.operation_id), after_round=len(case.rounds),
+    )
+    return case.model_copy(update={
+        "revision": case.revision + 1, "reason": None, "report": None,
+        "order_clarifications": [*case.order_clarifications, clarification],
     })
 
 
@@ -325,22 +346,27 @@ class CaseWorkflow:
         case = record.view
         operation = case.last_operation
         legacy = record.requirement_version is None
+        old_order_projection = record.order_conflict_version is None
         try:
             upgraded = _upgrade_legacy_case(record) if legacy else record
             resolved = _resolved_view(upgraded, upgraded.view)
+            new_decisions = not legacy and resolved.requirements != case.requirements
+            if new_decisions:
+                expected = (
+                    _resolved_view(upgraded, case, include_order_conflicts=False) if old_order_projection else resolved
+                )
+                if expected.requirements != case.requirements and not _only_new_supplier_targets(case, expected):
+                    raise ValueError("The saved buyer decisions do not match the retained interview.")
+                upgraded = upgraded.model_copy(update={"view": resolved})
         except (KeyError, ValueError) as error:
             raise sqlite3.DatabaseError("The saved buyer decisions could not be matched to the interview.") from error
-        new_targets = not legacy and resolved.requirements != case.requirements
-        if new_targets:
-            if not _only_new_supplier_targets(case, resolved):
-                raise sqlite3.DatabaseError("The saved buyer decisions do not match the retained interview.")
-            upgraded = record.model_copy(update={"view": resolved})
+        upgraded = upgraded.model_copy(update={"order_conflict_version": 1})
         if operation.status == "running":
             interrupted = _failure(upgraded, "analysis_failed", _interrupted(operation.stage))
             self._save(generation, record, interrupted)
             return
         if case.phase != "reviewed":
-            if legacy or new_targets or report is not None or saved_review is not None:
+            if legacy or new_decisions or old_order_projection or report is not None or saved_review is not None:
                 self._save(generation, record, upgraded)
             return
         if snapshot is None or case.snapshot_id != snapshot.snapshot_id or operation.stage != "review":
@@ -359,14 +385,17 @@ class CaseWorkflow:
             validated = SavedReview.model_validate_json(json.dumps(saved_review))
             if (
                 (validated.version >= 5) != (inputs.requirements is not None)
-                or (validated.version == 6) != isinstance(validated.content, CanonicalReviewContent)
+                or (validated.version >= 6) != isinstance(validated.content, CanonicalReviewContent)
             ):
                 raise ValueError("The saved review has a mismatched requirement contract version.")
             images = self._review_images(inputs)
             digest = _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=validated.version)
             if validated.input_digest != digest:
                 raise ValueError("The saved review belongs to different case input or evidence.")
-            rebuilt = assemble_review(inputs, validated.content, sent_evidence=validated.sent_evidence)
+            rebuilt = assemble_review(
+                inputs, validated.content, sent_evidence=validated.sent_evidence,
+                historical_decision_labels=validated.version == 6,
+            )
             if validated.version < 4:
                 if (
                     not isinstance(report, dict) or report.keys() != LEGACY_REPORT_FIELDS | {"contract_version", "claims"}
@@ -388,12 +417,12 @@ class CaseWorkflow:
             failed = _failure(upgraded, "invalid_review", INVALID_REVIEW)
             self._save(generation, record, failed)
             return
-        if new_targets:
+        if new_decisions:
             failed = _failure(upgraded, "review_regeneration_required", REGENERATE_REVIEW)
             self._save(generation, record, failed)
             return
         version = max(validated.version, 4)
-        if inputs.requirements is not None and validated.version < 6:
+        if inputs.requirements is not None and validated.version < CURRENT_CANONICAL_REVIEW_VERSION:
             canonical = canonicalize_review_content(validated.content)
             try:
                 unchanged = canonical is not None and rebuilt == assemble_review(
@@ -406,8 +435,8 @@ class CaseWorkflow:
                 self._save(generation, record, failed)
                 return
             validated = validated.model_copy(update={"content": canonical})
-            version = 6
-        if version != validated.version:
+            version = CURRENT_CANONICAL_REVIEW_VERSION
+        if version != validated.version or old_order_projection:
             migrated = validated.model_copy(update={
                 "version": version,
                 "input_digest": _review_digest(inputs, operation.operation_id, images, validated.sent_evidence, version=version),
@@ -445,7 +474,7 @@ class CaseWorkflow:
             last_operation=CaseOperation(operation_id=str(command.operation_id), stage="start", status="running"),
         )
         record = CaseRecord(
-            view=case, requirement_version=1,
+            view=case, requirement_version=1, order_conflict_version=1,
             question_input=_question_input(snapshot, case, round_number=1),
         )
         self._save(generation, current, record, command=command, stage="start")
@@ -460,6 +489,8 @@ class CaseWorkflow:
 
         previous = current.view
         case = _apply_submission(previous, command.submission) if command.submission is not None else previous
+        if isinstance(command, ReviewCase) and command.order_clarification is not None:
+            case = _apply_order_clarification(previous, command)
         unchanged_submission = command.submission is not None and case is previous
         open_round = bool(case.rounds and case.rounds[-1].answers is None)
         if unchanged_submission and (stage == "continue" or open_round):
@@ -643,7 +674,7 @@ class CaseWorkflow:
                 canonical = isinstance(result.content, CanonicalReviewContent)
                 if canonical != (inputs.requirements is not None):
                     raise ValueError("The report selections must follow the current buyer decision contract.")
-                version = 6 if canonical else 4
+                version = CURRENT_CANONICAL_REVIEW_VERSION if canonical else 4
                 digest = _review_digest(inputs, operation.operation_id, images, scope, version=version)
                 report = assemble_review(inputs, result.content, sent_evidence=scope)
                 if report != result.report:

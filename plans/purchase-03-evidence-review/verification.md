@@ -210,6 +210,16 @@ The full backend suite passed 426 tests. Frontend typechecking, the production b
 
 A separate original-ZIP probe surfaced an interview issue. When the buyer explicitly gave opposite order instructions for one SKU, the question provider could submit both as active. With those two records, even a report response containing zero findings produced both a ready-made-only and a custom-order supplier question for the same SKU. The same report reopened after restart. This case is distinct from mislabeling an unrelated skipped answer and from recovering a missing context detail.
 
+### Follow-up to the review of `2652215`
+
+Astra reproduced an incorrect label when a question about a pre-production sample was tagged with the order-type facet and then skipped. The new question adapter validates the facet against the question topic. For existing data, the topic controls the displayed label. A reviewed SQLite case produced on `2652215` with the original ZIP reopened with its old binding verified and required explicit regeneration. The regenerated report kept stock-only active and showed only the sample preference as open, with the original sample question. A second restart used no provider requests.
+
+The buyer approved a clarification for conflicting stock-only and custom-order decisions. With the original ZIP, selecting **Add** on A opened one order question for A. Its two original statements were visible, B and C kept ready-made stock, and the shared deadline remained in the supplier draft. An explicit choice settled A only. Editing the earlier answer to **Replace** discarded the obsolete clarification and produced custom A, ready-made B/C, and the same deadline. When two SKUs had conflicts, choosing for B first left A open. The second choice survived restart with a separate decision for each SKU.
+
+Previously published contradictory reports created by both `0d6749f` and `2652215` retained their case IDs, inputs, ordered selection, and revision. GET-only recovery requested explicit regeneration. The resulting report presented A's two recorded statements. Both allowed choices were exercised on independent database copies, including repeated requests, stale revisions and attempts to use A's conflict ID for B.
+
+The original-ZIP check included “For Option A, custom orders are acceptable.” as the exact buyer quote, with and without a proposed supplier target. The qualifier follows the buyer’s selected SKU order. Wrong-SKU and conditional statements cannot supply an unconditional order direction. The Chrome walkthrough reproduced the overlap with zero interview questions, showed both verbatim statements, chose custom for A, and reopened the corrected draft and original images after restart on desktop and mobile. The full combined checks passed 450 backend tests, 37 original-ZIP endpoint cases, 37 Chrome tests, frontend typechecking, the production build and whitespace checks. Providers were scripted.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

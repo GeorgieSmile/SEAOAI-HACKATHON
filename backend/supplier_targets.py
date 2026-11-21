@@ -64,6 +64,11 @@ _ONLY_STOCK = re.compile(
     rf"(?:i only (?:want|accept|need) {_STOCK}|(?:keep )?{_STOCK} only|only {_STOCK}|{_STOCK} (?:is|are) required)"
 )
 _CUSTOM_ALLOWED = re.compile(rf"(?:(?:i|we) (?:can accept|would consider) (?:a )?{_CUSTOM}|{_CUSTOM} (?:is|are) acceptable)")
+_OPTION_LETTERS = r"(?P<options>[a-c](?:(?:, | and |, and )[a-c])*)"
+_SCOPED_ORDER_STATEMENTS = (
+    re.compile(rf"for options? {_OPTION_LETTERS}[,:] (?P<statement>.+)"),
+    re.compile(rf"(?P<statement>.+) for options? {_OPTION_LETTERS}"),
+)
 _METHODS = {
     "screen_printing": r"screen[- ]print(?:ed|ing)?",
     "laser_engraving": r"laser[- ]engrav(?:e[ds]?|ing)",
@@ -126,13 +131,42 @@ def _delivery_target(text: str) -> DeliveryTarget | None:
     return None
 
 
+def _normalized_statement(text: str) -> str:
+    return " ".join(normalize("NFKC", text).casefold().split()).removesuffix(".")
+
+
+def _order_target(statement: str) -> OrderTarget | None:
+    if _ONLY_STOCK.fullmatch(statement):
+        return OrderTarget(value="ready_made_only")
+    if _CUSTOM_ALLOWED.fullmatch(statement):
+        return OrderTarget(value="custom_orders_acceptable")
+    return None
+
+
+def scoped_order_target(
+    quote: str, topic: str | None, buyer_facet: str | None, *,
+    option_ids: list[str], selected_option_ids: list[str],
+) -> OrderTarget | None:
+    """Ground a complete context sentence with an explicit SKU qualifier."""
+    if topic != "customization" or buyer_facet not in (None, "order_type"):
+        return None
+    text = _normalized_statement(quote)
+    aliases = dict(zip("abc", selected_option_ids))
+    for pattern in _SCOPED_ORDER_STATEMENTS:
+        match = pattern.fullmatch(text)
+        if match is None:
+            continue
+        letters = re.split(r", (?:and )?| and ", match["options"])
+        named_options = {aliases.get(letter) for letter in letters}
+        if len(letters) == len(named_options) == len(option_ids) and named_options == set(option_ids):
+            return _order_target(match["statement"])
+    return None
+
+
 def supplier_target_from_answer(answer_text: str, topic: str | None, buyer_facet: str | None) -> SupplierTarget | None:
-    text = " ".join(normalize("NFKC", answer_text).casefold().split()).removesuffix(".")
+    text = _normalized_statement(answer_text)
     if topic == "customization" and buyer_facet in (None, "order_type"):
-        if _ONLY_STOCK.fullmatch(text):
-            return OrderTarget(value="ready_made_only")
-        if _CUSTOM_ALLOWED.fullmatch(text):
-            return OrderTarget(value="custom_orders_acceptable")
+        return _order_target(text)
     if topic == "finish":
         if buyer_facet in (None, "decoration_method"):
             for method, term in _METHODS.items():

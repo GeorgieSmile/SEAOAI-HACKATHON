@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import {
   caseVersion, continueQuestions, getCurrentCase, requestReview, retryCase, startQuestions,
 } from "./api";
-import type { CaseStage, CaseVersion, CaseView, Selection, Submission } from "./api";
+import type { CaseStage, CaseVersion, CaseView, OrderClarification, Selection, Submission } from "./api";
 
 type Work = "start" | "continue" | "review" | "retry" | "refresh";
 type BindOperation = (payload: unknown, base: CaseVersion | null, stage: CaseStage) => string;
@@ -166,14 +166,16 @@ export function useInterviewSession() {
     }, true);
   }
 
-  function submit(current: CaseView, submission: Submission | null, stage: "continue" | "review") {
+  function submit(
+    current: CaseView, submission: Submission | null, stage: "continue" | "review", clarification?: OrderClarification,
+  ) {
     if (pending.current || needsRefresh || requiresReload || (stage === "continue" && !submission)) return Promise.resolve(null);
     return run(stage, current.snapshot_id, (bind) => {
       const version = caseVersion(current);
-      const id = bind([version, submission], version, stage);
+      const id = bind([version, submission, clarification], version, stage);
       return stage === "continue" && submission
         ? continueQuestions(current, submission, id)
-        : requestReview(current, submission, id);
+        : requestReview(current, submission, id, clarification);
     }, stage === "continue");
   }
 

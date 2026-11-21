@@ -30,11 +30,13 @@ Version: 0.6
 | `POST /api/imports` | JSON `{"url":"…"}` สำหรับลิงก์สินค้า TTP Cargo (1688, Taobao, Tmall) หรือ multipart field `file` หนึ่ง ZIP | IntakeResult เดิม เมื่อ ready เก็บ snapshot และภาพไว้ให้เริ่มเคส |
 | `POST /api/questions` | `{operation_id, snapshot_id, previous_case, selected_option_ids, buyer_context}` | เริ่มเคสพร้อม case_id ใหม่ที่ Backend ออก โดย previous_case เป็น null ถ้ายังไม่มี หรือ `{case_id, revision}` ที่ต้องตรงเคสก่อนแทน |
 | `POST /api/questions/continue` | `{operation_id, case_id, revision, submission}` | บันทึกคำตอบแล้วขอรอบถัดไปตาม question contract หรือคืนพร้อมไปรายงาน |
-| `POST /api/reviews` | `{operation_id, case_id, revision, submission}` โดย submission เป็น null ได้ | บันทึกคำตอบจากรอบที่เปิดถ้ามี แล้วประกอบ ReviewInput จาก state ที่ตรง revision |
+| `POST /api/reviews` | `{operation_id, case_id, revision, submission, order_clarification?}` โดย submission เป็น null ได้ | บันทึกคำตอบจากรอบที่เปิดถ้ามี แล้วประกอบ ReviewInput จาก state ที่ตรง revision |
 | `POST /api/case/retry` | `{case_id, revision, operation_id}` ของงานล่าสุดที่ล้มเหลว | รันขั้นเดิมจากข้อมูลที่บันทึกไว้ ไม่เพิ่มรอบหรือล้างคำตอบ |
 | `POST /api/case/reset` | `{snapshot_id, previous_case}` ตรงข้อมูลปัจจุบัน หลังผู้ซื้อเลือก Start over | ล้าง snapshot และเคสปัจจุบัน เพิ่ม generation คืน 200 พร้อม case และ snapshot เป็น null |
 | `GET /api/case` | ไม่มี body | snapshot ปัจจุบันและเคสที่บันทึก หรือ null สำหรับส่วนที่ยังไม่มี อ่านอย่างเดียวและไม่เรียก AI |
 | `GET /api/snapshots/{snapshot_id}/images/{source_id}` | รหัสจาก snapshot ปัจจุบัน | bytes ภาพที่ตรวจแล้วพร้อม MIME หรือ 404 |
+
+ผู้ซื้อตอบข้อขัดแย้งเรื่องรูปแบบการสั่งซื้อผ่าน `POST /api/reviews` โดยส่ง `submission: null` และ `order_clarification: {requirement_id, option_id, choice}` ใช้รหัสข้อขัดแย้งและ SKU จากเคส revision ปัจจุบัน โดย `choice` เป็น `ready_made_only` หรือ `custom_orders_acceptable` การเลือกจะสร้าง revision ใหม่ การส่ง operation เดิมซ้ำได้ผลเดิม
 
 Case view มี `case_id`, `revision`, `snapshot_id`, `selected_option_ids`, `buyer_context`, `rounds` ตามลำดับ, `phase`, `reason` (ข้อความจบการถามหรือ null), `report` (PurchaseReview ของ revision ปัจจุบันหรือ null) และ `last_operation` (null หรือ `{operation_id, stage, status, code, message}` stage เป็น start/continue/review และ status เป็น running/ready/failed โดย code/message มีค่าเมื่อ failed) แต่ละรอบมี round_id/round_number/reason/questions ตาม question contract และ `answers` เป็น null ทั้ง field ระหว่างรอตอบ หรือรายการครบทุกข้อเมื่อส่งแล้ว phase ใช้ `preparing_questions`, `awaiting_answers`, `ready_for_review`, `generating_review`, `reviewed`, หรือ `failed`
 

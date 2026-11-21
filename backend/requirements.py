@@ -1,12 +1,13 @@
+from collections import defaultdict
 import re
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from .contracts import (
-    Answer, BuyerFacet, IssuedQuestion, IssuedRound, QuestionInput, QuestionResult, ReviewTopic,
-    RequirementEffect, RequirementProvenance, RequirementStatus, RequirementTarget,
+    BUYER_FACET_TOPICS, ORDER_CONFLICT_PROMPT, Answer, BuyerFacet, IssuedQuestion, IssuedRound, OrderClarification,
+    QuestionInput, QuestionResult, ReviewTopic, RequirementEffect, RequirementProvenance, RequirementStatus, RequirementTarget,
     ResolvedRequirement,
 )
-from .supplier_targets import supplier_target_from_answer, validate_supplier_target
+from .supplier_targets import OrderTarget, scoped_order_target, supplier_target_from_answer, validate_supplier_target
 
 
 _CONTEXT_BOUNDARIES = re.compile(r"[\r\n]+|(?<=[.!?。！？])\s+")
@@ -36,10 +37,17 @@ def _with_supplier_target(row: ResolvedRequirement) -> ResolvedRequirement:
     return row.model_copy(update={"supplier_target": target}) if target is not None else row
 
 
+def _validate_topic_facet(topic: ReviewTopic | None, facet: BuyerFacet | None) -> None:
+    expected = BUYER_FACET_TOPICS.get(facet) if facet is not None else None
+    if topic is not None and expected is not None and topic != expected:
+        raise ValueError("Use the topic that matches the buyer decision facet.")
+
+
 def _context_rows(inputs: QuestionInput, result: QuestionResult) -> list[ResolvedRequirement]:
     rows = []
     seen = set()
     for index, seed in enumerate(result.context_requirements or [], start=1):
+        _validate_topic_facet(seed.topic, seed.buyer_facet)
         scope = set(seed.option_ids)
         if len(scope) != len(seed.option_ids) or not scope.issubset(inputs.selected_option_ids):
             raise ValueError("Context requirements must apply to distinct selected options.")
@@ -50,13 +58,16 @@ def _context_rows(inputs: QuestionInput, result: QuestionResult) -> list[Resolve
         if seen & keys:
             raise ValueError("Duplicate context requirements overlap in scope.")
         seen.update(keys)
-        if seed.supplier_target is not None:
-            if seed.status != "active":
-                raise ValueError("Unresolved context cannot supply a supplier target.")
+        if seed.supplier_target is not None and seed.status != "active":
+            raise ValueError("Unresolved context cannot supply a supplier target.")
+        scoped_target = scoped_order_target(
+            seed.quote, seed.topic, seed.buyer_facet, option_ids=seed.option_ids, selected_option_ids=inputs.selected_option_ids,
+        ) if seed.status == "active" else None
+        if seed.supplier_target != scoped_target:
             validate_supplier_target(seed.supplier_target, seed.quote, seed.topic, seed.buyer_facet)
         row = _with_supplier_target(ResolvedRequirement(
             requirement_id=f"context:{index}", statement=seed.statement, option_ids=seed.option_ids,
-            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=seed.supplier_target,
+            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=scoped_target or seed.supplier_target,
             provenance=[RequirementProvenance(
                 input_ref="context", quote=seed.quote, question_text=None,
                 action="add" if seed.status == "active" else "unresolved", option_ids=seed.option_ids,
@@ -77,6 +88,7 @@ def validate_requirement_plan(inputs: QuestionInput, result: QuestionResult) -> 
     targets = {row.requirement_id: row for row in (*_context_rows(inputs, result), *(inputs.requirements or []))}
     previous_targets: set[tuple[str, str]] = set()
     for question in result.questions:
+        _validate_topic_facet(question.topic, question.buyer_facet)
         requirement_ids = question.requirement_ids
         effects = question.choice_effects
         if not modern:
@@ -94,7 +106,11 @@ def validate_requirement_plan(inputs: QuestionInput, result: QuestionResult) -> 
                 raise ValueError("A question must refer to requirements covering its issued SKU scope.")
             if question.topic != target.topic and target.topic != "other":
                 raise ValueError("A follow-up topic must match its requirement.")
-            if target.buyer_facet not in {None, "other"} and question.buyer_facet not in {None, target.buyer_facet}:
+            target_facet = target.buyer_facet
+            if (
+                target_facet is not None and BUYER_FACET_TOPICS.get(target_facet) == target.topic
+                and question.buyer_facet not in {None, target_facet}
+            ):
                 raise ValueError("A follow-up facet must match its requirement.")
             scoped_targets = {(requirement_id, option_id) for option_id in scope}
             if previous_targets & scoped_targets:
@@ -191,16 +207,115 @@ def recover_direct_legacy_requirement(
     return row.model_copy(update={"buyer_facet": row.supplier_target.kind})
 
 
+def _order_conflict_members(
+    rows: list[ResolvedRequirement], option_id: str,
+) -> list[tuple[ResolvedRequirement, OrderTarget]]:
+    members = []
+    for row in rows:
+        if row.status != "active" or row.topic != "customization" or option_id not in row.option_ids:
+            continue
+        target = _with_supplier_target(row).supplier_target
+        if isinstance(target, OrderTarget):
+            members.append((row, target))
+    return members if len({target.value for _, target in members}) > 1 else []
+
+
+def _order_conflict_id(case_id: str, option_id: str) -> str:
+    return _derived_id(case_id, "order-conflict", option_id)
+
+
+def _project_order_conflicts(
+    case_id: str, rows: list[ResolvedRequirement], selected_option_ids: list[str],
+) -> list[ResolvedRequirement]:
+    conflicts = []
+    conflicting_options = defaultdict(set)
+    for option_id in selected_option_ids:
+        members = _order_conflict_members(rows, option_id)
+        if not members:
+            continue
+        sources = []
+        for row, _ in members:
+            conflicting_options[row.requirement_id].add(option_id)
+            origin = next((entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"}), None)
+            if origin is None or origin.quote != row.statement:
+                raise ValueError("An order conflict must quote the original buyer decisions.")
+            if origin not in sources:
+                sources.append(origin)
+        conflicts.append(ResolvedRequirement(
+            requirement_id=_order_conflict_id(case_id, option_id), statement=ORDER_CONFLICT_PROMPT,
+            option_ids=[option_id], status="unresolved", topic="customization", buyer_facet="order_type",
+            provenance=sources, order_conflict=True,
+        ))
+
+    resolved = []
+    for row in rows:
+        remaining = [option_id for option_id in row.option_ids if option_id not in conflicting_options[row.requirement_id]]
+        if remaining:
+            resolved.append(row if remaining == row.option_ids else row.model_copy(update={"option_ids": remaining}))
+    return [*resolved, *conflicts]
+
+
+def _save_scoped_change(
+    case_id: str, rows: dict[str, ResolvedRequirement], original: ResolvedRequirement,
+    updated: ResolvedRequirement, source_key: str,
+) -> None:
+    original_id = original.requirement_id
+    remaining = [option_id for option_id in original.option_ids if option_id not in updated.option_ids]
+    if remaining:
+        fork_id = _derived_id(case_id, original_id, source_key)
+        rows[original_id] = original.model_copy(update={"option_ids": remaining})
+        rows[fork_id] = updated.model_copy(update={"requirement_id": fork_id})
+    else:
+        rows[original_id] = updated
+
+
+def _apply_order_clarification(
+    case_id: str, rows: dict[str, ResolvedRequirement], clarification: OrderClarification,
+) -> None:
+    option_id = clarification.option_id
+    members = _order_conflict_members(list(rows.values()), option_id)
+    if clarification.requirement_id != _order_conflict_id(case_id, option_id) or not members:
+        raise ValueError("An order clarification must refer to the conflict that was open for this option.")
+    surviving_id = next(row.requirement_id for row, target in members if target.value == clarification.choice)
+    for row, target in members:
+        kept = row.requirement_id == surviving_id
+        scope = [option_id]
+        source = RequirementProvenance(
+            input_ref=f"clarification:{clarification.clarification_id}", quote=clarification.answer_text,
+            question_text=ORDER_CONFLICT_PROMPT, action="replace" if kept else "waive", option_ids=scope,
+        )
+        updated = row.model_copy(update={
+            "statement": clarification.answer_text if kept else row.statement, "option_ids": scope,
+            "status": "active" if kept else "waived", "supplier_target": target if kept else None,
+            "provenance": [*row.provenance, source],
+        })
+        _save_scoped_change(case_id, rows, row, updated, source.input_ref)
+
+
 def resolve_requirements(
     case_id: str, initial: list[ResolvedRequirement], rounds: list[IssuedRound], *, buyer_context: str,
+    selected_option_ids: list[str], order_clarifications: list[OrderClarification], include_order_conflicts: bool = True,
 ) -> list[ResolvedRequirement]:
     rows = {row.requirement_id: row for row in initial if row.provenance[0].input_ref == "context"}
-    for row in rows.values():
+    for requirement_id, row in rows.items():
         if row.status == "active":
             origin = row.provenance[0]
             if origin.quote != row.statement or origin.context_start != _quote_start(buyer_context, row.statement):
                 raise ValueError("A stored context requirement must match its original buyer statement.")
+            if row.supplier_target is None:
+                target = scoped_order_target(
+                    row.statement, row.topic, row.buyer_facet,
+                    option_ids=origin.option_ids, selected_option_ids=selected_option_ids,
+                )
+                if target is not None:
+                    rows[requirement_id] = row.model_copy(update={"supplier_target": target})
+    context_rows = list(rows.values())
     migrated_answers = {row.provenance[0].input_ref: row for row in initial if row.provenance[0].input_ref.startswith("answer:")}
+    clarifications_by_round = defaultdict(list)
+    for clarification in order_clarifications:
+        clarifications_by_round[clarification.after_round].append(clarification)
+    for clarification in clarifications_by_round.pop(0, []):
+        _apply_order_clarification(case_id, rows, clarification)
     for issued_round in rounds:
         if issued_round.answers is None:
             break
@@ -245,9 +360,14 @@ def resolve_requirements(
                 row = rows[target_id]
                 if not set(question.option_ids).issubset(row.option_ids):
                     raise ValueError("A requirement change cannot extend beyond the issued scope.")
-                remaining = [option_id for option_id in row.option_ids if option_id not in question.option_ids]
                 status = _updated_status(row.status, row.provenance, effect)
                 retained_target = supplier_target if action == "replace" else row.supplier_target
+                if action == "keep" and status == "active" and retained_target is None:
+                    origin = next((entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"}), None)
+                    retained_target = next(
+                        (seed.supplier_target for seed in context_rows if seed.provenance[0] == origin and seed.topic == row.topic),
+                        None,
+                    )
                 updated = row.model_copy(update={
                     "statement": answer.answer_text if action == "replace" else row.statement,
                     "option_ids": question.option_ids, "status": status, "topic": topic if action == "replace" else row.topic,
@@ -255,13 +375,13 @@ def resolve_requirements(
                     "supplier_target": retained_target if status == "active" else None,
                     "provenance": [*row.provenance, provenance],
                 })
-                if remaining:
-                    fork_id = _derived_id(case_id, target_id, question.question_id)
-                    rows[target_id] = row.model_copy(update={"option_ids": remaining})
-                    rows[fork_id] = updated.model_copy(update={"requirement_id": fork_id})
-                else:
-                    rows[target_id] = updated
-    return [_with_supplier_target(row) for row in rows.values()]
+                _save_scoped_change(case_id, rows, row, updated, question.question_id)
+        for clarification in clarifications_by_round.pop(issued_round.round_number, []):
+            _apply_order_clarification(case_id, rows, clarification)
+    if clarifications_by_round:
+        raise ValueError("Order clarifications must follow completed question rounds.")
+    resolved = [_with_supplier_target(row) for row in rows.values()]
+    return _project_order_conflicts(case_id, resolved, selected_option_ids) if include_order_conflicts else resolved
 
 
 def _updated_status(
