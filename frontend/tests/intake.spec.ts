@@ -303,3 +303,21 @@ test("imports a TTP product link and offers ZIP recovery after a live failure", 
   await expect(page.getByRole("checkbox")).toHaveCount(snapshot.options.length);
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("shows the Tmall option from the link and lets the buyer confirm it", async ({ page }) => {
+  const url = "https://taobao.ttpcargo.com/product?provider=tmall&itemId=988441343788&skuId=5985509084995";
+  const target = snapshot.options[1]!;
+  await page.route("**/api/imports", (route) => {
+    expect(route.request().postDataJSON()).toEqual({ url });
+    return route.fulfill({ json: { status: "ready", snapshot: { ...snapshot, linked_option_id: target.option_id } } });
+  });
+  await startWithoutListing(page);
+  await page.getByLabel("TTP Cargo product link").fill(url);
+  await page.getByRole("button", { name: "Import link" }).click();
+  const linked = page.getByRole("checkbox", { name: /From your link/i });
+  await expect(linked).toHaveValue(target.option_id);
+  await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Confirm options" })).toBeDisabled();
+  await linked.check();
+  await expect(page.getByRole("button", { name: "Confirm options" })).toBeEnabled();
+});

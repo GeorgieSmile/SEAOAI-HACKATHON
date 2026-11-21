@@ -14,6 +14,15 @@ type ImportState =
 
 const MAX_CONTEXT_LENGTH = 2_000;
 
+function isProductLink(value: string) {
+  const prefix = "https://taobao.ttpcargo.com/product?";
+  if (!value.startsWith(prefix)) return false;
+  const fields = value.slice(prefix.length).split("&");
+  const keys = new Set(fields.map((field) => field.split("=")[0]));
+  return keys.size === fields.length && keys.has("provider") && keys.has("itemId")
+    && fields.every((field) => /^(?:provider=(?:1688|taobao|tmall)|(?:itemId|skuId)=[1-9][0-9]{0,17})$/.test(field));
+}
+
 interface ResetTarget {
   snapshotId: string;
   previousCase: CaseVersion | null;
@@ -262,7 +271,14 @@ export function App() {
           {canUpload && (
             <form className="link-import" onSubmit={(event) => {
               event.preventDefault();
-              void startImport(productLink.trim());
+              const link = productLink.trim();
+              if (!isProductLink(link)) {
+                const field = event.currentTarget.elements.namedItem("productLink") as HTMLInputElement;
+                field.setCustomValidity("Use a TTP Cargo link with provider 1688, taobao, or tmall, an itemId, and optionally a skuId.");
+                field.reportValidity();
+                return;
+              }
+              void startImport(link);
             }}>
               {showReplacementWarning && (
                 <p className="replacement-warning" id="replacement-warning">
@@ -271,11 +287,12 @@ export function App() {
               )}
               <label htmlFor="product-link">TTP Cargo product link</label>
               <div className="link-controls">
-                <input id="product-link" type="url" required maxLength={512}
-                  value={productLink} onChange={(event) => setProductLink(event.currentTarget.value)}
-                  placeholder="https://taobao.ttpcargo.com/product?…"
-                  pattern={'https://taobao\\.ttpcargo\\.com/product\\?(provider=1688&itemId=[1-9][0-9]{0,17}|itemId=[1-9][0-9]{0,17}&provider=1688)'}
-                  title="Use a taobao.ttpcargo.com product link with provider=1688 and a numeric itemId." />
+                <input id="product-link" name="productLink" type="url" required maxLength={512}
+                  value={productLink} onChange={(event) => {
+                    event.currentTarget.setCustomValidity("");
+                    setProductLink(event.currentTarget.value);
+                  }}
+                  placeholder="https://taobao.ttpcargo.com/product?…" />
                 <button className="button button-primary" type="submit" disabled={intake.status === "loading"}
                   aria-describedby={showReplacementWarning ? "replacement-warning" : undefined}>
                   Import link

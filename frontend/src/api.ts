@@ -18,6 +18,7 @@ export interface Source {
 }
 
 export interface ListingSnapshot {
+  linked_option_id?: string | null;
   snapshot_id: string;
   title: string;
   options: ListingOption[];

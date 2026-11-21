@@ -739,3 +739,5 @@ fieldset {
 @media (max-width: 520px) {
   .link-controls > * { width: 100%; }
 }
+
+.linked-option { display: block; color: var(--green); font-size: .85rem; }

@@ -1,35 +1,48 @@
-"""Read the public product fragment used by TTP Cargo's 1688 listing page."""
+"""Read the public product fragment used by TTP Cargo's listing pages."""
 
 import asyncio
+from dataclasses import dataclass
 import re
 
 import httpx
 
 from .archive import IntakeError, MAX_EXPANDED_BYTES, MAX_HTML_BYTES, MAX_IMAGE_BYTES
 from .intake import ImageResult, ParsedListing, add_official_sources, build_listing, decode_image
-from .listing_html import read_product
+from .listing_html import cdn_image_url, read_product
 
 
 SITE = "https://taobao.ttpcargo.com"
 DETAIL_ENDPOINT = "https://8gztswndy7.execute-api.ap-southeast-2.amazonaws.com/itemDetail1688/ttpcargoAPI"
-PRODUCT_URL = re.compile(
-    re.escape(SITE) + r"/product\?(?:provider=1688&itemId=([1-9][0-9]{0,17})|itemId=([1-9][0-9]{0,17})&provider=1688)"
-)
-# Accept the SKU-thumbnail paths emitted by this provider; never follow redirects.
-IMAGE_URL = re.compile(r"https://cbu01\.alicdn\.com/img/ibank/[A-Za-z0-9_!.-]+")
-LINK_HINT = "Paste a TTP Cargo product link with provider=1688 and a numeric itemId."
+RETAIL_ENDPOINT = "https://9b6mppzpzk.execute-api.ap-southeast-2.amazonaws.com/default/itemDetailTaobao_99API"
+ENDPOINTS = {"1688": DETAIL_ENDPOINT, "taobao": RETAIL_ENDPOINT, "tmall": RETAIL_ENDPOINT}
+LINK_HINT = "Use a TTP Cargo product link with provider 1688, taobao, or tmall, an itemId, and optionally a skuId."
 LINK_TIMEOUT_SECONDS = 75
 FETCH_FAILED = "TTP Cargo could not load this listing. Try again or choose a saved ZIP."
 
 
-def item_id_from_link(url: str) -> str:
-    match = PRODUCT_URL.fullmatch(url.strip())
-    if not match:
+@dataclass(frozen=True)
+class ProductLink:
+    provider: str
+    item_id: str
+    sku_id: str | None
+
+
+def parse_product_link(url: str) -> ProductLink:
+    base, separator, query = url.strip().partition("?")
+    fields = {}
+    for pair in query.split("&"):
+        key, equals, value = pair.partition("=")
+        if not equals or key in fields or key not in {"provider", "itemId", "skuId"}:
+            raise ValueError(LINK_HINT)
+        fields[key] = value
+    if (base != SITE + "/product" or not separator or fields.get("provider") not in ENDPOINTS
+            or not re.fullmatch(r"[1-9][0-9]{0,17}", fields.get("itemId", ""))
+            or ("skuId" in fields and not re.fullmatch(r"[1-9][0-9]{0,17}", fields["skuId"]))):
         raise ValueError(LINK_HINT)
-    return match[1] or match[2]
+    return ProductLink(fields["provider"], fields["itemId"], fields.get("skuId"))
 
 
-async def fetch_listing(item_id: str, *, transport: httpx.AsyncBaseTransport | None = None) -> ParsedListing:
+async def fetch_listing(link: ProductLink, *, transport: httpx.AsyncBaseTransport | None = None) -> ParsedListing:
     deadline = asyncio.get_running_loop().time() + LINK_TIMEOUT_SECONDS
     remaining_bytes = MAX_EXPANDED_BYTES
 
@@ -59,8 +72,8 @@ async def fetch_listing(item_id: str, *, transport: httpx.AsyncBaseTransport | N
         follow_redirects=False, trust_env=False, transport=transport, timeout=32,
     ) as client:
         try:
-            fragment = await download("POST", DETAIL_ENDPOINT, MAX_HTML_BYTES, json={
-                "action": "ttp_get_single", "ttp_provider": "1688", "ttp_itemid": int(item_id),
+            fragment = await download("POST", ENDPOINTS[link.provider], MAX_HTML_BYTES, json={
+                "action": "ttp_get_single", "ttp_provider": link.provider, "ttp_itemid": int(link.item_id),
             })
         except IntakeError:
             raise
@@ -70,7 +83,8 @@ async def fetch_listing(item_id: str, *, transport: httpx.AsyncBaseTransport | N
             raise IntakeError("intake_failed", FETCH_FAILED) from error
 
         product = await asyncio.to_thread(
-            read_product, b'<div id="ttp-product">' + fragment + b'</div>', expected_item_id=item_id,
+            read_product, b'<div id="ttp-product">' + fragment + b'</div>',
+            expected_item_id=link.item_id, requested_sku_id=link.sku_id, expected_provider=link.provider,
         )
         images: dict[str, ImageResult] = {}
         for selector in product.selectors:
@@ -78,9 +92,9 @@ async def fetch_listing(item_id: str, *, transport: httpx.AsyncBaseTransport | N
             if url is None or url in images:
                 continue
             result = ImageResult("missing", limitation="The SKU image could not be retrieved from the listing.")
-            if IMAGE_URL.fullmatch(url):
+            if image_url := cdn_image_url(url):
                 try:
-                    payload = await download("GET", url, MAX_IMAGE_BYTES)
+                    payload = await download("GET", image_url, MAX_IMAGE_BYTES)
                     result = await asyncio.to_thread(decode_image, payload)
                 except OverflowError:
                     result = ImageResult("unreadable", limitation="The SKU image exceeds the 10 MiB limit.")

@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from functools import partial
 from hashlib import sha256
 from io import BytesIO
@@ -442,7 +443,10 @@ def test_link_import_allows_only_ttp_product_links_and_preserves_prior_snapshot(
         for url in [
             "http://taobao.ttpcargo.com/product?provider=1688&itemId=1",
             "https://taobao.ttpcargo.com.example.org/product?provider=1688&itemId=1",
-            "https://taobao.ttpcargo.com/product?provider=taobao&itemId=1",
+            "https://taobao.ttpcargo.com/product?provider=other&itemId=1",
+            "https://taobao.ttpcargo.com/product?provider=tmall&itemId=1&skuId=1&skuId=2",
+            "https://taobao.ttpcargo.com/product?provider=taobao&itemId=1&skuId=0",
+            "https://taobao.ttpcargo.com/product?provider=taobao&itemId=1&redirect=elsewhere",
             "https://taobao.ttpcargo.com/product?provider=1688&itemId=1&itemId=2",
         ]:
             assert client.post("/api/imports", json={"url": url}).status_code == 422
@@ -460,9 +464,11 @@ def test_link_import_binds_identity_and_fetches_only_mapped_cdn_images(monkeypat
     imgs = root.select("img[data-sku]")
     for img in imgs:
         img["src"] = "https://outside.invalid/photo.jpg"
-    imgs[0]["src"] = "https://cbu01.alicdn.com/img/ibank/one.jpg"
-    imgs[1]["src"] = "https://cbu01.alicdn.com/img/ibank/redirect.jpg"
-    fragment = b'<script>var AliProductInfo = {"id":123,"title":"example"};</script>' + root.encode_contents()
+    for img in imgs[:2]:
+        original = root.find("input", attrs={"data-sku": img["data-sku"]})["data-image"]
+        img["src"] = original + "_150x150.jpg"
+    info = {"id": 123, **json.loads(root.find(id="source-sku-map").string)}
+    fragment = f'<script>var AliProductInfo = {json.dumps(info)};</script>'.encode() + root.encode_contents()
 
     def serve(request):
         if str(request.url) == DETAIL_ENDPOINT:
@@ -482,9 +488,220 @@ def test_link_import_binds_identity_and_fetches_only_mapped_cdn_images(monkeypat
         first, *rest = snapshot["options"]
         assert client.get(_image_url(snapshot, first)).content == image_bytes
         assert all(client.get(_image_url(snapshot, option)).status_code == 404 for option in rest)
+        with_sku = client.post("/api/imports", json={"url": url + "&skuId=6048851312288"}).json()["snapshot"]
+        linked, = [option for option in with_sku["options"] if option["option_id"] == with_sku["linked_option_id"]]
+        assert linked["name_original"] == "暮色316-字母粉蓝"
         result = client.post("/api/imports", json={"url": url.replace("123", "124")}).json()
         assert result["code"] == "unsupported_layout"
         assert client.get("/api/case").json()["snapshot"] is None
+
+
+@pytest.mark.parametrize("provider", ["taobao", "tmall"])
+def test_retail_link_resolves_sku_by_property_path_and_keeps_all_options(monkeypatch, tmp_path, provider):
+    import httpx
+    from backend.link_intake import RETAIL_ENDPOINT
+
+    def record(sku_id, key, name):
+        return {"skuId": sku_id, "propPath": "42:" + key,
+                "properties": [{"propId": "42", "valueId": key, "propPath": "42:" + key, "value": name}]}
+
+    rows = [record("702", "2", "墨黑"), record("701", "1", "白色")]
+    controls = """
+      <h1>水杯</h1><div data-sku-group-type="parent">
+      <input type="radio" data-sku-type="parent" data-sku="白色" data-label="白色" data-prop-path="42:1">
+      <input type="radio" data-sku-type="parent" data-sku="墨黑" data-label="墨黑" data-prop-path="42:2">
+      </div>"""
+
+    if provider == "taobao":
+        controls = controls.replace('="parent"', '="child1"')
+
+    def serve(request):
+        assert str(request.url) == RETAIL_ENDPOINT
+        assert json.loads(request.content) == {"action": "ttp_get_single", "ttp_provider": provider, "ttp_itemid": 123}
+        info = json.dumps({"id": "123", "skuMap": rows})
+        fragment = f"<script>var AliProductInfo = {info};</script>" + controls
+        return httpx.Response(200, stream=httpx.ByteStream(fragment.encode()))
+
+    monkeypatch.setattr("backend.main.fetch_listing", partial(fetch_listing, transport=MockTransport(serve)))
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        url = f"https://taobao.ttpcargo.com/product?itemId=123&provider={provider}"
+        plain = client.post("/api/imports", json={"url": url}).json()["snapshot"]
+        assert plain["linked_option_id"] is None
+        url = url.replace("itemId=123", "skuId=702&itemId=123")
+        snapshot = client.post("/api/imports", json={"url": url}).json()["snapshot"]
+        assert [o["name_original"] for o in snapshot["options"]] == ["白色", "墨黑"]
+        assert snapshot["linked_option_id"] == snapshot["options"][1]["option_id"]
+        assert client.get("/api/case").json() == {"snapshot": snapshot, "case": None}
+        unknown = client.post("/api/imports", json={"url": url.replace("skuId=702", "skuId=999")})
+        assert unknown.json()["code"] == "unsupported_layout"
+        rows[1]["properties"][0]["value"] = "墨黑"
+        conflict = client.post("/api/imports", json={"url": url})
+        assert conflict.json()["code"] == "unsupported_layout"
+        assert client.get("/api/case").json()["snapshot"] is None
+
+
+@pytest.fixture
+def retail_listing():
+    rows = []
+    radios = []
+    for index, (name, sku) in enumerate([("Basic", "701"), ("Pro", "702")], 1):
+        path = f"42:{index}"
+        original = f"https://img.alicdn.com/imgextra/i2/123/{index}.jpg"
+        color = {"propId": "42", "valueId": str(index), "propPath": path, "name": "Edition", "value": name}
+        size = {"propId": "33", "valueId": "2", "propPath": "33:2", "name": "Size", "value": "720ml"}
+        rows.append({
+            "skuId": sku, "skuName": f"Size:720ml;Edition:{name}", "imageUrl": original,
+            "propPath": f"{path};33:2", "properties": [color, size],
+        })
+        thumbnail = original.replace("https:", "http:") + "_150x150.jpg"
+        radios.append(f'<label><input type="radio" data-sku-type="parent" data-sku="{name}" '
+                      f'data-label="{name}" data-prop-path="{path}" data-image="{original}">'
+                      f'<img data-sku="{name}" src="{thumbnail}"></label>')
+    controls = (f'<h1>Flask</h1><div data-sku-group-type="parent">{"".join(radios)}</div>'
+                '<div data-sku-group-type="child"><input type="radio" data-sku-type="child" '
+                'data-prop-path="33:2" data-sku="720ml" data-label="720ml"></div>')
+    return rows, BeautifulSoup(controls, "html.parser")
+
+
+@pytest.fixture
+def import_link(monkeypatch, tmp_path):
+    import httpx
+    from backend.link_intake import DETAIL_ENDPOINT, RETAIL_ENDPOINT
+
+    with ZipFile(CURATED) as archive:
+        images = {f"https://img.alicdn.com/imgextra/i2/123/{i}.jpg_150x150.jpg": archive.read(option["image"])
+                  for i, option in enumerate(INVENTORY["options"][:2], 1)}
+        images["https://img.alicdn.com/imgextra/i2/123/1.jpg"] = archive.read(INVENTORY["options"][0]["image"])
+
+    def run(provider, mapping, controls, *, additional_map=None):
+        info = json.dumps({"id": "123", "skuMap": mapping})
+        fragment = f'<script>var AliProductInfo = {info};</script>{controls}'
+        if additional_map is not None:
+            fragment += f'<script>var copy = {json.dumps({"skuMap": additional_map})};</script>'
+
+        def serve(request):
+            if request.method == "POST":
+                expected_endpoint = DETAIL_ENDPOINT if provider == "1688" else RETAIL_ENDPOINT
+                assert str(request.url) == expected_endpoint
+                assert json.loads(request.content)["ttp_provider"] == provider
+                return httpx.Response(200, stream=httpx.ByteStream(fragment.encode()))
+            return httpx.Response(200, stream=httpx.ByteStream(images[str(request.url)]))
+
+        monkeypatch.setattr("backend.main.fetch_listing", partial(fetch_listing, transport=MockTransport(serve)))
+        with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+            url = f"https://taobao.ttpcargo.com/product?provider={provider}&itemId=123&skuId=701"
+            result = client.post("/api/imports", json={"url": url}).json()
+            assert client.get("/api/case").json()["snapshot"] == result.get("snapshot")
+            if result["status"] == "ready":
+                snapshot = result["snapshot"]
+                for option, expected in zip(snapshot["options"], INVENTORY["options"][:2], strict=True):
+                    image = client.get(_image_url(snapshot, option))
+                    assert sha256(image.content).hexdigest() == expected["image_sha256"]
+            return result
+
+    return run
+
+
+@pytest.mark.parametrize("provider", ["taobao", "tmall"])
+def test_retail_property_order_preserves_linked_option_and_thumbnail(provider, retail_listing, import_link):
+    rows, controls = retail_listing
+    ordered_copy = deepcopy(rows)
+    rows[0]["properties"].reverse()
+    result = import_link(provider, rows, controls, additional_map=ordered_copy)
+    snapshot = result["snapshot"]
+    linked, = [o for o in snapshot["options"] if o["option_id"] == snapshot["linked_option_id"]]
+    assert linked["name_original"] == "Basic"
+
+
+@pytest.mark.parametrize("field", ["properties", "propPath"])
+def test_retail_rejects_duplicate_property_paths(field, retail_listing, import_link):
+    rows, controls = retail_listing
+    if field == "properties":
+        rows[0][field].append(rows[0][field][0])
+    else:
+        rows[0][field] += ";33:2"
+    assert import_link("taobao", rows, controls)["code"] == "unsupported_layout"
+
+
+def test_retail_rejects_seller_name_that_identifies_another_sku(retail_listing, import_link):
+    rows, controls = retail_listing
+    rows[0]["skuName"], rows[1]["skuName"] = rows[1]["skuName"], rows[0]["skuName"]
+    assert import_link("tmall", rows, controls)["code"] == "unsupported_layout"
+
+
+@pytest.mark.parametrize("source", ["thumbnail", "control", "sku-row"])
+def test_retail_rejects_another_options_image(source, retail_listing, import_link):
+    rows, controls = retail_listing
+    if source == "thumbnail":
+        basic, pro = controls.select("img")
+        basic["src"] = pro["src"]
+    elif source == "control":
+        basic, pro = controls.select("input[data-image]")
+        basic["data-image"] = pro["data-image"]
+    else:
+        rows[0]["imageUrl"] = rows[1]["imageUrl"]
+    assert import_link("tmall", rows, controls)["code"] == "unsupported_layout"
+
+
+@pytest.mark.parametrize("provider", ["1688", "taobao", "tmall"])
+def test_link_rejects_mapping_from_other_provider_family(provider, retail_listing, import_link):
+    rows, controls = retail_listing
+    wholesale = {"Basic>720ml": {"skuId": "701"}, "Pro>720ml": {"skuId": "702"}}
+    foreign_map = rows if provider == "1688" else wholesale
+    assert import_link(provider, foreign_map, controls)["code"] == "unsupported_layout"
+
+
+@pytest.mark.parametrize("official_map", ["present", "missing"])
+def test_embedded_map_cannot_override_or_replace_requested_product_map(official_map, retail_listing, import_link):
+    rows, controls = retail_listing
+    swapped = deepcopy(rows)
+    swapped[0]["skuId"], swapped[1]["skuId"] = swapped[1]["skuId"], swapped[0]["skuId"]
+    block = controls.new_tag("script", id="source-sku-map", type="application/json")
+    block.string = json.dumps({"skuMap": swapped})
+    controls.append(block)
+    mapping = rows if official_map == "present" else None
+    assert import_link("tmall", mapping, controls)["code"] == "unsupported_layout"
+
+
+@pytest.mark.parametrize("conflicting", [True, False], ids=["crossed-artwork", "missing-row-image"])
+def test_retail_zip_reconciles_source_images_across_map_copies(conflicting, retail_listing, tmp_path):
+    rows, controls = retail_listing
+    basic, pro = controls.select("input[data-image]")
+    del basic["data-image"]
+    controls.select_one("img")["src"] = "basic.jpg"
+    other = deepcopy(rows)
+    other[0]["imageUrl"] = pro["data-image"] if conflicting else None
+    html = (f'<div id="ttp-product">{controls}'
+            f'<script>var info = {json.dumps({"skuMap": rows})};</script>'
+            f'<script>var copy = {json.dumps({"skuMap": other})};</script></div>')
+    with ZipFile(CURATED) as archive:
+        image_bytes = archive.read(INVENTORY["options"][0]["image"])
+    with TestClient(create_app(tmp_path / "store.db", translator=stub)) as client:
+        result = _upload(client, _zip([("listing.html", html.encode()), ("basic.jpg", image_bytes)])).json()
+        if conflicting:
+            assert result["code"] == "unsupported_layout"
+            assert client.get("/api/case").json()["snapshot"] is None
+        else:
+            snapshot = result["snapshot"]
+            assert client.get(_image_url(snapshot, snapshot["options"][0])).content == image_bytes
+
+
+def test_retail_row_only_image_remains_sku_scoped_for_link_and_zip(retail_listing, import_link, tmp_path):
+    rows, controls = retail_listing
+    del controls.select_one("input")["data-image"]
+    controls.select_one("img").decompose()
+    # The import_link fixture checks the HTTP image bytes against each option's expected hash.
+    assert import_link("tmall", rows, controls)["status"] == "ready"
+    markup = (f'<div id="ttp-product">{controls}'
+              f'<script>var info = {json.dumps({"skuMap": rows})};</script></div>')
+    with TestClient(create_app(tmp_path / "zip.db", translator=stub)) as client:
+        result = _upload(client, _zip([("listing.html", markup.encode())])).json()
+        snapshot = result["snapshot"]
+        basic = snapshot["options"][0]
+        source, = [s for s in snapshot["sources"] if s["source_id"] == basic["image_source_id"]]
+        assert source["option_ids"] == [basic["option_id"]]
+        assert source["availability"] == "missing"
+        assert client.get(_image_url(snapshot, basic)).status_code == 404
 
 
 @pytest.mark.parametrize("newer_action", ["zip", "reset"])
