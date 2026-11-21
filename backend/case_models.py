@@ -3,13 +3,16 @@ from typing import Annotated, Literal
 
 from pydantic import Field, UUID4
 
-from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ReviewInput
+from .contracts import AnswerSubmission, ContractModel, IssuedRound, QuestionInput, ResolvedRequirement, ReviewInput
+from .report_models import PurchaseReview, ReviewSelection, SentReviewEvidence
 
 
 Identifier = Annotated[str, Field(min_length=1, max_length=128)]
 OperationId = Annotated[UUID4, Field(strict=False)]
 CaseStage = Literal["start", "continue", "review"]
-CasePhase = Literal["preparing_questions", "awaiting_answers", "ready_for_review", "failed"]
+CasePhase = Literal[
+    "preparing_questions", "awaiting_answers", "ready_for_review", "generating_review", "reviewed", "failed",
+]
 
 
 class CaseReference(ContractModel):
@@ -57,16 +60,27 @@ class CaseView(CaseReference):
     selected_option_ids: list[Identifier]
     buyer_context: str
     rounds: list[IssuedRound]
+    requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
     phase: CasePhase
     reason: str | None = None
-    report: None = None
+    report: PurchaseReview | None = None
     last_operation: CaseOperation
+
+
+class SavedReview(ContractModel):
+    version: Literal[2, 3, 4, 5, 6]
+    input_digest: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    content: ReviewSelection
+    sent_evidence: SentReviewEvidence
 
 
 class CaseRecord(ContractModel):
     view: CaseView
     question_input: QuestionInput | None = None
     review_input: ReviewInput | None = None
+    saved_review: SavedReview | None = None
+    requirement_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
+    initial_requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
 
 @dataclass(frozen=True)

@@ -27,7 +27,7 @@ function view(overrides: Partial<CaseView> = {}): CaseView {
   return {
     case_id: "test-case", revision: 0, snapshot_id: snapshot.snapshot_id,
     selected_option_ids: ["v0", "v1", "v6"], buyer_context: "Resale in Thailand.",
-    phase: "awaiting_answers", rounds: [firstRound], reason: null,
+    phase: "awaiting_answers", rounds: [firstRound], reason: null, report: null,
     last_operation: operation("start", "ready"), ...overrides,
   };
 }
@@ -333,13 +333,13 @@ test("Start over requires confirmation and clears the listing and case only afte
   });
   await mockSaved(page, () => saved, () => hasListing);
 
-  await page.getByRole("button", { name: "Start over" }).click();
+  await page.getByRole("button", { name: "New listing" }).click();
   await expect(page.getByRole("group", { name: "Clear the saved listing and answers?" })).toBeVisible();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Round 1 of 3" })).toBeVisible();
   expect(writes).toEqual([]);
 
-  await page.getByRole("button", { name: "Start over" }).click();
+  await page.getByRole("button", { name: "New listing" }).click();
   const reset = page.waitForRequest("**/api/case/reset");
   await page.getByRole("button", { name: "Clear listing and answers" }).click();
   expect((await reset).postDataJSON()).toEqual({
@@ -361,7 +361,7 @@ test("a newer case on the same snapshot must be loaded and confirmed before rese
   });
   await mockSaved(page, () => saved, () => hasListing);
 
-  await page.getByRole("button", { name: "Start over" }).click();
+  await page.getByRole("button", { name: "New listing" }).click();
   saved = view({
     case_id: "newer-case", revision: 1, rounds: [{ ...firstRound, reason: "Newer saved progress" }],
   });
@@ -373,7 +373,7 @@ test("a newer case on the same snapshot must be loaded and confirmed before rese
   await expect(page.getByText("Newer saved progress")).toBeVisible();
   expect(writes).toEqual([]);
   await expect(page.getByRole("button", { name: "Clear listing and answers" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Start over" }).click();
+  await page.getByRole("button", { name: "New listing" }).click();
   const reset = page.waitForRequest("**/api/case/reset");
   await page.getByRole("button", { name: "Clear listing and answers" }).click();
   expect((await reset).postDataJSON()).toEqual({
@@ -641,6 +641,7 @@ test("explains replacement before importing over saved answers and retrying a fa
     revision: 1, rounds: [{ ...firstRound, answers: adaptiveAnswers }, secondRound],
   }));
   await expect(page.getByRole("heading", { name: "Round 2 of 3" })).toBeVisible();
+  await page.getByRole("button", { name: "Replace listing", exact: true }).click();
   const warning = /clears any saved listing, photos, and answers, even if the new import fails/i;
   await expect(page.getByText(warning)).toBeVisible();
   await expect(page.getByRole("button", { name: "Import link" })).toHaveAccessibleDescription(warning);

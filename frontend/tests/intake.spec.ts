@@ -67,9 +67,14 @@ test("confirms one or three ordered options, preserves context and caps the sele
   await expect(page.locator(".shared-values")).toContainText("720");
   await expect(page.locator("#listing-title")).toContainText("Premium-style, large-capacity stainless steel");
   await expect(options.nth(0)).toHaveAccessibleName(/applied-picture design · pink\/blue.*暮色316-贴画粉蓝/);
-  await expect(page.locator(".seller-details")).not.toHaveAttribute("open");
-  await page.locator(".seller-details summary").click();
-  await expect(page.locator(".seller-details .translation").getByText("暮色316 · applied-picture design · pink/blue")).toBeVisible();
+  const toggle = page.locator("summary").filter({ hasText: "What the seller claims" });
+  const claim = page.locator(".seller-details .translation").getByText("暮色316 · applied-picture design · pink/blue");
+  await expect(toggle).toBeVisible();
+  await expect(claim).toBeHidden();
+  await toggle.click();
+  await expect(claim).toBeVisible();
+  await toggle.press("Enter");
+  await expect(claim).toBeHidden();
 
   await options.nth(2).check();
   const firstRequest = page.waitForRequest("**/api/questions");
@@ -146,7 +151,7 @@ test("shows Chinese fallback and separate image availability states without load
   await expect(page.getByText("Seller image unavailable")).toHaveCount(2);
   await expect(page.getByText("Seller image unreadable")).toHaveCount(1);
   await expect(page.getByText("No SKU-specific image")).toHaveCount(1);
-  expect(imageRequests).toEqual([]);
+  expect(imageRequests.filter(url => url !== new URL("/proofly-icon.svg", page.url()).href)).toEqual([]);
 });
 
 test("clears the old selection on upload and ignores the older response", async ({ page }) => {
@@ -234,6 +239,7 @@ test("a saved listing lookup failure offers a read-only retry and blocks ordinar
   expect((await retry).method()).toEqual("GET");
   await expect(page.getByText("Current listing restored")).toBeVisible();
   await expect(page.getByRole("checkbox")).toHaveCount(3);
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
   await expect(page.getByRole("button", { name: "Choose another ZIP" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Import link" })).toHaveAccessibleDescription(/clears any saved listing, photos, and answers/i);
   expect(writes).toEqual([]);
@@ -286,8 +292,9 @@ test("a deliberate replacement cannot be overwritten by a slow saved listing res
   await expect(page.getByText("Newly imported listing")).toBeVisible();
 });
 
-test("imports a TTP product link and offers ZIP recovery after a live failure", async ({ page }) => {
+test("offers ZIP recovery when a TTP Cargo link fails", async ({ page }) => {
   const link = "https://taobao.ttpcargo.com/product?provider=1688&itemId=123";
+  await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ contentType: "image/png", body: tinyPng }));
   await page.route("**/api/imports", (route) => {
     if (route.request().headers()["content-type"] === "application/json") {
       expect(route.request().postDataJSON()).toEqual({ url: link });
@@ -304,20 +311,29 @@ test("imports a TTP product link and offers ZIP recovery after a live failure", 
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
-test("shows the Tmall option from the link and lets the buyer confirm it", async ({ page }) => {
-  const url = "https://taobao.ttpcargo.com/product?provider=tmall&itemId=988441343788&skuId=5985509084995";
-  const target = snapshot.options[1]!;
-  await page.route("**/api/imports", (route) => {
-    expect(route.request().postDataJSON()).toEqual({ url });
-    return route.fulfill({ json: { status: "ready", snapshot: { ...snapshot, linked_option_id: target.option_id } } });
+const linkedProducts = [
+  ["1688", "itemId=1035537244639&provider=1688&skuId=6048851312288"],
+  ["Taobao", "skuId=6156598687347&provider=taobao&itemId=1003065116802"],
+  ["Tmall", "provider=tmall&itemId=988441343788&skuId=5985509084995"],
+];
+
+for (const [provider, query] of linkedProducts) {
+  test(`shows the ${provider} option from the link and lets the buyer confirm it`, async ({ page }) => {
+    const url = "https://taobao.ttpcargo.com/product?" + query;
+    const target = snapshot.options[1]!;
+    await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ contentType: "image/png", body: tinyPng }));
+    await page.route("**/api/imports", (route) => {
+      expect(route.request().postDataJSON()).toEqual({ url });
+      return route.fulfill({ json: { status: "ready", snapshot: { ...snapshot, linked_option_id: target.option_id } } });
+    });
+    await startWithoutListing(page);
+    await page.getByLabel("TTP Cargo product link").fill(url);
+    await page.getByRole("button", { name: "Import link" }).click();
+    const linked = page.getByRole("checkbox", { name: /From your link/i });
+    await expect(linked).toHaveValue(target.option_id);
+    await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Confirm options" })).toBeDisabled();
+    await linked.check();
+    await expect(page.getByRole("button", { name: "Confirm options" })).toBeEnabled();
   });
-  await startWithoutListing(page);
-  await page.getByLabel("TTP Cargo product link").fill(url);
-  await page.getByRole("button", { name: "Import link" }).click();
-  const linked = page.getByRole("checkbox", { name: /From your link/i });
-  await expect(linked).toHaveValue(target.option_id);
-  await expect(page.getByRole("checkbox", { checked: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Confirm options" })).toBeDisabled();
-  await linked.check();
-  await expect(page.getByRole("button", { name: "Confirm options" })).toBeEnabled();
-});
+}

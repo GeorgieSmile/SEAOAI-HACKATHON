@@ -87,3 +87,7 @@ The active `buyer-questions-v2` prompt asks the model to compare the selected na
 ## Review รวมก่อนปิด ticket
 
 Integrated Standards/Spec reviews and the full T1–T5 runs remain pending. The Phase 2 review handoff contains the input for future report generation. This issue stays open for integrated acceptance.
+
+## Proofly redesign · 2026-11-21
+
+The real ZIP flow opened round 1 with both selected SKUs. Choosing “Custom orders are acceptable” and continuing opened round 2. From the saved report, editing round 1 and cancelling restored the report and updated the progress indicator and page title. The offline server supplied the questions. See [integrated UI verification](../purchase-04-integrate-and-verify/verification.md#proofly-redesign--2026-11-21) for code state, commands and screenshot coverage.

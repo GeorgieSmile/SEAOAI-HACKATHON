@@ -50,18 +50,42 @@ export interface StartQuestions extends Selection {
   previous_case: CaseVersion | null;
 }
 
+export type RequirementAction = "keep" | "replace" | "waive" | "add";
+
+export interface RequirementEffect {
+  action: RequirementAction;
+  requirement_id: string | null;
+}
+
+interface RequirementTarget {
+  requirement_id: string;
+  statement: string;
+  option_ids: string[];
+}
+
 export interface Question {
   question_id: string;
+  buyer_facet?: "order_type" | "decoration_method" | "surface_finish" | "capacity" | "delivery_deadline" | "other" | null;
   prompt: string;
   why_ask: string;
   option_ids: string[];
   source_ids: string[];
   choices: string[];
+  requirement_ids?: string[];
+  requirement_targets?: RequirementTarget[];
+  choice_effects?: (RequirementEffect & { choice: string; statement: string | null })[];
 }
 
 export interface Answer {
   question_id: string;
   answer_text: string | null;
+  requirement_effect?: RequirementEffect | null;
+}
+
+export function sameAnswer(saved: Answer | undefined, submitted: Answer) {
+  return saved?.answer_text === submitted.answer_text
+    && saved.requirement_effect?.action === submitted.requirement_effect?.action
+    && saved.requirement_effect?.requirement_id === submitted.requirement_effect?.requirement_id;
 }
 
 export interface Submission {
@@ -77,6 +101,92 @@ export interface QuestionRound {
   answers: Answer[] | null;
 }
 
+export interface ReviewRequirement {
+  requirement_id: string;
+  text: string;
+  input_ref: string;
+  quote: string;
+  option_ids: string[];
+  question_text: string | null;
+}
+
+export interface ResolvedRequirement extends RequirementTarget {
+  status: "active" | "waived" | "unresolved";
+  provenance: {
+    input_ref: string;
+    quote: string | null;
+    question_text: string | null;
+    action: RequirementAction | "unresolved";
+    option_ids: string[];
+  }[];
+}
+
+export type ReviewClaim = {
+  claim_id: string;
+  option_ids: string[];
+  source_id: string;
+  display_text: string;
+} & (
+  | { kind: "text_excerpt"; quote: string }
+  | { kind: "image_measurement"; value: number; unit: "ml" | "L" | "fl oz" | "mm" | "cm" | "in" | "g" | "kg" | "oz" | "lb" | "°C" | "°F" }
+  | {
+    kind: "image_detail";
+    detail: "letters_visible" | "illustration_visible" | "straw_visible" | "lid_visible" | "handle_visible"
+      | "retail_box_visible" | "protective_insert_visible" | "markings_visible";
+  }
+);
+
+export interface ReviewFinding {
+  finding_id: string;
+  title: string;
+  option_ids: string[];
+  kind: "listing_conflict" | "requirement_unconfirmed" | "clarification_needed" | "evidence_gap";
+  action_type: "decide_preference" | "ask_supplier" | "request_evidence";
+  requirement_ids: string[];
+  claim_ids: string[];
+  interpretation: string;
+  impact: string;
+  priority_reason: string;
+  unknowns: {
+    text: string;
+    reason: "not_found" | "not_reviewed" | "unreadable";
+    source_ids: string[];
+  }[];
+  requested_evidence: string;
+  evidence_limits: string;
+  supplier_question: string | null;
+}
+
+export interface PurchaseReview extends CaseVersion {
+  contract_version: 2;
+  snapshot_id: string;
+  selected_option_ids: string[];
+  claims: ReviewClaim[];
+  buyer_requirements: ReviewRequirement[];
+  open_preferences: {
+    preference_id: string;
+    text: string;
+    input_refs: string[];
+    finding_ids: string[];
+    option_ids: string[];
+    questions: { question_id: string; question_text: string; option_ids: string[] }[];
+  }[];
+  comparisons: {
+    label: string;
+    shared_claim_ids: string[];
+    values: { option_id: string; summary: string; claim_ids: string[]; limitations: string[] }[];
+  }[];
+  findings: ReviewFinding[];
+  coverage: {
+    group: "product_match" | "intended_use" | "supporting_evidence";
+    status: "reviewed" | "limited" | "not_assessed";
+    finding_ids: string[];
+    note: string;
+  }[];
+  limitations: string[];
+  supplier_draft: string;
+}
+
 export type CaseStage = "start" | "continue" | "review";
 
 interface CaseOperation {
@@ -89,8 +199,10 @@ interface CaseOperation {
 
 export interface CaseView extends Selection, CaseVersion {
   rounds: QuestionRound[];
+  requirements?: ResolvedRequirement[] | null;
   phase: "preparing_questions" | "awaiting_answers" | "ready_for_review" | "generating_review" | "reviewed" | "failed";
   reason: string | null;
+  report: PurchaseReview | null;
   last_operation: CaseOperation | null;
 }
 
@@ -159,6 +271,21 @@ export function caseVersion(view: CaseView | null): CaseVersion | null {
   return view ? { case_id: view.case_id, revision: view.revision } : null;
 }
 
+export function currentPurchaseReview(view: CaseView | null): PurchaseReview | null {
+  const report = view?.report;
+  if (view?.phase !== "reviewed" || !report || report.contract_version !== 2
+    || report.case_id !== view.case_id || report.revision !== view.revision
+    || report.snapshot_id !== view.snapshot_id
+    || !Array.isArray(report.selected_option_ids)
+    || report.selected_option_ids.length !== view.selected_option_ids.length
+    || !report.selected_option_ids.every((id, index) => id === view.selected_option_ids[index])
+    || !Array.isArray(report.claims) || !Array.isArray(report.findings) || !Array.isArray(report.comparisons)
+    || !Array.isArray(report.buyer_requirements) || !Array.isArray(report.open_preferences)
+    || !Array.isArray(report.coverage) || !Array.isArray(report.limitations)
+    || typeof report.supplier_draft !== "string") return null;
+  return report;
+}
+
 export function startQuestions(payload: StartQuestions) {
   return postCaseCommand("/api/questions", payload);
 }
@@ -172,13 +299,33 @@ export function continueQuestions(view: CaseView, submission: Submission, operat
 export function requestReview(view: CaseView, submission: Submission | null, operationId: string) {
   return postCaseCommand("/api/reviews", {
     ...caseVersion(view), operation_id: operationId, submission,
+  }).then((result) => {
+    const saved = view.rounds.find((round) => round.round_id === submission?.round_id)?.answers;
+    const changed = submission !== null && (!saved || submission.answers.some((answer) => (
+      !sameAnswer(saved.find((prior) => prior.question_id === answer.question_id), answer)
+    )));
+    return checkReviewResponse(result, view, operationId, changed ? 1 : 0);
   });
 }
 
 export function retryCase(view: CaseView, operationId: string) {
   return postCaseCommand("/api/case/retry", {
     ...caseVersion(view), operation_id: operationId,
-  });
+  }).then((result) => view.last_operation?.stage === "review"
+    ? checkReviewResponse(result, view, operationId, 0) : result);
+}
+
+function checkReviewResponse(result: CaseView, base: CaseView, operationId: string, revisionChange: number) {
+  const resultOperation = result.last_operation?.operation_id;
+  const cached = revisionChange === 0 && currentPurchaseReview(base)
+    && resultOperation === base.last_operation?.operation_id;
+  if (result.phase === "reviewed" && (!currentPurchaseReview(result)
+    || result.case_id !== base.case_id || result.snapshot_id !== base.snapshot_id
+    || result.revision !== base.revision + revisionChange
+    || (resultOperation !== operationId && !cached))) {
+    throw new Error("The purchase review could not be matched to your saved answers. Reload saved progress.");
+  }
+  return result;
 }
 
 export async function resetCase(snapshotId: string, previous: CaseVersion | null) {

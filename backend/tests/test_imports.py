@@ -765,7 +765,7 @@ def test_valid_zip_reports_server_failure_for_unavailable_official_pack(tmp_path
     {"source_override": {"text_en": None}}, {"source_override": {"url": None}},
 ], ids=["no-guidance", "no-limitations", "seller-source", "missing-translation", "missing-url"])
 def test_reference_pack_requires_identifiable_official_evidence(tmp_path, monkeypatch, change):
-    pack = json.loads((SAMPLES / "official-sources.json").read_text())
+    pack = json.loads((SAMPLES / "official-sources.json").read_text(encoding="utf-8"))
     if "source_override" in change:
         pack["sources"][0].update(change["source_override"])
     else:
