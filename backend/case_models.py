@@ -91,7 +91,7 @@ class CaseRecord(ContractModel):
     review_input: ReviewInput | None = None
     saved_review: SavedReview | None = None
     requirement_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
-    order_conflict_version: Literal[1] | None = Field(default=None, exclude_if=lambda version: version is None)
+    order_conflict_version: Literal[1, 2] | None = Field(default=None, exclude_if=lambda version: version is None)
     initial_requirements: list[ResolvedRequirement] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
 

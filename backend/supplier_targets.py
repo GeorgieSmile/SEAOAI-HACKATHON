@@ -64,11 +64,18 @@ _ONLY_STOCK = re.compile(
     rf"(?:i only (?:want|accept|need) {_STOCK}|(?:keep )?{_STOCK} only|only {_STOCK}|{_STOCK} (?:is|are) required)"
 )
 _CUSTOM_ALLOWED = re.compile(rf"(?:(?:i|we) (?:can accept|would consider) (?:a )?{_CUSTOM}|{_CUSTOM} (?:is|are) acceptable)")
-_OPTION_LETTERS = r"(?P<options>[a-c](?:(?:, | and |, and )[a-c])*)"
+_EARLIER_OPTION_LETTERS = r"(?P<options>[a-c](?:(?:, | and |, and )[a-c])*)"
+_EARLIER_SCOPED_ORDER_STATEMENTS = (
+    re.compile(rf"for options? {_EARLIER_OPTION_LETTERS}[,:] (?P<statement>.+)"),
+    re.compile(rf"(?P<statement>.+) for options? {_EARLIER_OPTION_LETTERS}"),
+)
+_OPTION_LETTERS = r"(?P<options>[a-z]\b(?:(?:, | and |, and | ?/ ?)(?:options? )?[a-z]\b)*)"
 _SCOPED_ORDER_STATEMENTS = (
-    re.compile(rf"for options? {_OPTION_LETTERS}[,:] (?P<statement>.+)"),
+    re.compile(rf"(?:for )?options? {_OPTION_LETTERS}[,:] (?P<statement>.+)"),
     re.compile(rf"(?P<statement>.+) for options? {_OPTION_LETTERS}"),
 )
+_ORDER_SCOPE_CLAUSE = re.compile(rf"\b(?:(?P<exclusion>except|excluding) )?options? {_OPTION_LETTERS}", re.IGNORECASE)
+_BARE_ORDER_EXCLUSION = re.compile(r"\b(?i:except|excluding) [A-Zb-z]\b")
 _METHODS = {
     "screen_printing": r"screen[- ]print(?:ed|ing)?",
     "laser_engraving": r"laser[- ]engrav(?:e[ds]?|ing)",
@@ -131,8 +138,12 @@ def _delivery_target(text: str) -> DeliveryTarget | None:
     return None
 
 
+def _compact_statement(text: str) -> str:
+    return " ".join(normalize("NFKC", text).split()).removesuffix(".")
+
+
 def _normalized_statement(text: str) -> str:
-    return " ".join(normalize("NFKC", text).casefold().split()).removesuffix(".")
+    return _compact_statement(text).casefold()
 
 
 def _order_target(statement: str) -> OrderTarget | None:
@@ -143,22 +154,38 @@ def _order_target(statement: str) -> OrderTarget | None:
     return None
 
 
+def _matches_option_aliases(label: str, option_ids: list[str], selected_option_ids: list[str]) -> bool:
+    letters = re.findall(r"\b[a-z]\b", label.casefold())
+    aliases = dict(zip("abc", selected_option_ids))
+    named_options = {aliases.get(letter) for letter in letters}
+    return len(letters) == len(named_options) == len(option_ids) and named_options == set(option_ids)
+
+
+def order_statement_matches_scope(
+    quote: str, topic: str | None, *,
+    option_ids: list[str], selected_option_ids: list[str],
+) -> bool:
+    if topic != "customization":
+        return True
+    text = _compact_statement(quote)
+    return not _BARE_ORDER_EXCLUSION.search(text) and all(
+        clause["exclusion"] is None and _matches_option_aliases(clause["options"], option_ids, selected_option_ids)
+        for clause in _ORDER_SCOPE_CLAUSE.finditer(text)
+    )
+
+
 def scoped_order_target(
     quote: str, topic: str | None, buyer_facet: str | None, *,
-    option_ids: list[str], selected_option_ids: list[str],
+    option_ids: list[str], selected_option_ids: list[str], historical: bool = False,
 ) -> OrderTarget | None:
-    """Ground a complete context sentence with an explicit SKU qualifier."""
+    """Ground a complete order decision that has an explicit SKU qualifier."""
     if topic != "customization" or buyer_facet not in (None, "order_type"):
         return None
+    patterns = _EARLIER_SCOPED_ORDER_STATEMENTS if historical else _SCOPED_ORDER_STATEMENTS
     text = _normalized_statement(quote)
-    aliases = dict(zip("abc", selected_option_ids))
-    for pattern in _SCOPED_ORDER_STATEMENTS:
+    for pattern in patterns:
         match = pattern.fullmatch(text)
-        if match is None:
-            continue
-        letters = re.split(r", (?:and )?| and ", match["options"])
-        named_options = {aliases.get(letter) for letter in letters}
-        if len(letters) == len(named_options) == len(option_ids) and named_options == set(option_ids):
+        if match is not None and _matches_option_aliases(match["options"], option_ids, selected_option_ids):
             return _order_target(match["statement"])
     return None
 

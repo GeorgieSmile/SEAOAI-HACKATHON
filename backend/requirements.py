@@ -7,7 +7,10 @@ from .contracts import (
     QuestionInput, QuestionResult, ReviewTopic, RequirementEffect, RequirementProvenance, RequirementStatus, RequirementTarget,
     ResolvedRequirement,
 )
-from .supplier_targets import OrderTarget, scoped_order_target, supplier_target_from_answer, validate_supplier_target
+from .supplier_targets import (
+    OrderTarget, SupplierTarget, order_statement_matches_scope, scoped_order_target, supplier_target_from_answer,
+    validate_supplier_target,
+)
 
 
 _CONTEXT_BOUNDARIES = re.compile(r"[\r\n]+|(?<=[.!?。！？])\s+")
@@ -30,11 +33,42 @@ def _quote_start(context: str, quote: str) -> int:
     return start
 
 
-def _with_supplier_target(row: ResolvedRequirement) -> ResolvedRequirement:
-    if row.status != "active" or row.supplier_target is not None:
+def _binding_origin(row: ResolvedRequirement) -> RequirementProvenance | None:
+    return next((entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"}), None)
+
+
+def _with_supplier_target(
+    row: ResolvedRequirement, *, selected_option_ids: list[str] | None = None, scoped_answers: bool = True,
+) -> ResolvedRequirement:
+    if row.status != "active":
         return row
-    target = supplier_target_from_answer(row.statement, row.topic, row.buyer_facet)
-    return row.model_copy(update={"supplier_target": target}) if target is not None else row
+    target = row.supplier_target
+    origin = _binding_origin(row)
+    if (
+        selected_option_ids is not None and origin is not None and origin.quote == row.statement
+        and (origin.input_ref == "context" or scoped_answers and origin.input_ref.startswith("answer:"))
+    ):
+        scope = {"option_ids": origin.option_ids, "selected_option_ids": selected_option_ids}
+        if scoped_answers and not order_statement_matches_scope(row.statement, row.topic, **scope):
+            return row.model_copy(update={"status": "unresolved", "supplier_target": None})
+        if target is None:
+            target = scoped_order_target(row.statement, row.topic, row.buyer_facet, historical=not scoped_answers, **scope)
+    if target is None:
+        target = supplier_target_from_answer(row.statement, row.topic, row.buyer_facet)
+    return row.model_copy(update={"supplier_target": target}) if target != row.supplier_target else row
+
+
+def _validate_source_target(
+    target: SupplierTarget | None, quote: str, topic: ReviewTopic | None, facet: BuyerFacet | None, *,
+    option_ids: list[str], selected_option_ids: list[str],
+) -> None:
+    if not order_statement_matches_scope(quote, topic, option_ids=option_ids, selected_option_ids=selected_option_ids):
+        raise ValueError("The named options must match the scope of the buyer's exact statement.")
+    supported = scoped_order_target(
+        quote, topic, facet, option_ids=option_ids, selected_option_ids=selected_option_ids,
+    )
+    if target != supported:
+        validate_supplier_target(target, quote, topic, facet)
 
 
 def _validate_topic_facet(topic: ReviewTopic | None, facet: BuyerFacet | None) -> None:
@@ -60,20 +94,20 @@ def _context_rows(inputs: QuestionInput, result: QuestionResult) -> list[Resolve
         seen.update(keys)
         if seed.supplier_target is not None and seed.status != "active":
             raise ValueError("Unresolved context cannot supply a supplier target.")
-        scoped_target = scoped_order_target(
-            seed.quote, seed.topic, seed.buyer_facet, option_ids=seed.option_ids, selected_option_ids=inputs.selected_option_ids,
-        ) if seed.status == "active" else None
-        if seed.supplier_target != scoped_target:
-            validate_supplier_target(seed.supplier_target, seed.quote, seed.topic, seed.buyer_facet)
+        if seed.status == "active":
+            _validate_source_target(
+                seed.supplier_target, seed.quote, seed.topic, seed.buyer_facet,
+                option_ids=seed.option_ids, selected_option_ids=inputs.selected_option_ids,
+            )
         row = _with_supplier_target(ResolvedRequirement(
             requirement_id=f"context:{index}", statement=seed.statement, option_ids=seed.option_ids,
-            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=scoped_target or seed.supplier_target,
+            status=seed.status, topic=seed.topic, buyer_facet=seed.buyer_facet, supplier_target=seed.supplier_target,
             provenance=[RequirementProvenance(
                 input_ref="context", quote=seed.quote, question_text=None,
                 action="add" if seed.status == "active" else "unresolved", option_ids=seed.option_ids,
                 context_start=start,
             )],
-        ))
+        ), selected_option_ids=inputs.selected_option_ids)
         if row.supplier_target is not None:
             row = row.model_copy(update={"buyer_facet": row.supplier_target.kind})
         rows.append(row)
@@ -121,10 +155,12 @@ def validate_requirement_plan(inputs: QuestionInput, result: QuestionResult) -> 
             raise ValueError("Each effect must belong to a distinct issued answer choice.")
         for effect in effects:
             _validate_effect_target(effect, requirement_ids)
-            if effect.supplier_target is not None:
-                if effect.statement is None:
-                    raise ValueError("Only an add or replacement choice can declare a new supplier target.")
-                validate_supplier_target(effect.supplier_target, effect.choice, question.topic, question.buyer_facet)
+            if effect.supplier_target is not None and effect.statement is None:
+                raise ValueError("Only an add or replacement choice can declare a new supplier target.")
+            _validate_source_target(
+                effect.supplier_target, effect.choice, question.topic, question.buyer_facet,
+                option_ids=question.option_ids, selected_option_ids=inputs.selected_option_ids,
+            )
 
 
 def issue_requirement_plan(
@@ -157,15 +193,28 @@ def issue_requirement_plan(
     return initial, questions
 
 
-def validate_submission_effect(question: IssuedQuestion, answer: Answer) -> None:
+def _answer_matches_scope(question: IssuedQuestion, answer_text: str | None, selected_option_ids: list[str]) -> bool:
+    return answer_text is None or order_statement_matches_scope(
+        answer_text, question.topic, option_ids=question.option_ids, selected_option_ids=selected_option_ids,
+    )
+
+
+def validate_submission_effect(
+    question: IssuedQuestion, answer: Answer, *, selected_option_ids: list[str] | None = None,
+) -> None:
     effect = answer.requirement_effect
-    if effect is None:
+    if effect is not None:
+        if question.requirement_ids is None:
+            raise ValueError("This older question did not issue structured requirement effects.")
+        if answer.answer_text in question.choices:
+            raise ValueError("Submit the issued choice without a separate requirement effect.")
+        _validate_effect_target(effect, question.requirement_ids)
+    if selected_option_ids is None or answer.answer_text is None:
         return
-    if question.requirement_ids is None:
-        raise ValueError("This older question did not issue structured requirement effects.")
-    if answer.answer_text in question.choices:
-        raise ValueError("Submit the issued choice without a separate requirement effect.")
-    _validate_effect_target(effect, question.requirement_ids)
+    choice = next((item for item in question.choice_effects or [] if item.choice == answer.answer_text), None)
+    applied = choice or effect
+    if applied is not None and not _answer_matches_scope(question, answer.answer_text, selected_option_ids):
+        raise ValueError("The options named in your answer must match the options shown for this question.")
 
 
 def _validate_effect_target(effect: RequirementEffect, target_ids: list[str]) -> None:
@@ -295,6 +344,7 @@ def _apply_order_clarification(
 def resolve_requirements(
     case_id: str, initial: list[ResolvedRequirement], rounds: list[IssuedRound], *, buyer_context: str,
     selected_option_ids: list[str], order_clarifications: list[OrderClarification], include_order_conflicts: bool = True,
+    scoped_answers: bool = True,
 ) -> list[ResolvedRequirement]:
     rows = {row.requirement_id: row for row in initial if row.provenance[0].input_ref == "context"}
     for requirement_id, row in rows.items():
@@ -302,14 +352,9 @@ def resolve_requirements(
             origin = row.provenance[0]
             if origin.quote != row.statement or origin.context_start != _quote_start(buyer_context, row.statement):
                 raise ValueError("A stored context requirement must match its original buyer statement.")
-            if row.supplier_target is None:
-                target = scoped_order_target(
-                    row.statement, row.topic, row.buyer_facet,
-                    option_ids=origin.option_ids, selected_option_ids=selected_option_ids,
-                )
-                if target is not None:
-                    rows[requirement_id] = row.model_copy(update={"supplier_target": target})
-    context_rows = list(rows.values())
+            rows[requirement_id] = _with_supplier_target(
+                row, selected_option_ids=selected_option_ids, scoped_answers=scoped_answers,
+            )
     migrated_answers = {row.provenance[0].input_ref: row for row in initial if row.provenance[0].input_ref.startswith("answer:")}
     clarifications_by_round = defaultdict(list)
     for clarification in order_clarifications:
@@ -328,14 +373,19 @@ def resolve_requirements(
             if migrated is not None:
                 source = migrated.provenance[0]
                 if (answer.answer_text, question.prompt, question.option_ids) == (source.quote, source.question_text, source.option_ids):
-                    rows[migrated.requirement_id] = migrated
+                    rows[migrated.requirement_id] = _with_supplier_target(
+                        migrated, selected_option_ids=selected_option_ids, scoped_answers=scoped_answers,
+                    )
                     continue
             if answer.answer_text is None and question.requirement_ids:
                 # The saved answer records the skip, while the earlier decision still stands.
                 continue
             choice = next((item for item in question.choice_effects or [] if item.choice == answer.answer_text), None)
             effect = choice or answer.requirement_effect
-            action = effect.action if effect is not None else "unresolved"
+            wrong_scope = scoped_answers and effect is not None and not _answer_matches_scope(
+                question, answer.answer_text, selected_option_ids,
+            )
+            action = effect.action if effect is not None and not wrong_scope else "unresolved"
             provenance = RequirementProvenance(
                 input_ref=input_ref, quote=answer.answer_text,
                 question_text=question.prompt, action=action, option_ids=question.option_ids,
@@ -349,25 +399,28 @@ def resolve_requirements(
             else:
                 requirement_id = _derived_id(case_id, "question", question.question_id)
                 status = {"add": "active", "waive": "waived"}.get(action, "unresolved")
-                rows[requirement_id] = ResolvedRequirement(
+                row = ResolvedRequirement(
                     requirement_id=requirement_id, statement=answer.answer_text or question.prompt,
                     option_ids=question.option_ids, status=status,
                     topic=topic, buyer_facet=question.buyer_facet, provenance=[provenance],
                     supplier_target=supplier_target,
+                )
+                rows[requirement_id] = _with_supplier_target(
+                    row, selected_option_ids=selected_option_ids, scoped_answers=scoped_answers,
                 )
                 continue
             for target_id in target_ids:
                 row = rows[target_id]
                 if not set(question.option_ids).issubset(row.option_ids):
                     raise ValueError("A requirement change cannot extend beyond the issued scope.")
+                if wrong_scope:
+                    # A previous version could save an effect naming a different SKU. Preserve
+                    # the prior scoped decision and replayable ID. The original attempt remains in the round.
+                    preserved = row.model_copy(update={"option_ids": question.option_ids})
+                    _save_scoped_change(case_id, rows, row, preserved, question.question_id)
+                    continue
                 status = _updated_status(row.status, row.provenance, effect)
                 retained_target = supplier_target if action == "replace" else row.supplier_target
-                if action == "keep" and status == "active" and retained_target is None:
-                    origin = next((entry for entry in reversed(row.provenance) if entry.action in {"add", "replace"}), None)
-                    retained_target = next(
-                        (seed.supplier_target for seed in context_rows if seed.provenance[0] == origin and seed.topic == row.topic),
-                        None,
-                    )
                 updated = row.model_copy(update={
                     "statement": answer.answer_text if action == "replace" else row.statement,
                     "option_ids": question.option_ids, "status": status, "topic": topic if action == "replace" else row.topic,
@@ -375,6 +428,7 @@ def resolve_requirements(
                     "supplier_target": retained_target if status == "active" else None,
                     "provenance": [*row.provenance, provenance],
                 })
+                updated = _with_supplier_target(updated, selected_option_ids=selected_option_ids, scoped_answers=scoped_answers)
                 _save_scoped_change(case_id, rows, row, updated, question.question_id)
         for clarification in clarifications_by_round.pop(issued_round.round_number, []):
             _apply_order_clarification(case_id, rows, clarification)

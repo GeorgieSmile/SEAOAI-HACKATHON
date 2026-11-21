@@ -36,6 +36,7 @@ ReviewGenerator = Callable[[ReviewInput, ReviewImages], Awaitable[ReviewResult]]
 UserCommand = StartCase | ContinueCase | ReviewCase
 REVIEW_RESULT = TypeAdapter(ReviewResult)
 CURRENT_CANONICAL_REVIEW_VERSION = 7
+CURRENT_ORDER_CONFLICT_VERSION = 2
 INVALID_REVIEW = "The review could not be validated. Your answers are saved."
 REGENERATE_REVIEW = "This saved review needs to be regenerated. Your answers are saved."
 LEGACY_REPORT_FIELDS = frozenset({
@@ -121,14 +122,16 @@ def _question_input(snapshot: ListingSnapshot, case: CaseView, round_number: int
     )
 
 
-def _resolved_view(record: CaseRecord, case: CaseView, *, include_order_conflicts: bool = True) -> CaseView:
+def _resolved_view(
+    record: CaseRecord, case: CaseView, *, include_order_conflicts: bool = True, scoped_answers: bool = True,
+) -> CaseView:
     if record.initial_requirements is None:
         return case
     return case.model_copy(update={
         "requirements": resolve_requirements(
             case.case_id, record.initial_requirements, case.rounds, buyer_context=case.buyer_context,
             selected_option_ids=case.selected_option_ids, order_clarifications=case.order_clarifications,
-            include_order_conflicts=include_order_conflicts,
+            include_order_conflicts=include_order_conflicts, scoped_answers=scoped_answers,
         ),
     })
 
@@ -244,7 +247,7 @@ def _apply_submission(case: CaseView, submission: AnswerSubmission) -> CaseView:
     answers = [by_id[question.question_id] for question in round.questions]
     try:
         for question, answer in zip(round.questions, answers, strict=True):
-            validate_submission_effect(question, answer)
+            validate_submission_effect(question, answer, selected_option_ids=case.selected_option_ids)
     except ValueError as error:
         raise _invalid(str(error), case) from error
     if answers == round.answers:
@@ -346,21 +349,21 @@ class CaseWorkflow:
         case = record.view
         operation = case.last_operation
         legacy = record.requirement_version is None
-        old_order_projection = record.order_conflict_version is None
+        old_order_projection = record.order_conflict_version != CURRENT_ORDER_CONFLICT_VERSION
         try:
             upgraded = _upgrade_legacy_case(record) if legacy else record
             resolved = _resolved_view(upgraded, upgraded.view)
             new_decisions = not legacy and resolved.requirements != case.requirements
             if new_decisions:
-                expected = (
-                    _resolved_view(upgraded, case, include_order_conflicts=False) if old_order_projection else resolved
-                )
+                expected = _resolved_view(
+                    upgraded, case, include_order_conflicts=record.order_conflict_version is not None, scoped_answers=False,
+                ) if old_order_projection else resolved
                 if expected.requirements != case.requirements and not _only_new_supplier_targets(case, expected):
                     raise ValueError("The saved buyer decisions do not match the retained interview.")
                 upgraded = upgraded.model_copy(update={"view": resolved})
         except (KeyError, ValueError) as error:
             raise sqlite3.DatabaseError("The saved buyer decisions could not be matched to the interview.") from error
-        upgraded = upgraded.model_copy(update={"order_conflict_version": 1})
+        upgraded = upgraded.model_copy(update={"order_conflict_version": CURRENT_ORDER_CONFLICT_VERSION})
         if operation.status == "running":
             interrupted = _failure(upgraded, "analysis_failed", _interrupted(operation.stage))
             self._save(generation, record, interrupted)
@@ -474,7 +477,7 @@ class CaseWorkflow:
             last_operation=CaseOperation(operation_id=str(command.operation_id), stage="start", status="running"),
         )
         record = CaseRecord(
-            view=case, requirement_version=1, order_conflict_version=1,
+            view=case, requirement_version=1, order_conflict_version=CURRENT_ORDER_CONFLICT_VERSION,
             question_input=_question_input(snapshot, case, round_number=1),
         )
         self._save(generation, current, record, command=command, stage="start")

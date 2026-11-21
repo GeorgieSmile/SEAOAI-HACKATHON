@@ -998,7 +998,7 @@ def _current_report_requirements(request: ReviewInput, rows: list[ResolvedRequir
         scoped_target = scoped_order_target(
             row.statement, row.topic, row.buyer_facet,
             option_ids=origin.option_ids, selected_option_ids=request.selected_option_ids,
-        ) if origin.input_ref == "context" else None
+        ) if origin.input_ref == "context" or origin.input_ref.startswith("answer:") else None
         if row.supplier_target != scoped_target:
             validate_supplier_target(row.supplier_target, row.statement, row.topic, row.buyer_facet)
         requirements.append(BuyerRequirement(

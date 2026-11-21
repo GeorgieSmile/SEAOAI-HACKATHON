@@ -133,6 +133,36 @@ test("continues one whole round, restores its history and replaces later questio
   await expect(page.locator(".interview-question input:checked")).toHaveCount(0);
 });
 
+test("brings a rejected answer into view on mobile and retains the answer for correction", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 850 });
+  const error = "The options named in your answer must match the options shown for this question.";
+  const question = {
+    ...firstRound.questions[1]!, prompt: "What order type applies to all selected options?",
+    option_ids: view().selected_option_ids, choices: [], requirement_ids: [], choice_effects: [],
+  };
+  const saved = view({ rounds: [{ ...firstRound, questions: [firstRound.questions[0]!, question] }] });
+  await page.route("**/api/questions/continue", (route) => route.fulfill({
+    status: 422, json: { status: "failed", code: "invalid_input", message: error },
+  }));
+  await mockSaved(page, () => saved);
+
+  const field = page.getByRole("group", { name: question.prompt });
+  const answer = field.getByRole("textbox", { name: "Your answer" });
+  const text = "For Option A, custom orders are acceptable.";
+  await answer.fill(text);
+  await field.getByRole("combobox").selectOption({ label: "Add my answer as a requirement" });
+  const submit = page.getByRole("button", { name: "Continue", exact: true });
+  await submit.click();
+
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText(error);
+  await expect(alert).toBeFocused();
+  await expect(alert).toBeInViewport();
+  await expect(answer).toHaveValue(text);
+  await expect(field.getByRole("combobox")).toHaveValue("add:");
+  await expect(submit).toBeEnabled();
+});
+
 test("goes straight to review with partial answers, skipped values and exact nonblank free text", async ({ page }) => {
   const writes = trackWrites(page);
   const round = { ...skipped.first_round, answers: null, questions: skipped.first_round.questions.map(

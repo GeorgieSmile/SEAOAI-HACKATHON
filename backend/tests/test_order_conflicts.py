@@ -29,7 +29,7 @@ def context_proposal(quote, scope, topic="customization", facet="order_type"):
     return {"quote": quote, "statement": quote, "option_ids": scope, "topic": topic, "buyer_facet": facet}
 
 
-def scripted_questions(*, from_context, overlaps=True, declare_target=False):
+def scripted_questions(*, from_context, overlaps=True, declare_target=False, offered_answer=CUSTOM):
     async def generate(inputs):
         def serve(request):
             first, *others = inputs.selected_option_ids
@@ -46,9 +46,15 @@ def scripted_questions(*, from_context, overlaps=True, declare_target=False):
                 questions.append({
                     "prompt": ASK_ABOUT_A, "why_ask": "The choice affects the order terms to confirm for Option A.",
                     "option_ids": [first], "source_ids": [], "topic": "customization", "buyer_facet": "order_type",
-                    "requirement_ids": [], "choices": [CUSTOM],
-                    "choice_effects": [{"choice": CUSTOM, "action": "add", "requirement_id": None, "statement": CUSTOM}],
+                    "requirement_ids": [], "choices": [offered_answer] if offered_answer else [],
+                    "choice_effects": [{
+                        "choice": offered_answer, "action": "add", "requirement_id": None, "statement": offered_answer,
+                    }] if offered_answer else [],
                 })
+                if declare_target and offered_answer:
+                    questions[0]["choice_effects"][0]["supplier_target"] = {
+                        "kind": "order_type", "value": "custom_orders_acceptable",
+                    }
             return response(request, {"reason": "Review the order terms.", "context_requirements": context, "questions": questions})
 
         async with scripted_client(serve) as sdk:
@@ -84,21 +90,31 @@ def buy(client, context):
 
 
 @pytest.mark.parametrize("choice", ["ready_made_only", "custom_orders_acceptable"])
-def test_conflicting_targeted_answer_has_one_buyer_choice_and_neutral_supplier_scope(tmp_path, choice):
+@pytest.mark.parametrize("offered", [True, False])
+def test_conflicting_targeted_answer_has_one_buyer_choice_and_neutral_supplier_scope(tmp_path, choice, offered):
     database = tmp_path / "case.db"
     requests = []
-    options = dict(translator=stub, question_generator=scripted_questions(from_context=False), review_generator=scripted_review(requests))
+    options = dict(
+        translator=stub,
+        question_generator=scripted_questions(
+            from_context=False, declare_target=offered, offered_answer=CUSTOM_FOR_A if offered else None,
+        ),
+        review_generator=scripted_review(requests),
+    )
     with TestClient(create_app(database, **options)) as client:
         issued = buy(client, f"{STOCK} {MATTE}")
         first, *others = issued["selected_option_ids"]
         assert issued["rounds"][0]["questions"][0]["option_ids"] == [first]
-        open_case = publish(client, issued, round_request(issued, texts=[CUSTOM]))
+        command = round_request(issued, texts=[CUSTOM_FOR_A])
+        if not offered:
+            command["submission"]["answers"][0]["requirement_effect"] = {"action": "add", "requirement_id": None}
+        open_case = publish(client, issued, command)
 
     report = open_case["report"]
     conflict, = [row for row in open_case["requirements"] if row.get("order_conflict")]
     assert conflict["option_ids"] == [first]
     assert [(source["quote"], source["question_text"]) for source in conflict["provenance"]] == [
-        (STOCK, None), (CUSTOM, ASK_ABOUT_A),
+        (STOCK, None), (CUSTOM_FOR_A, ASK_ABOUT_A),
     ]
     preference, = report["open_preferences"]
     assert preference["preference_id"] == f"requirement:{conflict['requirement_id']}"
@@ -135,6 +151,105 @@ def test_conflicting_targeted_answer_has_one_buyer_choice_and_neutral_supplier_s
     with TestClient(create_app(database, **options)) as client:
         assert client.get("/api/case").json()["case"] == resolved
         assert len(requests) == 2
+
+
+@pytest.mark.parametrize("scope_count,quote,expected", [
+    (1, CUSTOM_FOR_A, "custom"),
+    (1, "For Option A, custom orders are acceptable if the lead time works.", "conditional"),
+    (1, "For Option B, custom orders are acceptable.", "wrong_scope"),
+    (3, CUSTOM_FOR_A, "wrong_scope"),
+    (3, "Custom orders are acceptable for Option A if the lead time works.", "wrong_scope"),
+])
+def test_free_text_order_replacement_must_stay_inside_the_exact_issued_scope(tmp_path, scope_count, quote, expected):
+    database = tmp_path / "case.db"
+    requests = []
+
+    async def questions(inputs):
+        def serve(request):
+            return response(request, {
+                "reason": "Check whether the buyer wants to revise the existing order terms.",
+                "context_requirements": [context_proposal(STOCK, inputs.selected_option_ids)],
+                "questions": [{
+                    "prompt": "What order terms should the review use for these options?",
+                    "why_ask": "Your answer affects the order terms to confirm.",
+                    "option_ids": inputs.selected_option_ids[:scope_count], "source_ids": [],
+                    "topic": "customization", "buyer_facet": "order_type", "requirement_ids": ["context:1"],
+                    "choices": [], "choice_effects": [],
+                }],
+            })
+
+        async with scripted_client(serve) as sdk:
+            return await generate_questions(inputs, client=sdk)
+
+    options = dict(translator=stub, question_generator=questions, review_generator=scripted_review(requests))
+    with TestClient(create_app(database, **options)) as client:
+        issued = buy(client, STOCK)
+        first = issued["selected_option_ids"][0]
+        requirement_id, = issued["rounds"][0]["questions"][0]["requirement_ids"]
+        command = round_request(issued, texts=[quote])
+        command["submission"]["answers"][0]["requirement_effect"] = {
+            "action": "replace", "requirement_id": requirement_id,
+        }
+        result = client.post("/api/reviews", json=command)
+        if expected == "wrong_scope":
+            assert result.status_code == 422 and result.json()["code"] == "invalid_input"
+            assert client.get("/api/case").json()["case"] == issued
+            assert requests == []
+            return
+        reviewed = ready(result)
+
+    a, = [row for row in reviewed["requirements"] if row["option_ids"] == [first]]
+    assert a["statement"] == a["provenance"][-1]["quote"] == quote
+    assert not a.get("order_conflict")
+    assert reviewed["rounds"][0]["answers"][0]["answer_text"] == quote
+    report = reviewed["report"]
+    b_c_draft, = [line for line in report["supplier_draft"].splitlines() if "[Options B, C]" in line]
+    assert "ready-made stock" in b_c_draft and "custom order" not in b_c_draft
+    if expected == "custom":
+        assert a["supplier_target"]["value"] == "custom_orders_acceptable"
+        assert any(row["quote"] == quote and row["option_ids"] == [first] for row in report["buyer_requirements"])
+        a_draft, = [line for line in report["supplier_draft"].splitlines() if "[Option A]" in line]
+        assert "requires a custom order" in a_draft
+    else:
+        assert a["supplier_target"] is None
+        assert "[Option A]" not in report["supplier_draft"]
+
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+        assert len(requests) == 1
+
+
+def test_model_cannot_issue_a_narrower_order_choice_on_a_broad_question(tmp_path):
+    attempts = []
+
+    async def questions(inputs):
+        def serve(request):
+            attempts.append(json.loads(request.content)["instructions"])
+            scope = inputs.selected_option_ids if len(attempts) == 1 else inputs.selected_option_ids[:1]
+            return response(request, {
+                "reason": "Clarify the order terms.", "context_requirements": [],
+                "questions": [{
+                    "prompt": "What order terms are acceptable?",
+                    "why_ask": "This changes which order terms the seller should confirm.",
+                    "option_ids": scope, "source_ids": [], "topic": "customization", "buyer_facet": "order_type",
+                    "requirement_ids": [], "choices": [CUSTOM_FOR_A],
+                    "choice_effects": [{
+                        "choice": CUSTOM_FOR_A, "action": "add", "requirement_id": None, "statement": CUSTOM_FOR_A,
+                    }],
+                }],
+            })
+
+        async with scripted_client(serve) as sdk:
+            return await generate_questions(inputs, client=sdk)
+
+    with TestClient(create_app(tmp_path / "case.db", translator=stub, question_generator=questions)) as client:
+        issued = buy(client, "")
+
+    assert len(attempts) == 2
+    assert "named options must match the scope" in attempts[1]
+    question, = issued["rounds"][0]["questions"]
+    assert question["option_ids"] == issued["selected_option_ids"][:1]
+    assert question["choices"] == [CUSTOM_FOR_A]
 
 
 @pytest.mark.parametrize("overlaps,declare_target", [(True, False), (True, True), (False, True)])
@@ -217,7 +332,7 @@ def test_scoped_context_keeps_conditions_and_rejects_the_wrong_sku(tmp_path, quo
         assert row["status"] == "unresolved" and row["supplier_target"] is None
         assert reviewed["report"]["supplier_draft"] == ""
     else:
-        assert "explicitly named options" in instructions[1]
+        assert "named options must match the scope" in instructions[1]
         assert row["supplier_target"]["value"] == "custom_orders_acceptable"
         draft = reviewed["report"]["supplier_draft"]
         assert "[Option A]" in draft and "requires a custom order" in draft and "[Option B]" not in draft

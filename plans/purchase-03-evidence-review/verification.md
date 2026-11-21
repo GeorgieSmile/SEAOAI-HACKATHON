@@ -220,6 +220,16 @@ Previously published contradictory reports created by both `0d6749f` and `265221
 
 The original-ZIP check included “For Option A, custom orders are acceptable.” as the exact buyer quote, with and without a proposed supplier target. The qualifier follows the buyer’s selected SKU order. Wrong-SKU and conditional statements cannot supply an unconditional order direction. The Chrome walkthrough reproduced the overlap with zero interview questions, showed both verbatim statements, chose custom for A, and reopened the corrected draft and original images after restart on desktop and mobile. The full combined checks passed 450 backend tests, 37 original-ZIP endpoint cases, 37 Chrome tests, frontend typechecking, the production build and whitespace checks. Providers were scripted.
 
+### Follow-up to the review of `6955732`
+
+Astra reproduced a difference between the buyer’s initial context and a written interview answer with identical wording. On the previous commit, typing “For Option A, custom orders are acceptable.” as an additional requirement on a question about A could leave stock-only and custom orders active together. The original-ZIP check now exercises this wording as context, as an issued choice, and as a written answer using **Add** and **Replace**. The selected SKU order determines which option is A. Each path keeps the full original quote. A written direction naming a different SKU or only part of the question’s issued scope returns a correctable validation error, preserving the last saved revision and report.
+
+The written **Add** now opens the intended clarification for A. After choosing stock for A, editing that earlier answer to **Replace** with the same wording produced custom A, stock B/C, and the same shared delivery deadline across restart. A database written by the actual `6955732` backend with the missed conflict required explicit regeneration. It retained its original answers, presented A’s clarification, and reopened after either choice without a provider call. An older broad replacement naming only A also retained its raw answer and the prior valid stock scope.
+
+The production browser check typed the scoped sentence into the actual form. **Add** created one clarification, an explicit custom choice advanced the revision, and editing that answer to **Replace** advanced it again. The copied draft, the same three original SKU photos, and the B/C deadlines and stock status survived restart. At 390 px the two wrong-scope submissions returned 422, brought the server message into view, preserved the exact text and selected effect for correction, and made no provider request. Desktop and mobile restored revision 3 via GET.
+
+The final combined checks passed 462 backend tests, 45 original-ZIP endpoint cases, 38 Chrome tests, frontend typechecking, production build and whitespace checks. All provider responses for this follow-up were scripted.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

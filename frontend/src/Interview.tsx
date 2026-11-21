@@ -242,6 +242,7 @@ export function Interview({
   const [notice, setNotice] = useState("");
   const [draftEdit, setDraftEdit] = useState<{ revision: number; text: string } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const errorAlert = useRef<HTMLParagraphElement>(null);
   const openRound = view?.rounds.find((round) => round.answers === null);
   const edited = view?.rounds.find((round) => round.round_id === editingRound);
   const activeRound = edited ?? openRound;
@@ -259,6 +260,10 @@ export function Interview({
   useEffect(() => {
     if (!hidden) heading.current?.focus();
   }, [hidden, activeRound?.round_id, showReport]);
+
+  useEffect(() => {
+    if (!hidden && error) errorAlert.current?.focus();
+  }, [hidden, error]);
 
   function answerValue(round: QuestionRound, id: string) {
     return Object.hasOwn(drafts, id) ? drafts[id] : savedAnswer(round, id);
@@ -337,7 +342,7 @@ export function Interview({
 
       {showReport && report && view ? (
         <>
-          {error && <p className="interview-error" role="alert">{error}</p>}
+          {error && <p className="interview-error" role="alert" tabIndex={-1} ref={errorAlert}>{error}</p>}
           <PurchaseReview key={report.revision} report={report} snapshot={snapshot}
             requirements={view.requirements}
             onConfirmOrder={onConfirmOrder}
@@ -351,7 +356,7 @@ export function Interview({
             {busy && <p className="interview-status" role="status">{workingMessage}</p>}
             {notice && !busy && <p className="interview-status" role="status">{notice}</p>}
             {(error || (failed && !busy)) && (
-              <p className="interview-error" role="alert">
+              <p className="interview-error" role="alert" tabIndex={-1} ref={errorAlert}>
                 {error || view?.last_operation?.message || "Could not prepare the next step."}
               </p>
             )}

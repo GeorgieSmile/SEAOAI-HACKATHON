@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import requirements
+from backend import case_workflow, requirements
 from backend.case_models import SavedReview
 from backend.case_workflow import _review_digest
 from backend.contracts import ContextRequirement, QuestionDraft, QuestionResult
@@ -783,3 +783,153 @@ def test_saved_order_conflict_replays_without_automatic_generation(tmp_path, mon
         assert "[Options B, C]" in generated["report"]["supplier_draft"]
     with TestClient(create_app(database, **restore_options)) as client:
         assert client.get("/api/case").json()["case"] == generated
+
+
+def test_keep_reactivates_the_original_scoped_answer_after_uncertainty(tmp_path):
+    database = tmp_path / "case.db"
+    prior = "Ready-made stock only."
+    answer = "Option A: custom orders are acceptable."
+    prompts = (
+        "What order arrangement will work for this option?",
+        "Has that order preference changed?",
+        "Do you want to keep the earlier order arrangement?",
+    )
+
+    async def ask(inputs):
+        first = inputs.selected_option_ids[:1]
+        scope = [row.requirement_id for row in inputs.requirements or [] if row.option_ids == first]
+        initial = inputs.round_number == 1
+        return QuestionResult(
+            reason="Confirm the order terms for the first option.",
+            context_requirements=[ContextRequirement(
+                statement=prior, quote=prior, option_ids=inputs.selected_option_ids, topic="customization",
+            )] if initial else None,
+            questions=[QuestionDraft(
+                prompt=prompts[inputs.round_number - 1], why_ask="The answer determines which order terms we should confirm.",
+                topic="customization", buyer_facet="order_type", option_ids=first, source_ids=[], choices=[],
+                requirement_ids=["context:1"] if initial else scope, choice_effects=[],
+            )],
+        )
+
+    def submit(client, case, text, *, action=None):
+        command = round_request(case, texts=[text])
+        if action:
+            target, = case["rounds"][-1]["questions"][0]["requirement_ids"]
+            command["submission"]["answers"][0]["requirement_effect"] = {"action": action, "requirement_id": target}
+        endpoint = "/api/reviews" if action == "keep" else "/api/questions/continue"
+        return ready(client.post(endpoint, json=command))
+
+    options = dict(translator=stub, question_generator=ask, review_generator=offline_review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        start = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=prior)))
+        first = start["selected_option_ids"][:1]
+        round_two = submit(client, start, answer, action="replace")
+        chosen, = [row for row in round_two["requirements"] if row["option_ids"] == first]
+        assert chosen["supplier_target"]["value"] == "custom_orders_acceptable"
+        round_three = submit(client, round_two, "Still deciding.")
+        uncertain, = [row for row in round_three["requirements"] if row["option_ids"] == first]
+        assert uncertain["requirement_id"] == chosen["requirement_id"]
+        assert uncertain["status"] == "unresolved" and uncertain["supplier_target"] is None
+        target, = round_three["rounds"][-1]["questions"][0]["requirement_ids"]
+        for action, text in [
+            ("keep", "Option B: keep the earlier requirement."),
+            ("waive", "No order requirement for Option A except Option B."),
+            ("replace", "Custom orders are acceptable except B."),
+        ]:
+            command = round_request(round_three, texts=[text])
+            command["submission"]["answers"][0]["requirement_effect"] = {"action": action, "requirement_id": target}
+            rejected = client.post("/api/reviews", json=command)
+            assert rejected.status_code == 422 and rejected.json()["code"] == "invalid_input"
+            assert client.get("/api/case").json()["case"] == round_three
+        final = submit(client, round_three, "Keep the earlier requirement.", action="keep")
+        reactivated, = [row for row in final["requirements"] if row["option_ids"] == first]
+        assert reactivated["requirement_id"] == chosen["requirement_id"]
+        assert reactivated["status"] == "active" and reactivated["supplier_target"] == chosen["supplier_target"]
+        assert [source["quote"] for source in reactivated["provenance"]] == [
+            prior, answer, "Still deciding.", "Keep the earlier requirement.",
+        ]
+        row, = [row for row in final["report"]["buyer_requirements"] if row["option_ids"] == first]
+        assert row["quote"] == answer and row["question_text"] == prompts[0]
+        assert "requires a custom order" in final["report"]["supplier_draft"]
+        assert "ready-made stock" in final["report"]["supplier_draft"]
+
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == final
+
+
+@pytest.mark.parametrize(("scope_index", "effect", "damaged"), [
+    (0, "add", False),
+    (0, "add", True),
+    (1, "replace", False),
+])
+def test_version_one_case_recovers_scoped_answers_after_verifying_the_old_report(tmp_path, monkeypatch, scope_index, effect, damaged):
+    database = tmp_path / "case.db"
+    stock = "Ready-made stock only."
+    answer = "For Option A, custom orders are acceptable."
+
+    async def ask(inputs):
+        return QuestionResult(
+            reason="Confirm the order terms for this option.",
+            context_requirements=[ContextRequirement(
+                statement=stock, quote=stock, option_ids=inputs.selected_option_ids, topic="customization",
+            )],
+            questions=[QuestionDraft(
+                prompt="What order arrangement would you accept?", why_ask="The order terms can change the purchase.",
+                topic="customization", buyer_facet="order_type", option_ids=[inputs.selected_option_ids[scope_index]],
+                source_ids=[], choices=[], requirement_ids=["context:1"], choice_effects=[],
+            )],
+        )
+
+    original_infer = requirements._with_supplier_target
+
+    def legacy_infer(row, **kwargs):
+        return original_infer(row, **{**kwargs, "scoped_answers": False})
+
+    options = dict(translator=stub, question_generator=ask, review_generator=offline_review)
+    with monkeypatch.context() as patch:
+        patch.setattr(case_workflow, "CURRENT_ORDER_CONFLICT_VERSION", 1)
+        patch.setattr(requirements, "_with_supplier_target", legacy_infer)
+        patch.setattr(requirements, "order_statement_matches_scope", lambda *args, **kwargs: True)
+        with TestClient(create_app(database, **options)) as client:
+            snapshot = _upload(client, RAW).json()["snapshot"]
+            case = ready(client.post("/api/questions", json=initial_request(snapshot, buyer_context=stock)))
+            command = round_request(case, texts=[answer])
+            target, = case["rounds"][0]["questions"][0]["requirement_ids"]
+            command["submission"]["answers"][0]["requirement_effect"] = {
+                "action": effect, "requirement_id": target if effect == "replace" else None,
+            }
+            old = ready(client.post("/api/reviews", json=command))
+            assert not any(row.get("order_conflict") for row in old["requirements"])
+            assert any(row["quote"] == answer for row in old["report"]["buyer_requirements"])
+
+    if damaged:
+        _replace_saved_case(database, lambda record: record["saved_review"].update(input_digest="0" * 64))
+
+    async def forbidden(*args):
+        pytest.fail("Opening a saved case must not ask for questions or a review.")
+
+    restore_options = {**options, "question_generator": forbidden, "review_generator": forbidden}
+    for _ in range(2):
+        with TestClient(create_app(database, **restore_options)) as client:
+            reopened = client.get("/api/case").json()["case"]
+            assert reopened["rounds"] == old["rounds"]
+            assert reference(reopened) == reference(old)
+            assert reopened["report"] is None
+            code = "invalid_review" if damaged else "review_regeneration_required"
+            assert reopened["last_operation"]["code"] == code
+
+    with TestClient(create_app(database, **{**restore_options, "review_generator": offline_review})) as client:
+        rebuilt = ready(client.post("/api/case/retry", json=retry_request(reopened)))
+        assert "requires a custom order" not in rebuilt["report"]["supplier_draft"]
+        if effect == "add":
+            conflict, = [row for row in rebuilt["requirements"] if row.get("order_conflict")]
+            assert conflict["option_ids"] == rebuilt["selected_option_ids"][:1]
+            assert [item["quote"] for item in conflict["provenance"]] == [stock, answer]
+        else:
+            stock_options = {option for row in rebuilt["report"]["buyer_requirements"] if row["quote"] == stock
+                             for option in row["option_ids"]}
+            assert stock_options == set(rebuilt["selected_option_ids"])
+            assert rebuilt["report"]["open_preferences"] == []
+    with TestClient(create_app(database, **restore_options)) as client:
+        assert client.get("/api/case").json()["case"] == rebuilt
