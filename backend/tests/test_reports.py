@@ -203,10 +203,34 @@ def test_draft_uses_selection_order_and_numbers_questions_after_nulls(example):
     report_value = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
     names = {option.option_id: option.name_original for option in request.snapshot.options}
     assert report_value.supplier_draft.splitlines()[1:4] == [f"A. {names['v6']}", f"B. {names['v0']}", f"C. {names['v1']}"]
-    assert report_value.supplier_draft.splitlines()[7:] == [f"1. {questions[0]}", "", f"2. {questions[2]}"]
+    assert report_value.supplier_draft.splitlines()[7:] == [
+        f"1. [Options A, B, C] {questions[0]}", "", f"2. [Options A, B, C] {questions[2]}",
+    ]
     assert "40%" not in report_value.supplier_draft
     assert [row.option_id for row in report_value.comparisons[0].values] == ["v6", "v0", "v1"]
     assert [row.finding_id for row in report_value.findings] == [row["finding_id"] for row in content["findings"]]
+
+
+def test_supplier_draft_labels_each_question_with_its_own_skus(example):
+    request, content, sent_sources = example
+    request = request.model_copy(update={"selected_option_ids": ["v6", "v0", "v1"]})
+    findings = content["findings"]
+    scopes = [["v1", "v6"], ["v0"], ["v6"]]
+    for finding, scope in zip(findings, scopes, strict=True):
+        finding.update(
+            option_ids=scope, title="Decoration check", citations=[], unknowns=[],
+            interpretation="The decoration needs confirmation.",
+            impact="The finish affects this purchase.", priority_reason="Confirm before ordering.",
+            requested_evidence="A sample.", evidence_limits="The sample covers one unit.",
+            supplier_question="Could you confirm the decoration for this option?",
+        )
+    findings[1]["supplier_question"] = None
+    result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sent_sources)
+    assert result.supplier_draft.splitlines()[7:] == [
+        "1. [Options A, C] Could you confirm the decoration for this option?",
+        "",
+        "2. [Option A] Could you confirm the decoration for this option?",
+    ]
 
 
 @pytest.mark.parametrize(("path", "replacement", "message"), [

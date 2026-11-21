@@ -142,7 +142,7 @@ def create_app(
                 store, question_generator if question_generator is not None else partial(generate_questions, client=question_client),
                 review_generator if review_generator is not None else partial(generate_review, client=review_client),
             )
-            app.state.case_workflow.recover_interrupted()
+            app.state.case_workflow.recover_saved_case()
             yield
         finally:
             try:

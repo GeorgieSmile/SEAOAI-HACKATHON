@@ -16,6 +16,7 @@ from .contracts import (
     AnsweredQuestion, AnswerSubmission, IssuedQuestion, IssuedRound, ListingSnapshot, QuestionInput,
     QuestionResult, ReviewInput,
 )
+from .report import build_supplier_draft, validate_report_attribution
 from .report_models import ReviewFailed, ReviewResult
 from .state import Store
 
@@ -109,7 +110,7 @@ def _operation_result(case: CaseView) -> CaseView:
 
 def _failure(record: CaseRecord, code: str, message: str) -> CaseRecord:
     operation = record.view.last_operation.model_copy(update={"status": "failed", "code": code, "message": message})
-    case = record.view.model_copy(update={"phase": "failed", "reason": None, "last_operation": operation})
+    case = record.view.model_copy(update={"phase": "failed", "report": None, "reason": None, "last_operation": operation})
     return record.model_copy(update={"view": case})
 
 
@@ -119,11 +120,31 @@ class CaseWorkflow:
         self.generate_questions = generate_questions
         self.generate_review = generate_review
 
-    def recover_interrupted(self) -> None:
-        generation, _, record = self.store.workspace()
-        if record is not None and record.view.last_operation.status == "running":
+    def recover_saved_case(self) -> None:
+        generation, snapshot, record = self.store.workspace()
+        if record is None:
+            return
+        if record.view.last_operation.status == "running":
             interrupted = _failure(record, "analysis_failed", _interrupted(record.view.last_operation.stage))
             self._save(generation, record, interrupted)
+            return
+        report = record.view.report
+        if report is None or snapshot is None:
+            return
+        # Reports written by earlier versions may contain unscoped questions or private contact details.
+        inputs = ReviewInput(**_input_fields(snapshot, record.view))
+        try:
+            validate_report_attribution(inputs, report)
+            draft = build_supplier_draft(inputs, report)
+        except ValueError:
+            failed = _failure(record, "invalid_review", INVALID_REVIEW)
+            self._save(generation, record, failed.model_copy(update={"review_input": inputs}))
+            return
+        if report.supplier_draft != draft:
+            updated = report.model_copy(update={"supplier_draft": draft})
+            self._save(generation, record, record.model_copy(update={
+                "view": record.view.model_copy(update={"report": updated}),
+            }))
 
     def reset(self, command: ResetCase) -> None:
         generation, snapshot, current = self.store.workspace()

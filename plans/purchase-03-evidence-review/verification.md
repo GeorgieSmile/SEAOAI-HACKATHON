@@ -76,6 +76,18 @@ Both v2 requests at `b7278dd` returned a validated report on their first attempt
 
 The final frontend change on `07559e6` labels the collapsed SKU evidence controls. Chrome showed **SKU image · Option A**, **Option B** and **Option C** on the live report’s capacity finding. The original ZIP walkthrough, saved live-report walkthrough, 27 Playwright tests, typecheck and production build all passed after that change. The full backend suite passed again after the v2 prompt change.
 
+## PR #7 review regressions
+
+On `6f38c3c`, the original user-supplied ZIP reproduced the three review findings through the production report endpoint with an offline SDK transport. With A selected as the lettering variant and B as the applied-picture variant, a joint finding attributed B’s name to A. The provider could also copy an email address out of a private buyer answer, or leave “this option” ambiguous in a draft listing both options. All three reports were accepted and saved.
+
+With the fixes, the wrong-source attribution, original terms swapped between two cited SKU names, and copied private address returned `invalid_review` after the offline correction attempt. The correctly attributed comparison still issued a report. Each numbered supplier question now identifies its applicable options in buyer selection order.
+
+The same checks reopened five databases written by the actual `6f38c3c` implementation. Startup withheld the three invalid reports, preserved the submitted answers and allowed explicit retry. It rebuilt the two valid drafts with option labels. Recovery issued zero provider requests.
+
+The Chrome E2E rerun used the original ZIP, scripted model responses, real HTTP routes and disposable SQLite. Three selected 150 × 150 images matched the original ZIP members byte for byte. The copied private draft edit left the stored report unchanged. Editing round one from custom orders to ready-made only advanced revision 2 to 3, removed the sample answer and preserved the exact 33-character deadline. The replacement draft labeled the shared question `[Options A, B, C]` and the single-SKU question `[Option A]`. A new backend process and a fresh browser page restored the edited report with GETs and zero writes. Desktop (1280 px) and mobile (390 px) views remained readable.
+
+All 214 offline backend tests and all 27 Chrome tests passed, along with frontend typechecking, the production build and whitespace checks. No paid requests were made for the review fixes.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

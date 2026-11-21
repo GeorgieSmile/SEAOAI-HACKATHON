@@ -339,3 +339,61 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert reviewed["phase"] == "reviewed"
         assert reviewed["revision"] == restored["revision"]
         assert calls == [inputs]
+
+
+@pytest.mark.parametrize("legacy_issue", ["unlabeled_question", "private_contact", "wrong_name"])
+def test_restart_rechecks_saved_findings_before_replaying_report(tmp_path, legacy_issue):
+    database = tmp_path / "legacy.db"
+    options = dict(translator=stub, question_generator=drafts, review_generator=offline_review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        start = initial_request(snapshot)
+        start["selected_option_ids"] = [snapshot["options"][i]["option_id"] for i in (6, 0)]
+        case = ready(client.post("/api/questions", json=start))
+        command = round_request(case, texts=["Private note: Reach cedar914@example.test before sampling.", None])
+        original = ready(client.post("/api/reviews", json=command))
+
+    # Recreate persisted data accepted by the original Phase 3 code.
+    store = Store(database)
+    try:
+        generation, listing, record = store.workspace()
+        legacy = record.model_copy(deep=True)
+        report = legacy.view.report
+        finding = report.findings[-1]
+        finding.supplier_question = "Could you confirm the decoration for this option?"
+        if legacy_issue == "private_contact":
+            finding.supplier_question = "Can you send product photos to cedar914@example.test?"
+        if legacy_issue == "wrong_name":
+            name = listing.option_name_sources()[start["selected_option_ids"][1]]
+            finding.option_ids = start["selected_option_ids"]
+            finding.citations = [finding.citations[0].model_copy(update={
+                "source_id": name.source_id, "quote": name.original_text,
+            })]
+            finding.interpretation = "The listing name for Option A includes 贴画."
+        report.supplier_draft = "1. " + finding.supplier_question
+        assert store.save_case(generation, record, legacy)
+    finally:
+        store.close()
+
+    async def unexpected_generation(inputs, images):
+        pytest.fail("Restoring or replaying a saved report must not call the provider.")
+
+    with TestClient(create_app(database, **{**options, "review_generator": unexpected_generation})) as client:
+        recovered = client.get("/api/case").json()["case"]
+        assert reference(recovered) == reference(original)
+        assert recovered["rounds"] == original["rounds"]
+        replay = client.post("/api/reviews", json=command).json()
+        if legacy_issue == "unlabeled_question":
+            assert recovered["phase"] == "reviewed"
+            assert "2. [Option A] Could you confirm the decoration for this option?" in recovered["report"]["supplier_draft"]
+            assert replay["case"] == recovered
+            return
+        assert recovered["phase"] == "failed"
+        assert recovered["report"] is None
+        assert replay["code"] == "invalid_review"
+
+    with TestClient(create_app(database, **options)) as client:
+        reviewed = ready(client.post("/api/case/retry", json=retry_request(recovered)))
+        assert reviewed["rounds"] == original["rounds"]
+        assert reference(reviewed) == reference(original)
+        assert reviewed["phase"] == "reviewed"

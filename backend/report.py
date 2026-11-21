@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 import logging
 import re
-from unicodedata import normalize
+from unicodedata import decimal, normalize
 
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseInputContentParam, ResponseInputParam
@@ -12,6 +12,9 @@ from pydantic import ValidationError
 
 from .ai import (
     CLAUSE_BOUNDARY,
+    NAMED_OPTIONS,
+    OPTION_NAME_AFTER,
+    OPTION_NAME_BEFORE,
     OPTION_REFERENCES,
     PROMPT_DIRECTORY,
     _InvalidStructuredOutput,
@@ -22,7 +25,7 @@ from .ai import (
 )
 from .contracts import Option, ReviewInput, Source
 from .intake import IMAGE_MIME
-from .report_models import PurchaseReview, ReviewContent, ReviewFailed, ReviewReady, ReviewResult
+from .report_models import Finding, PurchaseReview, ReviewContent, ReviewFailed, ReviewReady, ReviewResult
 
 
 REVIEW_PROMPT_VERSION = "purchase-review-v2"
@@ -31,10 +34,40 @@ REVIEW_DEADLINE_SECONDS = 90
 REVIEW_MAX_OUTPUT_TOKENS = 12_288
 DETAIL_IMAGE_LIMITATION = "Product-detail images were not reviewed in this version."
 COVERAGE_GROUPS = {"product_match", "intended_use", "supporting_evidence"}
+NAME_PREDICATE = re.compile(
+    r"\b(?:includes?|contains?|uses?|reads?|says?|mentions?|shows?|has|have|is|are)\b", re.IGNORECASE,
+)
+NAME_INQUIRY = re.compile(
+    r"\b(?:whether|if)\b|^\s*(?:does|do|is|are|has|have|what|which|how)\b", re.IGNORECASE,
+)
+NAME_NEGATION = re.compile(r"\b(?:not|never)\b|n['’]t\b", re.IGNORECASE)
+HAN_CHARACTER = re.compile(r"[\u3400-\u9fff\U00020000-\U000323af]")
+NAME_TERM_AFTER = re.compile(
+    r"^\s*(?:(?:the\s+)?(?:(?:Chinese|original)\s+)?(?:characters?|phrase|term|word(?:ing)?|text)\s+)?"
+    r"[\"“'‘`]*\s*(?P<term>[\w-]+)",
+    re.IGNORECASE,
+)
+NAME_TERM_BEFORE = re.compile(
+    r"(?P<term>[\w-]+)[\"”'’`]*\s+(?:(?:SKU|listing)\s+)?(?:names?|wording|labels?)\s+(?:for|of)\s*$",
+    re.IGNORECASE,
+)
 PRIVATE_BUSINESS_DETAILS = re.compile(
     r"\b(?:margins?|profit(?:s|ability)?|mark[ -]?ups?|revenue|resale pric(?:e|ing)|"
     r"(?:internal|private) (?:notes?|costs?|budgets?)|target costs?|cost (?:ceilings?|targets?)|unit economics)\b"
     r"|กำไร|ราคาขายต่อ|ต้นทุนเป้าหมาย|利润|毛利|转售价格",
+    re.IGNORECASE,
+)
+PRIVATE_NOTE = re.compile(r"\b(?:internal|private|confidential) notes?\b", re.IGNORECASE)
+NOTE_IDENTIFIER = re.compile(r"\b(?:[A-Za-z]{2,}[-_]\d[\w-]*|[A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+)+(?![-_]\d))\b")
+BUSINESS_FIGURE = re.compile(
+    r"(?:[$€£¥฿]|\b(?:THB|USD|EUR|GBP|CNY|RMB|JPY)\b)\s*\d+(?:[.,]\d+)*"
+    r"|\b\d+(?:[.,]\d+)*\s*(?:%|\b(?:percent|THB|USD|EUR|GBP|CNY|RMB|JPY)\b|บาท|元)",
+    re.IGNORECASE,
+)
+EMAIL_ADDRESS = re.compile(r"[\w.!#$%&'*+/=?^`{|}~+-]+@(?:[\w-]+\.)+[^\W\d_]{2,63}\b")
+PHONE_NUMBER = re.compile(r"(?<!\w)(?:\+[ \t]*)?(?:\(\d{1,4}\)|\d)(?:[ .()\-‐‑–]*\d){6,14}(?!\w)")
+PHONE_INTRO = re.compile(
+    r"(?:\b(?:phone|mobile|tel|call|text|contact|reach|whatsapp)\b|โทร|เบอร์|电话)[^\d.!?;]{0,25}$",
     re.IGNORECASE,
 )
 LOGGER = logging.getLogger(__name__)
@@ -179,37 +212,74 @@ def _scoped_source(sources: Mapping[str, Source], source_id: str, option_ids: Se
 
 
 def _normalized_prose(text: str) -> str:
-    return " ".join(re.findall(r"\w+|%", normalize("NFKC", text).casefold()))
+    text = re.sub(r"\bpercent\b", "%", normalize("NFKC", text).casefold())
+    return " ".join(re.findall(r"\w+|[%$€£¥฿]", text))
 
 
 def _private_note_values(text: str) -> Iterable[str]:
     for clause in CLAUSE_BOUNDARY.split(normalize("NFKC", text)):
-        if PRIVATE_BUSINESS_DETAILS.search(clause):
-            _, delimiter, value = clause.partition(":")
-            if delimiter and (value := _normalized_prose(value)):
-                yield value
+        detail = PRIVATE_BUSINESS_DETAILS.search(clause)
+        note = PRIVATE_NOTE.search(clause)
+        if detail is None and note is None:
+            continue
+        yield from (_normalized_prose(figure.group()) for figure in BUSINESS_FIGURE.finditer(clause))
+        marker = note or detail
+        _, delimiter, value = clause[marker.end():].partition(":")
+        if delimiter and (normalized := _normalized_prose(value)):
+            yield normalized
+            if note is not None:
+                yield from (_normalized_prose(identifier.group()) for identifier in NOTE_IDENTIFIER.finditer(value))
 
 
-def _supplier_draft(request: ReviewInput, content: ReviewContent) -> str:
-    questions = []
-    buyer_context = _normalized_prose(request.buyer_context)
-    private_values = {
-        value
-        for buyer_text in [request.buyer_context, *(answer.answer_text or "" for answer in request.answers)]
-        for value in _private_note_values(buyer_text)
+def _phone_values(text: str, *, require_contact_format: bool = False) -> Iterable[str]:
+    for match in PHONE_NUMBER.finditer(text):
+        number = match.group()
+        digits = "".join(str(decimal(character)) for character in number if character.isdecimal())
+        if not 7 <= len(digits) <= 15:
+            continue
+        if require_contact_format:
+            prefix = text[max(0, match.start() - 60):match.start()]
+            has_separators = len(digits) >= 9 and (number.count(".") >= 2 or re.search(r"[ ()\-‐‑–]", number))
+            if not (number.startswith("+") or has_separators or PHONE_INTRO.search(prefix)):
+                continue
+        yield digits
+
+
+def validate_supplier_privacy(request: ReviewInput, questions: Iterable[str]) -> None:
+    buyer_texts = [request.buyer_context, *(answer.answer_text for answer in request.answers if answer.answer_text)]
+    buyer_phones = {
+        phone for text in buyer_texts for phone in _phone_values(normalize("NFKC", text), require_contact_format=True)
     }
+    private_values = {value for text in buyer_texts for value in _private_note_values(text)}
+    buyer_context = _normalized_prose(request.buyer_context)
     if len(buyer_context) >= 30:
         private_values.add(buyer_context)
+
+    for question in questions:
+        text = normalize("NFKC", question).casefold()
+        normalized = f" {_normalized_prose(text)} "
+        if (
+            PRIVATE_BUSINESS_DETAILS.search(text) or PRIVATE_NOTE.search(text)
+            or EMAIL_ADDRESS.search(text)
+            or buyer_phones.intersection(_phone_values(text))
+            or any(f" {value} " in normalized for value in private_values)
+        ):
+            raise ValueError("Supplier questions must omit private business details, buyer contact details, and verbatim buyer context.")
+
+
+def build_supplier_draft(request: ReviewInput, content: ReviewContent) -> str:
+    validate_supplier_privacy(request, (
+        finding.supplier_question for finding in content.findings if finding.supplier_question is not None
+    ))
+    questions = []
     for finding in content.findings:
         if finding.supplier_question is None:
             continue
         question = " ".join(finding.supplier_question.split())
-        normalized_question = f" {_normalized_prose(question)} "
-        if PRIVATE_BUSINESS_DETAILS.search(normalize("NFKC", question)) or any(
-            f" {value} " in normalized_question for value in private_values
-        ):
-            raise ValueError("Supplier questions must omit private business details and verbatim buyer context.")
-        questions.append(question)
+        letters = [letter for option_id, letter in zip(request.selected_option_ids, OPTION_REFERENCES)
+                   if option_id in finding.option_ids]
+        scope = "Option" if len(letters) == 1 else "Options"
+        questions.append(f"[{scope} {', '.join(letters)}] {question}")
 
     if not questions:
         return ""
@@ -232,6 +302,67 @@ def _validate_option_language(text: str | None, allowed: set[str]) -> None:
         not aliases.issubset(allowed) for aliases, _, _, _ in _named_option_references(normalize("NFKC", text))
     ):
         raise ValueError("Name only the option letters covered by the referenced finding, source, or comparison.")
+
+
+def _finding_prose(finding: Finding) -> Iterable[str]:
+    yield from (
+        finding.title, finding.interpretation, finding.impact, finding.priority_reason,
+        finding.requested_evidence, finding.evidence_limits,
+    )
+    if finding.supplier_question is not None:
+        yield finding.supplier_question
+    yield from (unknown.text for unknown in finding.unknowns)
+
+
+def _original_term(match: re.Match[str] | None) -> str:
+    term = match["term"] if match is not None else ""
+    return term if HAN_CHARACTER.search(term) else ""
+
+
+def _validate_name_claims(text: str, wording_by_alias: Mapping[str, list[str]]) -> None:
+    for references, before, after, _ in _named_option_references(normalize("NFKC", text)):
+        # Each alias in a sentence has its own words and evidence.
+        next_reference = NAMED_OPTIONS.search(after)
+        tail = after[:next_reference.start()] if next_reference is not None else after
+        if NAME_INQUIRY.search(before) or not (OPTION_NAME_BEFORE.search(before) or OPTION_NAME_AFTER.match(tail)):
+            continue
+        predicate = NAME_PREDICATE.search(tail)
+        term = _original_term(NAME_TERM_BEFORE.search(before))
+        if predicate is not None and not term and not NAME_NEGATION.search(tail[:predicate.start()]):
+            term = _original_term(NAME_TERM_AFTER.match(tail[predicate.end():]))
+        if predicate is None and not term:
+            continue
+
+        for alias in references:
+            wording = wording_by_alias.get(alias)
+            if not wording:
+                raise ValueError("Each named option claim about wording needs its own cited SKU name.")
+            if term and not any(term in excerpt for excerpt in wording):
+                raise ValueError("Match every asserted original term to the cited SKU name for that option.")
+
+
+def validate_report_attribution(request: ReviewInput, content: ReviewContent) -> None:
+    """Bind identifiable SKU-name claims to each option's own report evidence."""
+    names = request.snapshot.option_name_sources()
+    aliases = dict(zip(request.selected_option_ids, OPTION_REFERENCES))
+    alias_by_name_id = {names[option_id].source_id: alias for option_id, alias in aliases.items()}
+    for comparison in content.comparisons:
+        for value in comparison.values:
+            source = names.get(value.option_id)
+            alias = aliases.get(value.option_id)
+            wording = {}
+            if alias and source and source.original_text and source.source_id in value.source_ids:
+                wording[alias] = [normalize("NFKC", source.original_text)]
+            _validate_name_claims(value.summary, wording)
+
+    for finding in content.findings:
+        quotes: dict[str, list[str]] = {}
+        for citation in finding.citations:
+            alias = alias_by_name_id.get(citation.source_id)
+            if alias is not None and citation.quote is not None:
+                quotes.setdefault(alias, []).append(normalize("NFKC", citation.quote))
+        for text in _finding_prose(finding):
+            _validate_name_claims(text, quotes)
 
 
 def assemble_review(
@@ -267,10 +398,7 @@ def assemble_review(
     for finding in content.findings:
         scope = _validate_refs(finding.option_ids, selected, "finding options")
         finding_aliases = {aliases[option_id] for option_id in scope}
-        for explanation in (
-            finding.title, finding.interpretation, finding.impact, finding.priority_reason,
-            finding.requested_evidence, finding.evidence_limits, finding.supplier_question,
-        ):
+        for explanation in _finding_prose(finding):
             _validate_option_language(explanation, finding_aliases)
         _validate_refs(finding.requirement_ids, requirement_ids, "finding requirements")
         for citation in finding.citations:
@@ -288,7 +416,6 @@ def assemble_review(
             ):
                 raise ValueError("For a text citation use an exact quote from original_text and no image observation.")
         for unknown in finding.unknowns:
-            _validate_option_language(unknown.text, finding_aliases)
             for source_id in _unique_ids(unknown.source_ids, "unknown sources"):
                 source = _scoped_source(sources, source_id, scope)
                 if unknown.reason == "not_found" and source_id not in available_sources:
@@ -299,6 +426,7 @@ def assemble_review(
                     source.kind != "listing_image" or source_id not in available_sources
                 ):
                     raise ValueError("An available source can be unreadable only when an attached image is illegible.")
+    validate_report_attribution(request, content)
 
     _unique_ids((row.preference_id for row in content.open_preferences), "open preferences")
     preference_findings = set()
@@ -328,7 +456,7 @@ def assemble_review(
         selected_option_ids=request.selected_option_ids,
         comparisons=comparisons,
         limitations=limitations,
-        supplier_draft=_supplier_draft(request, content),
+        supplier_draft=build_supplier_draft(request, content),
     )
 
 
