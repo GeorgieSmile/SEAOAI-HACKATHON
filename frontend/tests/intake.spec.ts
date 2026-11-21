@@ -67,9 +67,14 @@ test("confirms one or three ordered options, preserves context and caps the sele
   await expect(page.locator(".shared-values")).toContainText("720");
   await expect(page.locator("#listing-title")).toContainText("Premium-style, large-capacity stainless steel");
   await expect(options.nth(0)).toHaveAccessibleName(/applied-picture design · pink\/blue.*暮色316-贴画粉蓝/);
-  await expect(page.locator(".seller-details")).not.toHaveAttribute("open");
-  await page.locator(".seller-details summary").click();
-  await expect(page.locator(".seller-details .translation").getByText("暮色316 · applied-picture design · pink/blue")).toBeVisible();
+  const toggle = page.locator("summary").filter({ hasText: "What the seller claims" });
+  const claim = page.locator(".seller-details .translation").getByText("暮色316 · applied-picture design · pink/blue");
+  await expect(toggle).toBeVisible();
+  await expect(claim).toBeHidden();
+  await toggle.click();
+  await expect(claim).toBeVisible();
+  await toggle.press("Enter");
+  await expect(claim).toBeHidden();
 
   await options.nth(2).check();
   const firstRequest = page.waitForRequest("**/api/questions");
@@ -146,7 +151,7 @@ test("shows Chinese fallback and separate image availability states without load
   await expect(page.getByText("Seller image unavailable")).toHaveCount(2);
   await expect(page.getByText("Seller image unreadable")).toHaveCount(1);
   await expect(page.getByText("No SKU-specific image")).toHaveCount(1);
-  expect(imageRequests).toEqual([]);
+  expect(imageRequests.filter(url => url !== new URL("/proofly-icon.svg", page.url()).href)).toEqual([]);
 });
 
 test("clears the old selection on upload and ignores the older response", async ({ page }) => {
@@ -234,6 +239,7 @@ test("a saved listing lookup failure offers a read-only retry and blocks ordinar
   expect((await retry).method()).toEqual("GET");
   await expect(page.getByText("Current listing restored")).toBeVisible();
   await expect(page.getByRole("checkbox")).toHaveCount(3);
+  await page.getByRole("button", { name: "Replace", exact: true }).click();
   await expect(page.getByRole("button", { name: "Choose another ZIP" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Import link" })).toHaveAccessibleDescription(/clears any saved listing, photos, and answers/i);
   expect(writes).toEqual([]);

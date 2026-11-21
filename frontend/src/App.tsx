@@ -45,6 +45,8 @@ export function App() {
   const [resetStale, setResetStale] = useState(false);
   const [productLink, setProductLink] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [reportVisible, setReportVisible] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const generation = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const selectionTitle = useRef<HTMLHeadingElement>(null);
@@ -88,6 +90,7 @@ export function App() {
     const sourceLabel = typeof source === "string" ? source : source.name;
     if (typeof source !== "string") setProductLink("");
     const activeGeneration = ++generation.current;
+    setShowImport(false);
     setSelected([]);
     setBuyerContext("");
     setSelectionError("");
@@ -164,6 +167,7 @@ export function App() {
     }
     ++generation.current;
     restoreInterview(null);
+    setShowImport(false);
     setSelected([]);
     setBuyerContext("");
     setSelectionError("");
@@ -178,6 +182,7 @@ export function App() {
   function reloadListing() {
     ++generation.current;
     restoreInterview(null);
+    setShowImport(false);
     setSelected([]);
     setBuyerContext("");
     setSelectionError("");
@@ -211,20 +216,63 @@ export function App() {
 
   const sourceLabel = "sourceLabel" in intake ? intake.sourceLabel : undefined;
 
+  const progress = !snapshot || editingSelection ? 1 : reportVisible ? 3 : 2;
+  const steps = ["Choose options", "Buyer questions", "Evidence report"];
+  const pageTitle = !snapshot ? "Import a listing" : steps[progress - 1];
+  useEffect(() => {
+    document.title = `${pageTitle} · Proofly`;
+  }, [pageTitle]);
+
+  const replaceButton = (
+    <button className="button button-secondary" type="button" aria-expanded={showImport} aria-controls="import-panel"
+      onClick={() => setShowImport(!showImport)}>{showImport ? "Close" : editingSelection ? "Replace" : "Replace listing"}</button>
+  );
+
   return (
     <>
       <header className="site-header">
-        <div className="container site-header-inner">Before you order</div>
+        <div className="container site-header-inner">
+          <span className="brand"><img src="/proofly-icon.svg" alt="" width="36" height="36" />proofly</span>
+          <ol className="steps" aria-label="Case progress">
+            {steps.map((step, index) => <li key={step} aria-current={progress === index + 1 ? "step" : undefined}
+              className={index + 1 < progress ? "done" : ""}><b aria-hidden="true">{index + 1 < progress ? "✓" : index + 1}</b>{step}</li>)}
+          </ol>
+          {snapshot && !resetPrompt && (
+            <div className="header-actions">
+              {!editingSelection && replaceButton}
+              <button ref={startOverButton} className="button button-secondary" type="button" onClick={() => {
+                setResetTarget({
+                  snapshotId: snapshot.snapshot_id,
+                  previousCase: caseVersion(interview.view),
+                });
+              }}>
+                New listing
+              </button>
+            </div>
+          )}
+        </div>
       </header>
-      <main className="container">
+      <main className={`container ${snapshot ? "workspace" : "landing"}`}>
         {(!snapshot || editingSelection) && (
           <div className="intro">
-            <h1>Confirm what you’re buying</h1>
-            <p>Import a TTP Cargo product link, then check the seller’s wording and photos for the options you want to buy.</p>
+            <span className="eyebrow">{snapshot ? "Step 1 of 3" : "Check a seller before you pay"}</span>
+            <h1>{snapshot ? "Confirm what you’re buying" : "Know what you’re buying before you order"}</h1>
+            <p>{snapshot ? "Check the seller’s wording and photos, then pick up to three options."
+              : "Paste a TTP Cargo product link. Check the seller’s wording, choose your options, and get an evidence report with questions to send the seller."}</p>
           </div>
         )}
 
-        <section
+        {snapshot && editingSelection && !resetPrompt && (
+          <div className="listing-source">
+            <svg className="source-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z M14 3v5h5 M8 14l2.5 2.5L16 11" />
+            </svg>
+            <div><strong>{sourceLabel ?? "Current listing restored"}</strong><small>{snapshot.options.length} options found</small></div>
+            {replaceButton}
+          </div>
+        )}
+        <section id="import-panel" hidden={Boolean(snapshot && !showImport && !resetPrompt)}
           className={`upload${canUpload && dragging ? " is-dragging" : ""}${snapshot && !editingSelection ? " interview-upload" : ""}`}
           aria-labelledby="upload-heading"
           onDragOver={(event) => {
@@ -247,15 +295,17 @@ export function App() {
           }}
         >
           <div className="upload-copy">
+            <svg className="link-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="m10 13 4-4m-6 2-2 2a4 4 0 0 0 6 6l3-3m-1-4 2-2a4 4 0 0 0-6-6L7 7" />
+            </svg>
             <h2 id="upload-heading" tabIndex={-1}>Import a listing</h2>
+            {snapshot && !editingSelection && showImport && <p className="muted">{sourceLabel ?? "Current listing restored"} · {snapshot.options.length} options found</p>}
             {recovering && <p className="muted" role="status">Checking for a saved listing…</p>}
             {recoveryFailed && <p className="error" role="alert">Could not check for a saved listing.</p>}
-            {sourceLabel && (
+            {sourceLabel && !snapshot && (
               <p className="file-name">{sourceLabel}</p>
             )}
-            {canUpload && !sourceLabel && snapshot && (
-              <p className="muted">Current listing restored</p>
-            )}
+            {!snapshot && <p className="muted">Works with 1688 products on TTP Cargo.</p>}
             {intake.status === "loading" && <p className="muted" role="status">Reading listing and preparing translations…</p>}
             {intake.status === "failed" && <p className="error" role="alert">{intake.message}</p>}
           </div>
@@ -325,16 +375,6 @@ export function App() {
                 Start a new listing
               </button>
             )}
-            {snapshot && !resetPrompt && (
-              <button ref={startOverButton} className="button button-secondary" type="button" onClick={() => {
-                setResetTarget({
-                  snapshotId: snapshot.snapshot_id,
-                  previousCase: caseVersion(interview.view),
-                });
-              }}>
-                Start over
-              </button>
-            )}
           </div>
           {resetPrompt && (
             <div className="reset-confirmation" role="group" aria-labelledby="reset-heading">
@@ -360,8 +400,13 @@ export function App() {
           )}
         </section>
 
+        {!snapshot && <ol className="step-cards">
+          <li><strong>Choose options</strong><p>Pick 1–3 options with seller photos and Chinese names side by side.</p></li>
+          <li><strong>Answer a few questions</strong><p>Up to three rounds of five questions, tailored to your answers. Skip anytime.</p></li>
+          <li><strong>Get your report</strong><p>See findings with evidence and questions you can copy and send.</p></li>
+        </ol>}
         {snapshot && editingSelection && (
-          <form onSubmit={submitSelection}>
+          <form className="selection-layout" onSubmit={submitSelection}>
             <Listing
               key={snapshot.snapshot_id}
               snapshot={snapshot}
@@ -372,7 +417,7 @@ export function App() {
             />
             <section className="confirmation" aria-labelledby="confirm-heading">
               <div>
-                <h2 id="confirm-heading" tabIndex={-1} ref={selectionTitle}>Confirm your selection</h2>
+                <h2 id="confirm-heading" tabIndex={-1} ref={selectionTitle}>Your selection</h2>
                 {selected.length === 0 ? <p className="muted">Choose an option to see it here.</p> : (
                   <ol className="selected-options" aria-label="Selected options in order">
                     {selected.map((id, index) => {
@@ -422,6 +467,7 @@ export function App() {
                     ? currentPurchaseReview(activeInterview) ? "Resume purchase review" : "Resume questions"
                     : "Confirm options"}
                 </button>
+                <p className="next-note">Next: up to three short rounds of questions, or skip straight to the report.</p>
               </div>
             </section>
           </form>
@@ -430,6 +476,7 @@ export function App() {
           <Interview
             key={interview.view?.case_id ?? snapshot.snapshot_id}
             hidden={editingSelection}
+            onReportVisibilityChange={setReportVisible}
             snapshot={snapshot}
             selected={selected}
             context={buyerContext}

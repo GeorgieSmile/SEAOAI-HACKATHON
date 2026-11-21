@@ -144,3 +144,11 @@ The follow-up passed 291 offline backend tests, 30 Chrome tests, frontend typech
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.
+
+## Proofly redesign · 2026-11-21
+
+After two offline question rounds, the review displayed two findings. Opened the first finding’s source and checked its Option A label against the selected SKU. The editable supplier draft and the ordered comparison remained accessible in both layouts. These observations cover presentation and source navigation only. See [integrated UI verification](../purchase-04-integrate-and-verify/verification.md#proofly-redesign--2026-11-21) for code state, commands and screenshot coverage.
+
+Checked the revised report layout on the Proofly working tree over `8a33503`. Playwright opened the restored three-SKU report at 1280 × 837, 390 × 837 and 900 × 480. Coverage immediately preceded the comparison at every width. During scrolling the supplier draft pinned at 16 px on desktop and stayed in normal order on mobile. Verified draft editing, reachable Copy message control, no panel/findings overlap and no horizontal page overflow. Inspected top, middle and bottom screenshots on desktop and mobile. `npm --prefix frontend run typecheck`, `npm --prefix frontend run build` and `node_modules/.bin/playwright.cmd test tests/review.spec.ts --reporter=line` (from frontend with installed Chrome) passed, including all eight review tests.
+
+Compact report header on the working tree over `8a33503`. The restored three-SKU report heading moved up 92 px at 1280 px and 98 px at 390 px. Opened and closed Replace listing at 320, 390, 768 and 1280 px, verified the current listing details and replacement warning, and checked header bounds, document width and sticky draft overlap during scrolling. Inspected top, middle and bottom screenshots at 1280 and 390 px. Typecheck and build passed via `npm --prefix frontend run typecheck` and `npm --prefix frontend run build`. The focused Playwright check passed via `node_modules/.bin/playwright.cmd test --grep "explains replacement" --reporter=line` from frontend with installed Chrome.

@@ -74,10 +74,10 @@ test("opens scoped source evidence and compares ordered options while draft edit
     rounds: [{ ...skip.first_round, answers: asSubmission(contract.input.answers) }],
   }));
 
-  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeFocused();
+  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeFocused();
   const findings = page.getByRole("article");
   await expect(findings.getByRole("heading", { level: 3 })).toHaveText(report.findings.map((finding) => finding.title));
-  await expect(findings.nth(0).getByText("Requirement unconfirmed · Option A, Option B, Option C", { exact: true })).toBeVisible();
+  await expect(findings.nth(0).locator(".review-scope span")).toHaveText(["Requirement unconfirmed", "Option A", "Option B", "Option C"]);
   await expect(findings.nth(0).locator("blockquote").getByText("Screen printing is required.", { exact: true })).toBeVisible();
   await expect(findings.nth(0).getByText(report.findings[0]!.priority_reason, { exact: false })).toBeVisible();
 
@@ -93,7 +93,7 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await expect(methods.getByText(original.original_text!, { exact: true })).toBeVisible();
   await expect(methods.getByText(original.text_en!, { exact: true })).toBeVisible();
   await expect(methods.getByText("Seller listing claim · listing level", { exact: true })).toBeVisible();
-  await expect(findings.nth(1).getByText("Listing conflict · Option C", { exact: true })).toBeVisible();
+  await expect(findings.nth(1).locator(".review-scope span")).toHaveText(["Listing conflict", "Option C"]);
   await findings.nth(1).getByText(`${imageClaim.display_text} · Option C`, { exact: true }).click();
   const image = findings.nth(1).getByRole("img", { name: "Seller image for option v6" });
   await expect(image).toHaveAttribute("src", `/api/snapshots/${snapshot.snapshot_id}/images/image-v6`);
@@ -142,7 +142,7 @@ test("opens scoped source evidence and compares ordered options while draft edit
   await page.evaluate(() => Object.defineProperty(navigator.clipboard, "writeText", {
     value: () => Promise.reject(new DOMException("Access denied", "NotAllowedError")),
   }));
-  await page.getByRole("button", { name: "Copy message" }).click();
+  await page.getByRole("button", { name: "Message copied" }).click();
   await expect(page.getByRole("alert")).toHaveText("Could not copy the message. Select and copy the text manually.");
   await expect(message).toBeFocused();
   await message.fill(" ");
@@ -259,13 +259,13 @@ test("retains saved answers on review failure, retries the same operation, and r
   await page.getByRole("button", { name: "View purchase review" }).click();
   const failedOperationId = (await request).postDataJSON().operation_id;
   await expect(page.getByRole("alert")).toHaveText("The review could not be validated.");
-  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toHaveCount(0);
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   const retry = page.waitForRequest("**/api/case/retry");
   await page.getByRole("button", { name: "Retry purchase review" }).click();
   expect((await retry).postDataJSON()).toEqual({ case_id: saved.case_id, revision: 1, operation_id: failedOperationId });
-  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeVisible();
 
   const draft = page.getByRole("textbox", { name: "Supplier message draft" });
   await draft.fill("My local edit.");
@@ -329,7 +329,7 @@ test("discards a delayed report after a new selection starts a different case", 
     await (await response).finished();
     await page.waitForLoadState("networkidle");
     await expect(page.getByText("Questions for the new selection.")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toHaveCount(0);
   } finally {
     release();
   }
@@ -342,7 +342,7 @@ test("rejects a ready review with an old revision and accepts corrected saved pr
   await expect(page.getByRole("article")).toHaveCount(0);
   saved = { ...saved, report: { ...skipReport, revision: saved.revision } };
   await page.getByRole("button", { name: "Reload saved progress" }).click();
-  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeVisible();
 });
 
 test("offers explicit regeneration for a saved legacy report and keeps submitted answers", async ({ page }) => {
@@ -371,7 +371,7 @@ test("offers explicit regeneration for a saved legacy report and keeps submitted
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   expect(writes).toEqual([]);
   await page.getByRole("button", { name: "Regenerate report", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeVisible();
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   expect(writes).toEqual(["/api/case/retry"]);

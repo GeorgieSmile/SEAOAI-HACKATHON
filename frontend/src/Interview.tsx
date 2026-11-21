@@ -31,7 +31,7 @@ function QuestionField({ question, value, disabled, optionLabels, showScope, onC
   return (
     <fieldset className="interview-question" aria-describedby={noteId} disabled={disabled}>
       <legend>{question.prompt}</legend>
-      <p id={noteId} className="question-why">{question.why_ask}</p>
+      <p id={noteId} className="question-why"><strong>Why we ask · </strong>{question.why_ask}</p>
       {showScope && <p className="question-scope">Applies to {optionLabels.join(" · ")}</p>}
       {question.choices.length ? (
         <div className="question-choices">
@@ -137,6 +137,7 @@ function InterviewSelection({ snapshot, selected, context }: {
 
 interface Props {
   hidden: boolean;
+  onReportVisibilityChange: (visible: boolean) => void;
   snapshot: ListingSnapshot;
   selected: string[];
   context: string;
@@ -154,7 +155,7 @@ interface Props {
 }
 
 export function Interview({
-  hidden, snapshot, selected, context, view, busy, blocked, workingMessage, error, needsRefresh,
+  hidden, onReportVisibilityChange, snapshot, selected, context, view, busy, blocked, workingMessage, error, needsRefresh,
   onChangeSelection, onStartAgain, onRetry, onRefresh, onSubmit,
 }: Props) {
   const [drafts, setDrafts] = useState<Record<string, string | null>>({});
@@ -175,6 +176,10 @@ export function Interview({
     && view.last_operation?.stage === "review" && view.last_operation.status === "ready";
   const reviewFailed = failed && view?.last_operation?.stage === "review";
   const needsRegeneration = reviewFailed && view?.last_operation?.code === "review_regeneration_required";
+
+  useEffect(() => {
+    onReportVisibilityChange(showReport);
+  }, [onReportVisibilityChange, showReport]);
 
   useEffect(() => {
     if (!hidden) heading.current?.focus();
@@ -251,9 +256,11 @@ export function Interview({
   return (
     <section className="interview-shell" aria-labelledby="interview-title" hidden={hidden}>
       <div className="interview-header">
+        <div><span className="eyebrow">Step {showReport ? "3 of 3 · Purchase review" : "2 of 3"}</span>
         <h1 id="interview-title" tabIndex={-1} ref={heading}>
-          {showReport ? "Before you order" : reviewPrepared && !edited ? "Review inputs ready" : "Clarify your purchase"}
+          {showReport && report ? `${report.findings.length} ${report.findings.length === 1 ? "thing" : "things"} to resolve before you order` : reviewPrepared && !edited ? "Review inputs ready" : "Clarify your purchase"}
         </h1>
+        <p className="muted">{showReport ? "Check each finding against its sources before contacting the seller." : "A few questions about what you need. Answer what you know, skip the rest."}</p></div>
         <div className="interview-actions">
           {showReport && history && <a className="button button-secondary" href="#history-title"
             onClick={() => document.getElementById("history-title")?.focus()}>Edit answers</a>}
@@ -298,6 +305,7 @@ export function Interview({
                 void submitAnswers("continue");
               }}>
                 <h3>{edited ? "Edit round" : "Round"} {activeRound.round_number} of 3</h3>
+                <div className="segments" aria-hidden="true">{[1, 2, 3].map(n => <i key={n} className={n <= activeRound.round_number ? "filled" : ""} />)}</div>
                 <p className="round-reason">{activeRound.reason}</p>
                 {edited && <p className="muted">{report
                   ? "Changing these answers replaces the purchase review and supplier draft. Later rounds may change."
@@ -325,6 +333,7 @@ export function Interview({
                     onClick={() => void submitAnswers("review")}>
                     View purchase review
                   </button>
+                  <small className="answered">{activeRound.questions.filter(q => normalize(answerValue(activeRound, q.question_id)) !== null).length} of {activeRound.questions.length} answered</small>
                   {edited && <button className="button button-secondary" type="button"
                     disabled={locked} onClick={cancelEdit}>Cancel edit</button>}
                 </div>

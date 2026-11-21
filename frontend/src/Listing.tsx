@@ -71,7 +71,7 @@ export function Listing({ snapshot, selected, disabled, selectionError, onToggle
         </div>
         {sharedSources.length > 0 && (
           <div className="shared-values">
-            <h3>Seller's shared option value</h3>
+            <h3>Applies to all options</h3>
             {sharedSources.map((source) => (
               <div key={source.source_id}>
                 <BilingualText original={source.original_text} translation={source.text_en} />
@@ -85,7 +85,7 @@ export function Listing({ snapshot, selected, disabled, selectionError, onToggle
         <div>
           <h3>Choose the options you want to buy</h3>
           <p id="selection-instructions" className="muted">
-            Choose 1 to 3. Seller photos are shown as thumbnails up to 150 × 150 pixels.
+            Pick 1 to 3. The order you pick sets their order in the report.
           </p>
         </div>
         <p className="selection-count" role="status">{selected.length} of 3 selected</p>
@@ -121,9 +121,10 @@ export function Listing({ snapshot, selected, disabled, selectionError, onToggle
           })}
         </div>
       </fieldset>
+      <a className="selection-jump button button-secondary" href="#confirm-heading">Go to your selection →</a>
       {(sellerDetails.length > 0 || snapshot.limitations.length > 0) && (
         <details className="seller-details">
-          <summary>Seller details and source limitations</summary>
+          <summary>{sellerDetails.length ? "What the seller claims" : "Source limitations"}</summary>
           {sellerDetails.length > 0 && (
             <dl className="source-list">
               {sellerDetails.map((source) => (

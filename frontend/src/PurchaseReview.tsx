@@ -148,11 +148,12 @@ function FindingCard({ finding, report, context }: {
   return (
     <article className="review-finding" id={findingAnchor(finding.finding_id)}>
       <header>
-        <p className="review-kicker">{actions[finding.action_type]}</p>
+        <p className="review-kicker" data-action={finding.action_type}>{actions[finding.action_type]}</p>
         <h3>{finding.title}</h3>
         <p className="review-scope">
-          {findingKinds[finding.kind]} · {context.selected.filter((id) => finding.option_ids.includes(id))
-            .map((id) => optionLabel(context.selected, id)).join(", ")}
+          <span>{findingKinds[finding.kind]}</span>{" "}
+          {context.selected.filter(id => finding.option_ids.includes(id)).map(id =>
+            <span key={id}>{optionLabel(context.selected, id)}</span>)}
         </p>
       </header>
       <div className="review-finding-content">
@@ -289,7 +290,7 @@ function ReportCoverage({ report }: { report: Review }) {
         {report.coverage.map((coverage) => (
           <li key={coverage.group}>
             <h3>{coverageGroups[coverage.group]}</h3>
-            <p className="review-coverage-status">{coverageStatuses[coverage.status]}</p>
+            <p className="review-coverage-status" data-status={coverage.status}>{coverageStatuses[coverage.status]}</p>
             <p>{coverage.note}</p>
             <FindingLinks ids={coverage.finding_ids} findings={report.findings} />
           </li>
@@ -337,7 +338,7 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
             }} />
           <div className="review-draft-actions">
             {text.trim() && <button className="button button-primary" type="button" disabled={copying} onClick={() => void copyDraft()}>
-              Copy message
+              {copyResult === "success" ? "Message copied" : "Copy message"}
             </button>}
             {copyResult === "success" && <p role="status">Message copied.</p>}
             {copyResult === "failed" && <p role="alert" className="error">Could not copy the message. Select and copy the text manually.</p>}
@@ -374,9 +375,10 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
             <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} />
           ))}
         </section>
-        <Comparisons report={report} snapshot={snapshot} context={context} />
         <SupplierDraft draft={report.supplier_draft} text={supplierDraft} onChange={onChangeDraft} />
       </div>
+      <ReportCoverage report={report} />
+      <Comparisons report={report} snapshot={snapshot} context={context} />
       {(otherRequirements.length > 0 || report.open_preferences.length > 0) && (
         <section className="review-panel review-buyer-inputs" aria-labelledby="buyer-inputs-heading">
           <h2 id="buyer-inputs-heading">Buyer inputs</h2>
@@ -415,7 +417,6 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
           )}
         </section>
       )}
-      <ReportCoverage report={report} />
     </div>
   );
 }
