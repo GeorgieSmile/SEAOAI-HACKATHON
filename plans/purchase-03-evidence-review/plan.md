@@ -4,7 +4,7 @@
 
 **Blocked by:** None (ใช้ Interface ที่ยอมรับแล้ว ตรวจแยกด้วย ReviewInput/issued plan fixture ฝั่ง test harness ได้)
 
-**Status:** ready-for-agent; execution on competition day after selecting this Build task; implementation not started
+**Status:** Phase 3 implemented for issue #3. See the [verification record](verification.md) for execution results and remaining integrated acceptance.
 
 **ผู้ประสานหลัก:** C; C เนื้อหา/validation/draft, A รายงาน/หลักฐาน/copy UI, B ReviewInput/state/HTTP/image access
 
