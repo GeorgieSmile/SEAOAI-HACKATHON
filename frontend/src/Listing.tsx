@@ -26,7 +26,7 @@ export function OptionImage({ option, imageSource, snapshotId }: {
     return <span className="image-placeholder">No SKU-specific image</span>;
   }
   if (!imageSource || imageSource.availability === "missing") {
-    return <span className="image-placeholder">Seller image missing from ZIP</span>;
+    return <span className="image-placeholder">Seller image unavailable</span>;
   }
   if (failed || imageSource.availability === "unreadable") {
     return <span className="image-placeholder">Seller image unreadable</span>;

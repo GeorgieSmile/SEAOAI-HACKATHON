@@ -285,7 +285,7 @@ def _attributes(root: Tag) -> list[tuple[str, str]]:
     return result
 
 
-def read_product(payload: bytes) -> Product:
+def read_product(payload: bytes, *, expected_item_id: str | None = None) -> Product:
     try:
         markup = payload.decode("utf-8-sig")
     except UnicodeDecodeError as error:
@@ -299,6 +299,12 @@ def read_product(payload: bytes) -> Product:
     if len(roots) != 1:
         raise _unsupported("The ZIP does not contain one supported TTP Cargo product page.")
     root = roots[0]
+    if expected_item_id is not None:
+        identity = re.compile(r'^\s*var\s+AliProductInfo\s*=\s*\{\s*"id"\s*:\s*([0-9]+)\s*,')
+        ids = [match[1] for script in root.find_all("script") if script.string
+               and (match := identity.match(script.string))]
+        if ids != [expected_item_id]:
+            raise _unsupported("TTP Cargo did not return the requested product. Choose a saved ZIP.")
     titles = root.find_all("h1", limit=2)
     if len(titles) != 1 or not (title := _tag_text(titles[0])):
         raise IntakeError("product_unreadable", "No unambiguous product title could be read.")

@@ -65,3 +65,40 @@ Authority: [plan](plan.md), [ชุดเกณฑ์รับหลักฐา
 ## Review รวมก่อนปิด ticket
 
 Required review: pending implementation/integrated state คู่ Standards/Spec ต้องตรวจ acceptance ของใบนั้นอย่างชัดเจนก่อน complete บันทึก base/target/state, reviewers, findings/dispositions/final checks และ full-round ledger ต่อ ticket การส่งต่อเพื่อรวมยังไม่นับว่าปิดงาน
+
+## TTP Cargo link import, 21 November 2026
+
+Tested the uncommitted working tree on `codex/ttp-link-import`, based on Phase 2 commit `799e028`. The link and ZIP paths use the same SKU and image validation, translation seam and SQLite publication. Live checks used the offline translation and question adapters with a temporary database.
+
+| Real app check | Observed result |
+| --- | --- |
+| Paste the [sample link](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639), select a SKU and confirm | Product title and all 12 ordered Chinese SKU names matched the saved inventory. SHA-256 of the bytes served for each of the 12 SKU images matched its saved thumbnail. Round 1 opened. |
+| Paste a [second product](https://taobao.ttpcargo.com/product?provider=1688&itemId=950217987281), select a SKU and confirm | Compared against a separate signed-out Chrome page on TTP Cargo. The title, eight ordered SKU names and all eight original thumbnail hashes matched the app. Round 1 opened. |
+| Choose the raw browser-save ZIP and reload | All 12 names and image hashes matched the saved inventory. The listing restored after a page reload. |
+| Browser layout | Inspected the form, SKU grid and confirmation area at the top, middle and bottom at 1280×820 and 390×844. Controls and Chinese labels were readable. No horizontal overflow or overlapping controls observed. |
+
+Commands from the worktree root, using the existing project virtual environment for Python and local Google Chrome for Playwright:
+
+- `python -m pytest -q -p no:cacheprovider backend/tests` passed 138 tests, including link validation, wrong product identity, thumbnail redirects and a slow link request superseded by a ZIP.
+- `npm --prefix frontend run typecheck` and `npm --prefix frontend run build` passed.
+- `PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test` passed 23 tests, including recovery from a link failure using ZIP.
+- `python -m backend.tests.offline_server --port 8057` and `PURCHASE_BACKEND_URL=http://127.0.0.1:8057 npm --prefix frontend run dev -- --port 5183` served the real UI checks. A temporary Chrome host rule mapped the normal app origin on port 5173 to port 5183 so the existing demo could keep running. The Playwright smoke check fetched the images through each rendered option and compared their bytes to the expected source.
+- An exploratory product-detail request for item `1098255410083` returned HTTP 502. Live availability depends on TTP Cargo. Existing supported SKU layouts and the CDN thumbnail allowlist still apply.
+
+Paid AI translation and model quality were outside this import check. Fresh independent Standards/Spec review of the integrated release remains pending. Review should check remote resource limits, product identity binding, and handling of failed replacement imports.
+
+### Pre-commit review and fixes, 21 November 2026
+
+Base `799e028`. The first independent Standards/Spec review identified four findings. The fixes and checks below apply to the uncommitted branch. The SHA-256 of the reviewed backend, frontend source and test diff, including the untracked link importer, is `33f6a8d4bb12452fa5a5d787b1dd783f4d6814895265e8a4a456aac416cfa570`.
+
+| Finding | Regression result |
+| --- | --- |
+| Delayed link request could restore a listing after Start over | A successful reset now advances the import ordering marker. A delayed link returned HTTP 409 and the workspace stayed empty. The existing delayed-link versus newer-ZIP case also passed. |
+| Import could clear an interview without explaining the consequence | A saved interview with submitted answers showed the consequence before either import action. Both buttons had the same accessible description. Restoring the interview issued zero writes. When the import POST failed to reach the backend, both controls retained the warning before retry. |
+| Waiting for upstream headers could hold the ZIP parser slot past the deadline | Product and thumbnail requests share a cancellable 75-second network deadline. With a shortened 300 ms deadline and a stalled headers response, the upstream wait was cancelled, the superseded link returned 409 and the queued ZIP published the expected listing. |
+| Server reference-pack errors could blame the buyer’s ZIP | A valid sample with a missing pack, missing required fields, an invalid limitations field, empty guidance or limitations, a seller-source kind, or missing translation or URL returned HTTP 500 with `intake_failed`. No snapshot was published. |
+
+- `python -m pytest -q -p no:cacheprovider backend/tests` passed 148 tests. `npm --prefix frontend run typecheck` and `npm --prefix frontend run build` passed. `PURCHASE_TEST_BROWSER='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm --prefix frontend test -- --output=/private/tmp/ttp-fixes-frontend-suite` passed 24 tests.
+- Ran the real browser flow on the temporary backend and frontend described above with `node /private/tmp/ttp-fixes-qa/check.cjs`. For item `1035537244639`, all 12 names and thumbnail hashes matched the saved inventory. For `950217987281`, all eight names and thumbnail hashes matched a separately opened live listing. Both reached round one. Raw ZIP fallback matched all 12 saved thumbnails and restored after reload. Translation and questions used the offline adapters.
+- Inspected selection and interview screenshots at the top, middle and bottom at 1280×820 and 390×844. The replacement warning was visible before the import controls on both screens. The labels wrapped within the mobile viewport, with no overlapping controls or horizontal overflow observed.
+- Independent Standards and Spec reviewers re-examined all four findings on candidate `33f6a8d4`. During review, Spec found two additional cases within the original findings: loss of the warning after an undelivered POST, and acceptance of an empty or mislabeled guidance pack. Both were fixed and covered by regressions. Each reviewer independently ran all 42 backend intake tests and reported all four findings resolved with no additional blockers in the reviewed scope. The final integrated release review across PR-01–04 remains a separate gate.

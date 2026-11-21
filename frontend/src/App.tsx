@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { caseVersion, getCurrentCase, resetCase, uploadListing } from "./api";
+import { caseVersion, getCurrentCase, resetCase, importListing } from "./api";
 import type { CaseVersion, ListingSnapshot } from "./api";
 import { Interview } from "./Interview";
 import { Listing, OptionImage } from "./Listing";
@@ -8,9 +8,9 @@ import { useInterviewSession } from "./useInterviewSession";
 
 type ImportState =
   | { status: "recovering" | "recovery-failed" | "replacement" | "empty" }
-  | { status: "loading"; filename: string }
-  | { status: "failed"; filename?: string; message: string }
-  | { status: "ready"; filename?: string; snapshot: ListingSnapshot };
+  | { status: "loading"; sourceLabel: string }
+  | { status: "failed"; sourceLabel?: string; message: string }
+  | { status: "ready"; sourceLabel?: string; snapshot: ListingSnapshot };
 
 const MAX_CONTEXT_LENGTH = 2_000;
 
@@ -43,6 +43,7 @@ export function App() {
   const [resetting, setResetting] = useState(false);
   const [resetError, setResetError] = useState("");
   const [resetStale, setResetStale] = useState(false);
+  const [productLink, setProductLink] = useState("");
   const [dragging, setDragging] = useState(false);
   const generation = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -82,8 +83,10 @@ export function App() {
     if (resetPrompt) resetHeading.current?.focus();
   }, [resetPrompt]);
 
-  async function importFile(file: File) {
+  async function startImport(source: File | string) {
     if (!canUpload) return;
+    const sourceLabel = typeof source === "string" ? source : source.name;
+    if (typeof source !== "string") setProductLink("");
     const activeGeneration = ++generation.current;
     setSelected([]);
     setBuyerContext("");
@@ -91,15 +94,18 @@ export function App() {
     setEditingSelection(true);
     setResetError("");
     restoreInterview(null);
-    setIntake({ status: "loading", filename: file.name });
+    setIntake({ status: "loading", sourceLabel });
     try {
-      const snapshot = await uploadListing(file);
+      const snapshot = await importListing(source);
       if (activeGeneration === generation.current) {
-        setIntake({ status: "ready", filename: file.name, snapshot });
+        setIntake({ status: "ready", sourceLabel, snapshot });
+        if (typeof source === "string") {
+          setProductLink((current) => current.trim() === source ? "" : current);
+        }
       }
     } catch (error) {
       if (activeGeneration === generation.current) {
-        setIntake({ status: "failed", filename: file.name, message: (error as Error).message });
+        setIntake({ status: "failed", sourceLabel, message: (error as Error).message });
       }
     }
   }
@@ -119,6 +125,8 @@ export function App() {
   const contextLength = [...buyerContext].length;
   const contextTooLong = contextLength > MAX_CONTEXT_LENGTH;
   const snapshot = intake.status === "ready" ? intake.snapshot : null;
+  // A failed or in-flight POST can leave the saved workspace unknown to this tab.
+  const showReplacementWarning = canUpload && intake.status !== "empty";
   const activeInterview = snapshot && interview.view?.snapshot_id === snapshot.snapshot_id
     && interview.view.buyer_context === buyerContext && interview.view.selected_option_ids.length === selected.length
     && interview.view.selected_option_ids.every((id, index) => id === selected[index])
@@ -160,6 +168,7 @@ export function App() {
     setBuyerContext("");
     setSelectionError("");
     setIntake({ status: "empty" });
+    setProductLink("");
     setEditingSelection(true);
     setResetTarget(null);
     setResetting(false);
@@ -200,7 +209,7 @@ export function App() {
     }
   }
 
-  const filename = "filename" in intake ? intake.filename : undefined;
+  const sourceLabel = "sourceLabel" in intake ? intake.sourceLabel : undefined;
 
   return (
     <>
@@ -211,7 +220,7 @@ export function App() {
         {(!snapshot || editingSelection) && (
           <div className="intro">
             <h1>Confirm what you’re buying</h1>
-            <p>Upload a saved TTP Cargo listing, check the seller’s wording and photos, then confirm the exact options you want to buy.</p>
+            <p>Import a TTP Cargo product link, then check the seller’s wording and photos for the options you want to buy.</p>
           </div>
         )}
 
@@ -234,27 +243,46 @@ export function App() {
             event.preventDefault();
             setDragging(false);
             const file = event.dataTransfer.files.item(0);
-            if (file) void importFile(file);
+            if (file) void startImport(file);
           }}
         >
           <div className="upload-copy">
-            <h2 id="upload-heading" tabIndex={-1}>Listing ZIP</h2>
+            <h2 id="upload-heading" tabIndex={-1}>Import a listing</h2>
             {recovering && <p className="muted" role="status">Checking for a saved listing…</p>}
             {recoveryFailed && <p className="error" role="alert">Could not check for a saved listing.</p>}
-            {replacing && (
-              <p className="replacement-warning" id="replacement-warning" role="status">
-                Uploading a new ZIP can replace the saved listing and its evidence, even if the import fails.
-              </p>
+            {sourceLabel && (
+              <p className="file-name">{sourceLabel}</p>
             )}
-            {filename && (
-              <p className="file-name">{filename}</p>
-            )}
-            {canUpload && !replacing && !filename && (
-              <p className="muted">{snapshot ? "Current listing restored" : "Drop a .zip file here or choose one from your device. Up to 20 MiB."}</p>
+            {canUpload && !sourceLabel && snapshot && (
+              <p className="muted">Current listing restored</p>
             )}
             {intake.status === "loading" && <p className="muted" role="status">Reading listing and preparing translations…</p>}
             {intake.status === "failed" && <p className="error" role="alert">{intake.message}</p>}
           </div>
+          {canUpload && (
+            <form className="link-import" onSubmit={(event) => {
+              event.preventDefault();
+              void startImport(productLink.trim());
+            }}>
+              {showReplacementWarning && (
+                <p className="replacement-warning" id="replacement-warning">
+                  Starting a link or ZIP import clears any saved listing, photos, and answers, even if the new import fails.
+                </p>
+              )}
+              <label htmlFor="product-link">TTP Cargo product link</label>
+              <div className="link-controls">
+                <input id="product-link" type="url" required maxLength={512}
+                  value={productLink} onChange={(event) => setProductLink(event.currentTarget.value)}
+                  placeholder="https://taobao.ttpcargo.com/product?…"
+                  pattern={'https://taobao\\.ttpcargo\\.com/product\\?(provider=1688&itemId=[1-9][0-9]{0,17}|itemId=[1-9][0-9]{0,17}&provider=1688)'}
+                  title="Use a taobao.ttpcargo.com product link with provider=1688 and a numeric itemId." />
+                <button className="button button-primary" type="submit" disabled={intake.status === "loading"}
+                  aria-describedby={showReplacementWarning ? "replacement-warning" : undefined}>
+                  Import link
+                </button>
+              </div>
+            </form>
+          )}
           <input
             ref={fileInput}
             type="file"
@@ -265,10 +293,11 @@ export function App() {
             onChange={(event) => {
               const file = event.currentTarget.files?.item(0);
               event.currentTarget.value = "";
-              if (file) void importFile(file);
+              if (file) void startImport(file);
             }}
           />
           <div className="upload-actions">
+            {canUpload && <span className="zip-hint muted">Or drop a saved ZIP here (up to 20 MiB)</span>}
             {(recoveryFailed || replacing) && (
               <button className="button button-secondary" type="button" onClick={() => setIntake({ status: "recovering" })}>
                 Retry saved listing
@@ -278,10 +307,10 @@ export function App() {
               <button
                 className="button button-secondary"
                 type="button"
-                aria-describedby={replacing ? "replacement-warning" : undefined}
+                aria-describedby={showReplacementWarning ? "replacement-warning" : undefined}
                 onClick={() => fileInput.current?.click()}
               >
-                {replacing ? "Choose replacement ZIP" : filename || snapshot ? "Choose another ZIP" : "Choose ZIP"}
+                {replacing ? "Choose replacement ZIP" : sourceLabel || snapshot ? "Choose another ZIP" : "Choose ZIP"}
               </button>
             )}
             {(recovering || recoveryFailed) && (
