@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from backend import ai, report
 from backend.contracts import ReviewInput
 from backend.intake import parse_listing
-from backend.report_models import ReviewContent, ReviewFailed, ReviewReady
+from backend.report_models import CanonicalReviewContent, ReviewContent, ReviewFailed, ReviewReady
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -95,6 +95,15 @@ def minimal_content(request, topic="capacity"):
     }
 
 
+def canonical_content(request, topic="capacity", *, payload=None):
+    payload = minimal_content(request, topic) if payload is None else payload
+    return {
+        **{key: value for key, value in payload.items() if key not in {"buyer_requirements", "open_preferences"}},
+        "contract_version": 3,
+        "findings": [{"decision_id": None, **finding} for finding in payload["findings"]],
+    }
+
+
 def text_claim(claim_id, source_id, quote, option_id=None):
     return {
         "claim_id": claim_id, "kind": "text_excerpt", "option_ids": [option_id] if option_id else [],
@@ -118,9 +127,343 @@ def finding_selection(option_ids, **overrides):
 
 
 def assemble(request, images, payload):
+    schema = CanonicalReviewContent if payload["contract_version"] == 3 else ReviewContent
     return report.assemble_review(
-        request, ReviewContent.model_validate(payload), sent_evidence=report.review_sent_evidence(request, images),
+        request, schema.model_validate(payload), sent_evidence=report.review_sent_evidence(request, images),
     )
+
+
+@pytest.fixture
+def resolved_deadlines(example):
+    request, images = example
+    original = "The order must be delivered by 1 December."
+    revised = "The deadline has moved to 15 December."
+    prompt = "What is your revised delivery deadline?"
+    original_evidence = {
+        "input_ref": "context", "quote": original, "question_text": None,
+        "action": "add", "option_ids": ["v0", "v1"], "context_start": 0,
+    }
+    request = ReviewInput.model_validate({
+        **request.model_dump(),
+        "selected_option_ids": ["v0", "v1"],
+        "buyer_context": f"{original} Internal margin target: 43.5%.",
+        "answers": [{
+            "question_id": "revised-date", "question_text": prompt,
+            "answer_text": revised, "buyer_facet": "delivery_deadline",
+        }],
+        "answer_option_ids": {"revised-date": ["v0"]},
+        "requirements": [{
+            "requirement_id": "december-1", "statement": original, "status": "active",
+            "topic": "deadline", "buyer_facet": "delivery_deadline", "option_ids": ["v1"],
+            "supplier_target": {"kind": "delivery_deadline", "day": 1, "month": 12, "year": None},
+            "provenance": [original_evidence],
+        }, {
+            "requirement_id": "december-15", "statement": revised, "status": "active",
+            "topic": "deadline", "buyer_facet": "delivery_deadline", "option_ids": ["v0"],
+            "supplier_target": {"kind": "delivery_deadline", "day": 15, "month": 12, "year": None},
+            "provenance": [
+                original_evidence,
+                {"input_ref": "answer:revised-date", "quote": revised, "question_text": prompt,
+                 "action": "replace", "option_ids": ["v0"]},
+            ],
+        }],
+    })
+    return request, images
+
+
+def test_current_provider_selects_resolved_ids_and_omissions_get_scoped_supplier_checks(resolved_deadlines):
+    request, images = resolved_deadlines
+    payload = minimal_content(request, "deadline")
+    payload["findings"] = [finding_selection(
+        ["v0"], topic="deadline", kind="requirement_unconfirmed", requirement_ids=["december-15"],
+    )]
+    payload = canonical_content(request, payload=payload)
+
+    def serve(http_request):
+        body = json.loads(http_request.content)
+        schema = body["text"]["format"]["schema"]
+        assert set(schema["required"]) == set(CanonicalReviewContent.model_fields)
+        assert body["instructions"] == report.REVIEW_PROMPT
+        wire = json.loads(body["input"][0]["content"][0]["text"])
+        assert "buyer_context" not in wire
+        assert "answers" not in wire
+        assert "43.5%" not in json.dumps(wire)
+        assert [(row["requirement_id"], row["option_ids"]) for row in wire["requirements"]] == [
+            ("december-1", ["v1"]), ("december-15", ["v0"]),
+        ]
+        return response(http_request, payload)
+
+    result = run_review(request, images, serve)
+    assert isinstance(result, ReviewReady)
+    assert result.content.contract_version == 3
+    assert [(row.input_ref, row.option_ids, row.quote) for row in result.report.buyer_requirements] == [
+        ("context", ["v1"], "The order must be delivered by 1 December."),
+        ("answer:revised-date", ["v0"], "The deadline has moved to 15 December."),
+    ]
+    first, second = result.report.findings
+    assert first.option_ids == ["v0"] and "by 15 December?" in first.supplier_question
+    assert second.option_ids == ["v1"] and "by 1 December?" in second.supplier_question
+    assert "43.5%" not in result.report.supplier_draft
+
+
+def test_supplier_draft_asks_about_custom_orders_only_in_the_linked_option_scope(example):
+    request, images = example
+    stock, custom = "Ready-made stock only.", "Custom orders are acceptable."
+    option_a, *other_options = request.selected_option_ids
+    context = f"{stock} {custom}"
+    decisions = [
+        ("stock", stock, [option_a], "ready_made_only"),
+        ("custom", custom, other_options, "custom_orders_acceptable"),
+    ]
+    request = ReviewInput.model_validate({
+        **request.model_dump(), "buyer_context": context, "answers": [], "answer_option_ids": {},
+        "requirements": [{
+            "requirement_id": requirement_id, "statement": statement, "status": "active",
+            "topic": "customization", "buyer_facet": "order_type", "option_ids": options,
+            "supplier_target": {"kind": "order_type", "value": value},
+            "provenance": [{
+                "input_ref": "context", "quote": statement, "question_text": None,
+                "action": "add", "option_ids": options, "context_start": context.index(statement),
+            }],
+        } for requirement_id, statement, options, value in decisions],
+    })
+    payload = minimal_content(request, "customization")
+    payload["findings"] = [
+        finding_selection(
+            [option_a], finding_id="ready-made-only", topic="customization", requirement_ids=["stock"],
+            kind="requirement_unconfirmed", supplier_action="confirm_ready_made",
+        ),
+        finding_selection(
+            request.selected_option_ids, finding_id="shared-order-terms", topic="customization",
+        ),
+        finding_selection(
+            other_options, finding_id="accept-custom", topic="customization", requirement_ids=["custom"],
+            kind="requirement_unconfirmed", supplier_action="confirm_custom_order",
+        ),
+    ]
+    payload = canonical_content(request, payload=payload)
+    rendered = assemble(request, images, payload)
+    stock_question, mixed_question, custom_question = rendered.findings
+    draft = rendered.supplier_draft
+    assert f"[Option A] {stock_question.supplier_question}" in draft
+    assert f"[Options A, B, C] {mixed_question.supplier_question}" in draft
+    assert f"[Options B, C] {custom_question.supplier_question}" in draft
+    assert "Please answer for ready-made stock." in stock_question.supplier_question
+    assert "availability and order terms" in mixed_question.supplier_question
+    for finding in (stock_question, mixed_question):
+        assert "custom" not in finding.supplier_question.lower()
+        assert "minimum order quantity" not in finding.supplier_question
+    assert "requires a custom order" in custom_question.supplier_question
+    assert "lead time and minimum order quantity" in custom_question.supplier_question
+
+    payload["findings"].append({
+        **payload["findings"][0], "finding_id": "duplicate-stock", "supplier_action": "confirm_ready_made",
+    })
+    rendered = assemble(request, images, payload)
+    assert rendered.findings[-1].supplier_question == stock_question.supplier_question
+    assert rendered.supplier_draft == draft
+
+    payload["findings"][-1].update(topic="capacity", supplier_action="confirm_specification")
+    with pytest.raises(ValueError, match="buyer requirement on the finding's topic"):
+        assemble(request, images, payload)
+
+
+def test_overlapping_active_stock_decisions_keep_both_rows_and_one_draft_question_per_option(example):
+    request, images = example
+    option_a, option_b, option_c = request.selected_option_ids
+    first, second = "Ready-made stock only.", "Only ready-made stock."
+    request = ReviewInput.model_validate({
+        **request.model_dump(), "buyer_context": f"{first} {second}", "answers": [], "answer_option_ids": {},
+        "requirements": [{
+            "requirement_id": requirement_id, "statement": quote, "status": "active", "topic": "customization",
+            "buyer_facet": "order_type", "option_ids": scope,
+            "supplier_target": {"kind": "order_type", "value": "ready_made_only"},
+            "provenance": [{
+                "input_ref": "context", "quote": quote, "action": "add", "option_ids": scope,
+                "context_start": start, "question_text": None,
+            }],
+        } for requirement_id, quote, scope, start in [
+            ("stock-ab", first, [option_a, option_b], 0),
+            ("stock-bc", second, [option_b, option_c], len(first) + 1),
+        ]],
+    })
+
+    rendered = assemble(request, images, canonical_content(request, "customization"))
+
+    assert [(row.quote, row.option_ids) for row in rendered.buyer_requirements] == [
+        (first, [option_a, option_b]), (second, [option_b, option_c]),
+    ]
+    assert [finding.option_ids for finding in rendered.findings] == [[option_a, option_b], [option_b, option_c]]
+    assert rendered.findings[0].supplier_question == rendered.findings[1].supplier_question
+    question = rendered.findings[0].supplier_question
+    assert rendered.supplier_draft.splitlines()[7::2] == [
+        f"1. [Options A, B] {question}", f"2. [Option C] {question}",
+    ]
+
+
+@pytest.mark.parametrize("requirement_ids", [["december-1"], ["stale-date"]])
+def test_provider_cannot_reattach_replaced_or_stale_buyer_requirements(resolved_deadlines, requirement_ids):
+    request, images = resolved_deadlines
+    payload = minimal_content(request, "deadline")
+    payload["findings"] = [finding_selection(
+        ["v0"], topic="deadline", kind="requirement_unconfirmed", requirement_ids=requirement_ids,
+    )]
+    payload = canonical_content(request, payload=payload)
+    result = run_review(request, images, lambda http_request: response(http_request, payload))
+    assert isinstance(result, ReviewFailed)
+    assert result.code == "invalid_review"
+
+
+def test_current_report_cannot_reopen_a_settled_requirement(resolved_deadlines):
+    request, images = resolved_deadlines
+    settled = request.requirements[0]
+    payload = canonical_content(request, "deadline")
+    payload["findings"] = [finding_selection(
+        settled.option_ids, topic="deadline", action_type="decide_preference",
+        supplier_action=None, decision_id=settled.requirement_id,
+    )]
+    result = run_review(request, images, lambda http_request: response(http_request, payload))
+    assert isinstance(result, ReviewFailed)
+    assert result.code == "invalid_review"
+
+
+def test_current_report_cannot_reopen_a_settled_deadline_from_a_skipped_revisit(resolved_deadlines):
+    request, images = resolved_deadlines
+    deadline = "Has the required delivery deadline changed?"
+    sample = "Do you need a pre-production sample?"
+    data = request.model_dump()
+    data["answers"].extend([
+        {"question_id": "skipped-revisit", "question_text": deadline, "answer_text": None,
+         "buyer_facet": "delivery_deadline"},
+        {"question_id": "skipped-sample", "question_text": sample, "answer_text": None,
+         "buyer_facet": "other"},
+    ])
+    data["answer_option_ids"].update({"skipped-revisit": ["v1"], "skipped-sample": ["v0"]})
+    data["requirements"].append({
+        "requirement_id": "sample-open", "statement": sample, "topic": "sample", "status": "unresolved",
+        "option_ids": ["v0"], "provenance": [{
+            "input_ref": "answer:skipped-sample", "quote": None, "question_text": sample,
+            "action": "unresolved", "option_ids": ["v0"],
+        }],
+    })
+    request = ReviewInput.model_validate(data)
+    payload = canonical_content(request, "deadline")
+    attempts = []
+
+    def serve(http_request):
+        body = json.loads(http_request.content)
+        wire = json.loads(body["input"][0]["content"][0]["text"])
+        assert "skipped_questions" not in wire
+        assert [row for row in wire["requirements"] if row["status"] == "unresolved"] == [{
+            "requirement_id": "sample-open", "topic": "sample", "buyer_facet": None,
+            "option_ids": ["v0"], "status": "unresolved",
+        }]
+        attempts.append(body["instructions"])
+        if len(attempts) == 1:
+            return response(http_request, {
+                **payload, "findings": [finding_selection(
+                    ["v0"], topic="deadline", action_type="decide_preference", supplier_action=None,
+                    decision_id="sample-open",
+                )],
+            })
+        return response(http_request, {
+            **payload, "findings": [finding_selection(
+                ["v0"], topic="sample", action_type="decide_preference", supplier_action=None,
+                decision_id="sample-open", finding_id="decide-sample",
+            )],
+        })
+
+    result = run_review(request, images, serve)
+    assert isinstance(result, ReviewReady)
+    assert len(attempts) == 2 and "referenced decision's topic and exact option scope" in attempts[1]
+    assert [row.input_refs for row in result.report.open_preferences] == [["answer:skipped-sample"]]
+    assert result.report.open_preferences[0].option_ids == ["v0"]
+    assert result.report.open_preferences[0].finding_ids == ["decide-sample"]
+    decision = next(row for row in result.report.findings if row.finding_id == "decide-sample")
+    assert decision.supplier_question is None
+    assert "sample" not in result.report.supplier_draft.lower()
+    kept = next(row for row in result.report.buyer_requirements if row.option_ids == ["v1"])
+    assert kept.quote == "The order must be delivered by 1 December."
+
+
+def test_unresolved_current_buyer_context_is_visible_and_supplier_question_stays_neutral(example):
+    request, images = example
+    context = "Laser engraving could work, depending on our internal margin."
+    request = ReviewInput.model_validate({
+        **request.model_dump(), "buyer_context": context, "answers": [], "answer_option_ids": {},
+        "requirements": [{
+            "requirement_id": "finish-unclear", "statement": context, "topic": "finish", "status": "unresolved",
+            "option_ids": ["v0"], "provenance": [{
+                "input_ref": "context", "quote": context, "question_text": None, "action": "unresolved",
+                "option_ids": ["v0"], "context_start": 0,
+            }],
+        }],
+    })
+    payload = minimal_content(request, "finish")
+    payload["findings"] = [finding_selection(["v0"], topic="finish")]
+    payload = canonical_content(request, payload=payload)
+    result = run_review(request, images, lambda http_request: response(http_request, payload))
+
+    assert isinstance(result, ReviewReady)
+    assert result.report.buyer_requirements == []
+    assert result.report.open_preferences[0].input_refs == ["context"]
+    assert result.report.open_preferences[0].option_ids == ["v0"]
+    assert "the decoration process and finish" in result.report.supplier_draft
+    assert "engraving" not in result.report.supplier_draft
+    assert "margin" not in result.report.supplier_draft
+
+
+def test_independent_unresolved_decisions_with_the_same_topic_keep_their_own_sources(example):
+    request, images = example
+    data = request.model_dump()
+    decisions = [
+        ("method", "decoration_method", "What decoration method works?"),
+        ("surface", "surface_finish", "What surface finish works?"),
+    ]
+    scope = ["v0", "v1"]
+    data.update(
+        answers=[{
+            "question_id": question_id, "question_text": question, "answer_text": None, "buyer_facet": facet,
+        } for question_id, facet, question in decisions],
+        answer_option_ids={question_id: scope for question_id, _, _ in decisions},
+        requirements=[{
+            "requirement_id": question_id, "statement": question, "topic": "finish", "buyer_facet": facet,
+            "status": "unresolved", "option_ids": scope, "provenance": [{
+                "input_ref": f"answer:{question_id}", "quote": None, "question_text": question,
+                "action": "unresolved", "option_ids": scope,
+            }],
+        } for question_id, facet, question in decisions],
+    )
+    request = ReviewInput.model_validate(data)
+    payload = canonical_content(request, "finish")
+    payload["findings"] = [finding_selection(
+        scope, topic="finish", finding_id="choose-surface", action_type="decide_preference",
+        supplier_action=None, decision_id="surface",
+    )]
+
+    rendered = assemble(request, images, payload)
+    method, surface = rendered.open_preferences
+    assert method.questions[0].question_text == "What decoration method works?"
+    assert method.finding_ids == []
+    assert surface.questions[0].question_text == "What surface finish works?"
+    assert surface.finding_ids == ["choose-surface"]
+    assert rendered.findings[0].title == "Decide what you need for the surface finish"
+    assert rendered.supplier_draft == ""
+
+    payload["findings"].append({**payload["findings"][0], "finding_id": "duplicate"})
+    with pytest.raises(ValueError, match="identical evidence for the same unresolved buyer decision"):
+        assemble(request, images, payload)
+
+    name = request.snapshot.option_name_sources()["v0"]
+    payload["claims"] = [text_claim("sku-wording", name.source_id, name.original_text, "v0")]
+    payload["findings"][-1].update(finding_id="surface-evidence", claim_ids=["sku-wording"])
+    rendered = assemble(request, images, payload)
+    assert rendered.open_preferences[1].finding_ids == ["choose-surface", "surface-evidence"]
+
+    payload["findings"].pop()
+    payload["findings"][0]["option_ids"] = ["v0"]
+    with pytest.raises(ValueError, match="exact option scope"):
+        assemble(request, images, payload)
 
 
 def test_live_client_requires_report_opt_in(example, monkeypatch):
@@ -173,7 +516,7 @@ def test_request_is_bound_to_real_selected_evidence(parser_case, caplog):
     assert schema["strict"] is True
     assert schema["schema"]["additionalProperties"] is False
     assert set(schema["schema"]["required"]) == set(ReviewContent.model_fields)
-    assert body["instructions"] == report.REVIEW_PROMPT
+    assert body["instructions"] == report.LEGACY_REVIEW_PROMPT
     (message,) = body["input"]
     assert message["role"] == "user"
     json_input, *image_parts = message["content"]

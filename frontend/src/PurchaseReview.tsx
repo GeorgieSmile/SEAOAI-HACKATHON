@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import { sourceImageUrl } from "./api";
 import type {
-  ListingOption, ListingSnapshot, PurchaseReview as Review, ReviewClaim, ReviewFinding, ReviewRequirement, Source,
+  ListingOption, ListingSnapshot, PurchaseReview as Review, ResolvedRequirement, ReviewClaim,
+  ReviewFinding, ReviewRequirement, Source,
 } from "./api";
 
 const findingKinds = {
@@ -214,6 +215,81 @@ function OptionName({ option }: { option: ListingOption | undefined }) {
   );
 }
 
+const requirementStatuses = {
+  active: "Required",
+  waived: "Waived",
+  unresolved: "Decision open",
+};
+
+const decisionActions = {
+  keep: "Kept",
+  replace: "Replaced",
+  waive: "Waived",
+  add: "Added",
+  unresolved: "Left open",
+};
+
+function RequirementDecision({ requirement, optionId }: { requirement: ResolvedRequirement; optionId: string }) {
+  const history = requirement.provenance.filter((entry) => entry.option_ids.includes(optionId));
+  const latest = history.at(-1);
+  const openAnswer = requirement.status === "unresolved" && latest?.action === "unresolved" && latest.question_text;
+
+  return (
+    <li>
+      <details className="requirement-decision">
+        <summary>
+          <span className={`requirement-status is-${requirement.status}`}>
+            {requirementStatuses[requirement.status]}
+            {openAnswer && (latest.quote === null ? " · Question skipped" : " · Answer left open")}
+          </span>
+          <span className="requirement-statement">{requirement.statement}</span>
+        </summary>
+        <ol className="requirement-history" aria-label="Decision history">
+          {history.map((entry, index) => (
+            <li key={`${entry.input_ref}-${index}`}>
+              <p><strong>{decisionActions[entry.action]}</strong> · {entry.question_text
+                ? `Your answer to “${entry.question_text}”` : "Your purchase context"}</p>
+              {entry.quote === null ? <p className="muted">No answer submitted.</p> : <blockquote>{entry.quote}</blockquote>}
+            </li>
+          ))}
+        </ol>
+      </details>
+    </li>
+  );
+}
+
+function RequirementDecisions({ requirements, selected, snapshot }: {
+  requirements: ResolvedRequirement[];
+  selected: string[];
+  snapshot: ListingSnapshot;
+}) {
+  return (
+    <section className="review-panel requirement-decisions" aria-labelledby="requirement-decisions-heading">
+      <h2 id="requirement-decisions-heading">Your requirements by option</h2>
+      <div className="requirement-options">
+        {selected.map((id) => {
+          const decisions = requirements.filter((requirement) => requirement.option_ids.includes(id));
+          const option = snapshot.options.find((option) => option.option_id === id);
+          const headingId = `requirement-option-${id}`;
+          return (
+            <section key={id} className="requirement-option" aria-labelledby={headingId}>
+              <h3 id={headingId}>{optionLabel(selected, id)}</h3>
+              <div className="requirement-option-name"><OptionName option={option} /></div>
+              {decisions.length === 0 ? <p className="muted">No requirement decisions recorded.</p> : (
+                <ul className="requirement-decisions-list">
+                  {decisions.map((requirement) => (
+                    <RequirementDecision key={requirement.requirement_id} requirement={requirement} optionId={id} />
+                  ))}
+                </ul>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function Comparisons({ report, snapshot, context }: { report: Review; snapshot: ListingSnapshot; context: EvidenceContext }) {
   const optionIds = report.selected_option_ids;
   return (
@@ -349,9 +425,10 @@ function SupplierDraft({ draft, text, onChange }: { draft: string; text: string;
   );
 }
 
-export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft }: {
+export function PurchaseReview({ report, snapshot, requirements, supplierDraft, onChangeDraft }: {
   report: Review;
   snapshot: ListingSnapshot;
+  requirements?: ResolvedRequirement[] | null;
   supplierDraft: string;
   onChangeDraft: (text: string) => void;
 }) {
@@ -370,7 +447,13 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
       <div className="review-workspace">
         <section className="review-findings" aria-labelledby="findings-heading">
           <h2 id="findings-heading">What to resolve</h2>
-          {report.findings.length === 0 && <p className="review-panel">No findings were reported. See the coverage and limitations below.</p>}
+          {report.findings.length === 0 && (
+            <p className="review-panel">
+              {report.open_preferences.length > 0
+                ? <a href="#open-preferences-heading">Review your open preferences.</a>
+                : "No findings were reported. See the coverage and limitations below."}
+            </p>
+          )}
           {report.findings.map((finding) => (
             <FindingCard key={finding.finding_id} finding={finding} report={report} context={context} />
           ))}
@@ -379,10 +462,12 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
       </div>
       <ReportCoverage report={report} />
       <Comparisons report={report} snapshot={snapshot} context={context} />
-      {(otherRequirements.length > 0 || report.open_preferences.length > 0) && (
+      {requirements && <RequirementDecisions requirements={requirements} selected={context.selected}
+        snapshot={snapshot} />}
+      {((!requirements && otherRequirements.length > 0) || report.open_preferences.length > 0) && (
         <section className="review-panel review-buyer-inputs" aria-labelledby="buyer-inputs-heading">
           <h2 id="buyer-inputs-heading">Buyer inputs</h2>
-          {otherRequirements.length > 0 && (
+          {!requirements && otherRequirements.length > 0 && (
             <div>
               <h3>Other buyer requirements</h3>
               {otherRequirements.map((requirement) => (
@@ -392,7 +477,7 @@ export function PurchaseReview({ report, snapshot, supplierDraft, onChangeDraft 
           )}
           {report.open_preferences.length > 0 && (
             <div>
-              <h3>Open preferences</h3>
+              <h3 id="open-preferences-heading">Open preferences</h3>
               <ul>
                 {report.open_preferences.map((preference) => {
                   const scope = narrowerScope(context.selected, preference.option_ids);

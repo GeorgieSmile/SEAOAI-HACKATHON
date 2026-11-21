@@ -348,12 +348,13 @@ def test_phase_two_handoff_can_generate_a_report_after_restart(tmp_path):
         assert restored["phase"] == "ready_for_review"
         assert restored["report"] is None
         assert restored["last_operation"]["stage"] == "review"
+        assert restored["requirements"] == []
         assert calls == []
         command = {**reference(restored), "operation_id": str(uuid4()), "submission": None}
         reviewed = ready(client.post("/api/reviews", json=command))
         assert reviewed["phase"] == "reviewed"
         assert reviewed["revision"] == restored["revision"]
-        assert calls == [inputs]
+        assert calls == [inputs.model_copy(update={"requirements": []})]
 
 
 def _replace_saved_case(database, change):
@@ -446,6 +447,40 @@ def test_review_preserves_sku_scope_of_issued_answer_at_provider_and_on_retry(tm
         assert reference(recovered) == reference(reviewed)
         assert recovered["rounds"][0]["answers"] == saved["rounds"][0]["answers"]
         assert len(requests) == 3
+
+
+def test_saved_review_is_bound_to_the_issued_question_facet(tmp_path):
+    database = tmp_path / "case.db"
+
+    async def ask_about_decoration(inputs):
+        return QuestionResult(reason="Check the requested decoration.", questions=[QuestionDraft(
+            prompt="How should the artwork be applied?", why_ask="The method affects this order.",
+            option_ids=inputs.selected_option_ids[:1], source_ids=[], choices=[], buyer_facet="decoration_method",
+        )])
+
+    options = dict(translator=stub, question_generator=ask_about_decoration, review_generator=offline_review)
+    with TestClient(create_app(database, **options)) as client:
+        snapshot = _upload(client, RAW).json()["snapshot"]
+        asking = ready(client.post("/api/questions", json=initial_request(snapshot)))
+        reviewed = ready(client.post("/api/reviews", json=round_request(asking, texts=["Screen printing is required."])))
+        assert reviewed["phase"] == "reviewed"
+        assert reviewed["rounds"][0]["questions"][0]["buyer_facet"] == "decoration_method"
+
+    async def unexpected_generation(*_):
+        pytest.fail("Reopening a report must not request generation.")
+
+    options["review_generator"] = unexpected_generation
+    with TestClient(create_app(database, **options)) as client:
+        assert client.get("/api/case").json()["case"] == reviewed
+
+    _replace_saved_case(database, lambda record: record["view"]["rounds"][0]["questions"][0].update(
+        buyer_facet="surface_finish",
+    ))
+    with TestClient(create_app(database, **options)) as client:
+        saved = client.get("/api/case").json()["case"]
+        assert saved["last_operation"]["code"] == "invalid_review"
+        assert saved["report"] is None
+        assert saved["rounds"][0]["answers"] == reviewed["rounds"][0]["answers"]
 
 
 @pytest.mark.parametrize("damage, expected_code", [
@@ -542,7 +577,13 @@ def test_saved_review_recovery_requires_bound_claims_and_never_calls_provider(tm
         assert reference(reviewed) == reference(original)
         assert reviewed["phase"] == "reviewed"
         assert reviewed["last_operation"]["operation_id"] == original["last_operation"]["operation_id"]
-        assert reviewed["report"] == original["report"]
+        if damage == "legacy":
+            assert reviewed["report"]["buyer_requirements"] == []
+            assert [item["status"] for item in reviewed["requirements"]] == ["unresolved", "unresolved"]
+            assert [item["provenance"][0]["quote"] for item in reviewed["requirements"]] == ["  Keep the deadline exactly.  ", None]
+            assert reviewed["report"]["open_preferences"]
+        else:
+            assert reviewed["report"] == original["report"]
         assert ready(client.post("/api/case/retry", json=retry_request(recovered))) == reviewed
         (inputs,) = retries
         assert [answer.answer_text for answer in inputs.answers] == ["  Keep the deadline exactly.  ", None]

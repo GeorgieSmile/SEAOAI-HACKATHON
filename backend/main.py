@@ -24,8 +24,8 @@ from .case_models import ContinueCase, ResetCase, RetryCase, ReviewCase, StartCa
 from .case_workflow import CaseCommandError, CaseWorkflow, QuestionGenerator, ReviewGenerator
 from .contracts import ContractModel, IntakeFailed, IntakeReady, ListingSnapshot
 from .intake import ParsedListing, parse_listing
+from .link_intake import LINK_HINT, fetch_listing, parse_product_link
 from .report import build_review_client, generate_review
-from .link_intake import LINK_HINT, fetch_listing, item_id_from_link
 from .state import Store
 
 
@@ -104,6 +104,7 @@ def _translation(original: ListingSnapshot, output: ListingSnapshot) -> ListingS
     verified = ListingSnapshot.model_validate(output.model_dump())
     if (
         verified.snapshot_id != original.snapshot_id
+        or verified.linked_option_id != original.linked_option_id
         or verified.title != original.title
         or len(verified.options) != len(original.options)
         or len(verified.sources) != len(original.sources)
@@ -236,7 +237,7 @@ def create_app(
                     return _intake_failure("intake_failed", LINK_HINT, 413)
                 body.extend(chunk)
             try:
-                item_id = item_id_from_link(LinkRequest.model_validate_json(body).url)
+                link = parse_product_link(LinkRequest.model_validate_json(body).url)
             except ValueError:
                 return _intake_failure("intake_failed", LINK_HINT, 422)
         # A slow link body may finish validating after a newer import or a successful reset.
@@ -246,7 +247,7 @@ def create_app(
         generation = store.begin_import()
         try:
             if is_link:
-                parse = partial(fetch_listing, item_id)
+                parse = partial(fetch_listing, link)
             else:
                 parse = partial(asyncio.to_thread, parse_listing, await _read_zip(request))
         except HTTPException as error:

@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field
 
-from .contracts import ContractModel, NonEmptyText, Revision, SelectedOptionIds
+from .contracts import ContractModel, NonEmptyText, ReviewTopic, Revision, SelectedOptionIds
 
 
 ReviewErrorCode = Literal["invalid_input", "analysis_failed", "invalid_review"]
@@ -11,10 +11,6 @@ CoverageStatus = Literal["reviewed", "limited", "not_assessed"]
 FindingKind = Literal["listing_conflict", "requirement_unconfirmed", "clarification_needed", "evidence_gap"]
 FindingAction = Literal["decide_preference", "ask_supplier", "request_evidence"]
 UnknownReason = Literal["not_found", "not_reviewed", "unreadable"]
-ReviewTopic = Literal[
-    "capacity", "finish", "materials", "temperature_use", "testing", "customization",
-    "packaging", "dimensions", "weight", "sample", "sku_wording", "deadline", "other",
-]
 SupplierAction = Literal[
     "confirm_specification", "reconcile_sources", "request_documentation",
     "confirm_ready_made", "confirm_custom_order", "request_sample", "request_close_up",
@@ -97,20 +93,35 @@ class FindingSelection(ContractModel):
     supplier_action: SupplierAction | None
 
 
+class CanonicalFindingSelection(FindingSelection):
+    decision_id: NonEmptyText | None
+
+
 class CoverageSelection(ContractModel):
     group: CoverageGroup
     status: CoverageStatus
     finding_ids: list[NonEmptyText]
 
 
-class ReviewContent(ContractModel):
-    contract_version: Literal[2]
+class _ReviewSelections(ContractModel):
     claims: list[SourcedClaim]
-    buyer_requirements: list[RequirementSelection]
-    open_preferences: list[PreferenceSelection]
     comparisons: Annotated[list[ComparisonSelection], Field(min_length=1)]
-    findings: list[FindingSelection]
     coverage: Annotated[list[CoverageSelection], Field(min_length=3, max_length=3)]
+
+
+class ReviewContent(_ReviewSelections):
+    contract_version: Literal[2]
+    open_preferences: list[PreferenceSelection]
+    findings: list[FindingSelection]
+    buyer_requirements: list[RequirementSelection]
+
+
+class CanonicalReviewContent(_ReviewSelections):
+    contract_version: Literal[3]
+    findings: list[CanonicalFindingSelection]
+
+
+ReviewSelection = Annotated[ReviewContent | CanonicalReviewContent, Field(discriminator="contract_version")]
 
 
 class SentReviewEvidence(ContractModel):
@@ -221,7 +232,7 @@ class PurchaseReview(ContractModel):
 class ReviewReady(ContractModel):
     status: Literal["ready"] = "ready"
     report: PurchaseReview
-    content: ReviewContent
+    content: ReviewSelection
     sent_evidence: SentReviewEvidence
 
 

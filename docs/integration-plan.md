@@ -27,7 +27,7 @@ Version: 0.6
 
 | Request | ข้อมูลจาก frontend | ผลที่คืน |
 | --- | --- | --- |
-| `POST /api/imports` | JSON `{"url":"…"}` สำหรับลิงก์สินค้า TTP Cargo 1688 หรือ multipart field `file` หนึ่ง ZIP | IntakeResult เดิม เมื่อ ready เก็บ snapshot และภาพไว้ให้เริ่มเคส |
+| `POST /api/imports` | JSON `{"url":"…"}` สำหรับลิงก์สินค้า TTP Cargo (1688, Taobao, Tmall) หรือ multipart field `file` หนึ่ง ZIP | IntakeResult เดิม เมื่อ ready เก็บ snapshot และภาพไว้ให้เริ่มเคส |
 | `POST /api/questions` | `{operation_id, snapshot_id, previous_case, selected_option_ids, buyer_context}` | เริ่มเคสพร้อม case_id ใหม่ที่ Backend ออก โดย previous_case เป็น null ถ้ายังไม่มี หรือ `{case_id, revision}` ที่ต้องตรงเคสก่อนแทน |
 | `POST /api/questions/continue` | `{operation_id, case_id, revision, submission}` | บันทึกคำตอบแล้วขอรอบถัดไปตาม question contract หรือคืนพร้อมไปรายงาน |
 | `POST /api/reviews` | `{operation_id, case_id, revision, submission}` โดย submission เป็น null ได้ | บันทึกคำตอบจากรอบที่เปิดถ้ามี แล้วประกอบ ReviewInput จาก state ที่ตรง revision |

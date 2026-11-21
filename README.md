@@ -16,7 +16,7 @@ python3 -m venv .venv
 npm --prefix frontend ci
 ```
 
-ทดสอบโดยไม่ใช้เครดิต API เปิด backend ใน terminal แรก โหมดนี้นำเข้าลิงก์หรือ ZIP จริง แสดงชื่อจีน และใช้คำถามและรายงานที่เตรียมไว้สำหรับทดสอบการทำงาน เลือก “Custom orders are acceptable” แล้วกด **Continue** เพื่อดูคำถามรอบถัดไป ใช้ path เดิมเมื่อต้องการทดสอบกู้เคสหลัง restart หากไม่ระบุ `--database` จะใช้ฐานข้อมูลชั่วคราวเฉพาะการรันครั้งนั้น
+ทดสอบโดยไม่ใช้เครดิต API เปิด backend ใน terminal แรก โหมดนี้นำเข้าลิงก์สินค้าหรือ ZIP จริง แสดงชื่อจีน และใช้คำถามและรายงานที่เตรียมไว้สำหรับทดสอบการทำงาน เลือก “Custom orders are acceptable” แล้วกด **Continue** เพื่อดูคำถามรอบถัดไป ใช้ path เดิมเมื่อต้องการทดสอบกู้เคสหลัง restart หากไม่ระบุ `--database` จะใช้ฐานข้อมูลชั่วคราวเฉพาะการรันครั้งนั้น
 
 ```sh
 .venv/bin/python -m backend.tests.offline_server --database backend/.local/offline-demo.sqlite3
@@ -28,7 +28,7 @@ npm --prefix frontend ci
 npm --prefix frontend run dev
 ```
 
-เปิด [หน้าเลือกสินค้า](http://127.0.0.1:5173) วาง [ลิงก์สินค้าตัวอย่าง](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639) แล้วกด **Import link** หากเว็บต้นทางไม่พร้อมหรือเครื่องเดโมออฟไลน์ ใช้ **Choose ZIP** กับ [raw ZIP](samples/raw-save/raw-save-redacted.zip) จากนั้นเลือก SKU 1–3 รายการตามลำดับ กรอกบริบทได้ถ้าต้องการ แล้วเริ่มรอบคำถาม เปิด URL เดิมอีกครั้งเพื่อดูเคสและคำตอบที่บันทึกไว้
+เปิด [หน้าเลือกสินค้า](http://127.0.0.1:5173) วาง [ลิงก์สินค้าตัวอย่าง](https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639) แล้วกด **Import link** รองรับ 1688, Taobao และ Tmall หากลิงก์ระบุ `skuId` ตัวเลือกที่ตรงกันจะแสดง **From your link** ให้ผู้ซื้อเลือกและยืนยัน หากเว็บต้นทางไม่พร้อมหรือเครื่องเดโมออฟไลน์ ใช้ **Choose ZIP** กับ [raw ZIP](samples/raw-save/raw-save-redacted.zip) จากนั้นเลือก SKU 1–3 รายการตามลำดับ กรอกบริบทได้ถ้าต้องการ แล้วเริ่มรอบคำถาม เปิด URL เดิมอีกครั้งเพื่อดูเคสและคำตอบที่บันทึกไว้
 
 เมื่อต้องการรัน backend ปกติ ให้หยุด backend ทดสอบก่อนแล้วใช้คำสั่งด้านล่าง โดย SQLite ของแอปอยู่ใน `backend/.local/` การเรียก API จริงมีค่าใช้จ่ายและต้องได้รับอนุมัติก่อน ตั้ง `OPENAI_API_KEY` ใน environment ของ backend แล้วเปิดเฉพาะขั้นที่ได้รับอนุมัติ (`OPENAI_LIVE_TRANSLATION=1` สำหรับแปล `OPENAI_LIVE_QUESTIONS=1` สำหรับคำถาม และ `OPENAI_LIVE_REVIEW=1` สำหรับรายงาน) เมื่อขั้นใดยังไม่เปิด แอปจะแจ้งข้อผิดพลาดที่ขั้นนั้น เก็บ key ไว้เฉพาะเครื่อง เช่นใน `backend/.env` ซึ่ง Git ข้าม ไฟล์นี้ต้องโหลดเข้า environment ของ process ที่จะใช้เอง
 

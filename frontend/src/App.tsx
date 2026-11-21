@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { caseVersion, currentPurchaseReview, getCurrentCase, resetCase, importListing } from "./api";
+import { caseVersion, currentPurchaseReview, getCurrentCase, importListing, resetCase } from "./api";
 import type { CaseVersion, ListingSnapshot } from "./api";
 import { Interview } from "./Interview";
 import { Listing, OptionImage } from "./Listing";
@@ -13,6 +13,15 @@ type ImportState =
   | { status: "ready"; sourceLabel?: string; snapshot: ListingSnapshot };
 
 const MAX_CONTEXT_LENGTH = 2_000;
+
+function isProductLink(value: string) {
+  const prefix = "https://taobao.ttpcargo.com/product?";
+  if (!value.startsWith(prefix)) return false;
+  const fields = value.slice(prefix.length).split("&");
+  const keys = new Set(fields.map((field) => field.split("=")[0]));
+  return keys.size === fields.length && keys.has("provider") && keys.has("itemId")
+    && fields.every((field) => /^(?:provider=(?:1688|taobao|tmall)|(?:itemId|skuId)=[1-9][0-9]{0,17})$/.test(field));
+}
 
 interface ResetTarget {
   snapshotId: string;
@@ -305,14 +314,21 @@ export function App() {
             {sourceLabel && !snapshot && (
               <p className="file-name">{sourceLabel}</p>
             )}
-            {!snapshot && <p className="muted">Works with 1688 products on TTP Cargo.</p>}
+            {!snapshot && <p className="muted">Supports 1688, Taobao, and Tmall product links.</p>}
             {intake.status === "loading" && <p className="muted" role="status">Reading listing and preparing translations…</p>}
             {intake.status === "failed" && <p className="error" role="alert">{intake.message}</p>}
           </div>
           {canUpload && (
             <form className="link-import" onSubmit={(event) => {
               event.preventDefault();
-              void startImport(productLink.trim());
+              const link = productLink.trim();
+              if (!isProductLink(link)) {
+                const field = event.currentTarget.elements.namedItem("productLink") as HTMLInputElement;
+                field.setCustomValidity("Use a TTP Cargo link with provider 1688, taobao, or tmall, an itemId, and optionally a skuId.");
+                field.reportValidity();
+                return;
+              }
+              void startImport(link);
             }}>
               {showReplacementWarning && (
                 <p className="replacement-warning" id="replacement-warning">
@@ -321,11 +337,12 @@ export function App() {
               )}
               <label htmlFor="product-link">TTP Cargo product link</label>
               <div className="link-controls">
-                <input id="product-link" type="url" required maxLength={512}
-                  value={productLink} onChange={(event) => setProductLink(event.currentTarget.value)}
-                  placeholder="https://taobao.ttpcargo.com/product?…"
-                  pattern={'https://taobao\\.ttpcargo\\.com/product\\?(provider=1688&itemId=[1-9][0-9]{0,17}|itemId=[1-9][0-9]{0,17}&provider=1688)'}
-                  title="Use a taobao.ttpcargo.com product link with provider=1688 and a numeric itemId." />
+                <input id="product-link" name="productLink" type="url" required maxLength={512}
+                  value={productLink} onChange={(event) => {
+                    event.currentTarget.setCustomValidity("");
+                    setProductLink(event.currentTarget.value);
+                  }}
+                  placeholder="https://taobao.ttpcargo.com/product?…" />
                 <button className="button button-primary" type="submit" disabled={intake.status === "loading"}
                   aria-describedby={showReplacementWarning ? "replacement-warning" : undefined}>
                   Import link

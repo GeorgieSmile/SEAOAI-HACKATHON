@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import { fileURLToPath } from "node:url";
-import type { CaseView, ListingSnapshot, PurchaseReview, Submission } from "../src/api";
+import type { CaseView, ListingSnapshot, PurchaseReview, QuestionRound, ResolvedRequirement, Submission } from "../src/api";
 import flow from "../src/fixtures/integration-flow.json" with { type: "json" };
 import contract from "../../docs/contracts/examples/report-contract-example.json" with { type: "json" };
 
@@ -39,6 +39,183 @@ async function openWorkspace(page: Page, saved: () => CaseView) {
   await page.goto("/");
 }
 
+for (const entry of ["TTP Cargo link", "ZIP after a link failure"] as const) {
+  test(`opens and resumes the purchase review from ${entry}`, async ({ page }) => {
+    const usingLink = entry === "TTP Cargo link";
+    const url = "https://taobao.ttpcargo.com/product?provider=1688&itemId=1035537244639&skuId=6048851312288";
+    let saved: CaseView | null = null;
+    let imported: ListingSnapshot | null = null;
+    await page.route("**/api/case", (route) => route.fulfill({ json: { snapshot: imported, case: saved } }));
+    await page.route("**/api/snapshots/*/images/*", (route) => route.fulfill({ status: 404 }));
+    await page.route("**/api/imports", (route) => {
+      const isLink = route.request().headers()["content-type"] === "application/json";
+      if (isLink) {
+        expect(route.request().postDataJSON()).toEqual({ url });
+        if (!usingLink) {
+          return route.fulfill({ json: { status: "failed", code: "link_unavailable", message: "TTP Cargo could not load this listing." } });
+        }
+      }
+      imported = { ...snapshot, linked_option_id: isLink ? skipReport.selected_option_ids.at(-1)! : null };
+      return route.fulfill({ json: { status: "ready", snapshot: imported } });
+    });
+    await page.route("**/api/questions", (route) => {
+      const request = route.request().postDataJSON();
+      expect(request.selected_option_ids).toEqual(skipReport.selected_option_ids);
+      saved = reviewed(skipReport, {
+        revision: 0, phase: "awaiting_answers", report: null, buyer_context: request.buyer_context,
+        rounds: [{ ...skip.first_round, answers: null }],
+        last_operation: { stage: "start", status: "ready", operation_id: request.operation_id, code: null, message: null },
+      });
+      return route.fulfill({ json: ready(saved) });
+    });
+    await page.route("**/api/reviews", (route) => {
+      const request = route.request().postDataJSON();
+      expect(request.submission.answers).toEqual(asSubmission(linked.input.answers));
+      saved = reviewed(skipReport, {
+        buyer_context: "",
+        last_operation: { stage: "review", status: "ready", operation_id: request.operation_id, code: null, message: null },
+      });
+      return route.fulfill({ json: ready(saved) });
+    });
+
+    await page.goto("/");
+    await page.getByLabel("TTP Cargo product link").fill(url);
+    await page.getByRole("button", { name: "Import link" }).click();
+    if (!usingLink) {
+      await expect(page.getByRole("alert")).toContainText("TTP Cargo could not load");
+      const chooser = page.waitForEvent("filechooser");
+      await page.getByRole("button", { name: "Choose another ZIP" }).click();
+      await (await chooser).setFiles({ name: "listing.zip", mimeType: "application/zip", buffer: Buffer.from("Fixture") });
+    }
+    await expect(page.getByText("From your link")).toHaveCount(usingLink ? 1 : 0);
+    const options = page.getByRole("group", { name: "Product options" });
+    const confirm = page.getByRole("button", { name: "Confirm options" });
+    await expect(confirm).toBeDisabled();
+    for (const id of skipReport.selected_option_ids) await options.locator(`input[value="${id}"]`).check();
+    await confirm.click();
+    await page.getByRole("button", { name: "View purchase review" }).click();
+    await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Message to supplier" })).toBeVisible();
+    await page.reload();
+    await page.getByRole("button", { name: "Change options or context" }).click();
+    await expect(page.getByText("From your link")).toHaveCount(usingLink ? 1 : 0);
+    await page.getByRole("button", { name: "Resume purchase review" }).click();
+    await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
+  });
+}
+
+test("shows scoped requirement decisions and saves an effect-only change to an earlier answer", async ({ page }) => {
+  const finish = "Screen printing is required.";
+  const answerText = "  Matte would work for this one.  ";
+  const initial: ResolvedRequirement = {
+    requirement_id: "finish", statement: finish, status: "active", option_ids: ["v0", "v1"],
+    provenance: [{ input_ref: "context", quote: finish, question_text: null, action: "add", option_ids: ["v0", "v1"] }],
+  };
+  const round: QuestionRound = {
+    round_id: "revisit", round_number: 1, reason: "Revisit the finish by option.", questions: [
+      {
+        question_id: "revisit-a", prompt: "What finish works for this option?", why_ask: "This only changes Option A.",
+        option_ids: ["v0"], source_ids: [], choices: ["The original finish still works.", "Any finish works."],
+        requirement_ids: ["finish"], requirement_targets: [{ ...initial, option_ids: ["v0"] }],
+        choice_effects: [
+          { choice: "The original finish still works.", action: "keep", requirement_id: "finish", statement: null },
+          { choice: "Any finish works.", action: "waive", requirement_id: "finish", statement: null },
+        ],
+      },
+      {
+        question_id: "revisit-b", prompt: "Would you change the finish for Option B?", why_ask: "This only changes Option B.",
+        option_ids: ["v1"], source_ids: [], choices: [], requirement_ids: ["finish"],
+        requirement_targets: [{ ...initial, option_ids: ["v1"] }], choice_effects: [],
+      },
+      {
+        question_id: "texture-c", prompt: "What texture works for Option C?", why_ask: "This only changes Option C.",
+        option_ids: ["v6"], source_ids: [], choices: [], requirement_ids: [], choice_effects: [],
+      },
+    ],
+    answers: [
+      { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "keep", requirement_id: "finish" } },
+      { question_id: "revisit-b", answer_text: null },
+      { question_id: "texture-c", answer_text: "Maybe matte." },
+    ],
+  };
+  const confirmed: ResolvedRequirement = {
+    ...initial, requirement_id: "finish-a", option_ids: ["v0"],
+    provenance: [...initial.provenance, {
+      input_ref: "answer:revisit-a", quote: answerText, question_text: round.questions[0]!.prompt,
+      action: "keep", option_ids: ["v0"],
+    }],
+  };
+  const waived: ResolvedRequirement = {
+    ...initial, requirement_id: "order-c", statement: "Any order type is acceptable.", status: "waived", option_ids: ["v6"],
+    provenance: [{ input_ref: "answer:order-c", quote: "Any order type is acceptable.",
+      question_text: "Do you need ready-made stock?", action: "waive", option_ids: ["v6"] }],
+  };
+  const unresolved: ResolvedRequirement = {
+    ...initial, requirement_id: "texture-c", statement: "Maybe matte.", status: "unresolved", option_ids: ["v6"],
+    provenance: [{ input_ref: "answer:texture-c", quote: "Maybe matte.",
+      question_text: round.questions[2]!.prompt, action: "unresolved", option_ids: ["v6"] }],
+  };
+  let saved = reviewed(skipReport, {
+    rounds: [round], requirements: [{ ...initial, option_ids: ["v1"] }, confirmed, waived, unresolved],
+  });
+  const originalRevision = saved.revision;
+
+  await page.route("**/api/reviews", (route) => {
+    const { operation_id, submission } = route.request().postDataJSON();
+    const revision = originalRevision + 1;
+    const nextReport = { ...skipReport, revision, supplier_draft: "Could you confirm the finish for Option A?" };
+    saved = reviewed(nextReport, {
+      rounds: [{ ...round, answers: submission.answers }],
+      requirements: saved.requirements!.map((requirement) => requirement.requirement_id === confirmed.requirement_id
+        ? { ...confirmed, statement: answerText, provenance: confirmed.provenance.map((entry) =>
+          entry.action === "keep" ? { ...entry, action: "replace" } : entry) } : requirement),
+      last_operation: { ...saved.last_operation!, operation_id },
+    });
+    return route.fulfill({ json: ready(saved) });
+  });
+  await openWorkspace(page, () => saved);
+
+  const decisions = page.getByRole("region", { name: "Your requirements by option" });
+  const optionA = decisions.getByRole("region", { name: "Option A", exact: true });
+  const optionB = decisions.getByRole("region", { name: "Option B", exact: true });
+  const optionC = decisions.getByRole("region", { name: "Option C", exact: true });
+  await expect(optionA.locator("summary").filter({ hasText: finish })).toBeVisible();
+  await expect(optionA.getByText("Question skipped", { exact: false })).toHaveCount(0);
+  await expect(optionB.locator("summary").filter({ hasText: "Required" })).toHaveText(`Required${finish}`);
+  await expect(optionB.getByText(round.questions[1]!.prompt)).toHaveCount(0);
+  await expect(optionC.locator("summary").filter({ hasText: "Waived" })).toBeVisible();
+  await expect(optionC.locator("summary").filter({ hasText: "Decision open · Answer left open" })).toBeVisible();
+  await optionA.locator("summary").filter({ hasText: finish }).click();
+  await expect(optionA.getByRole("list", { name: "Decision history" }).getByText("Added · Your purchase context")).toBeVisible();
+  await expect(optionA.locator("blockquote").last()).toHaveText(answerText);
+
+  await page.getByRole("link", { name: "Edit answers" }).click();
+  const history = page.getByRole("region", { name: "Saved answers" });
+  await history.getByText("Round 1 answers", { exact: true }).click();
+  await expect(history.getByText(round.questions[1]!.prompt)).toBeVisible();
+  await expect(history.getByText("Skipped / unknown", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Edit round 1" }).click();
+  const targetQuestion = page.getByRole("group", { name: round.questions[0]!.prompt });
+  await expect(targetQuestion.getByRole("radio", { name: `Keep “${finish}”` })).toBeVisible();
+  await expect(targetQuestion.getByRole("radio", { name: `Remove “${finish}”` })).toBeVisible();
+  await expect(targetQuestion.getByRole("textbox", { name: "Your answer" })).toHaveValue(answerText);
+  const effect = targetQuestion.getByRole("combobox", { name: "How should this answer affect your requirements?" });
+  await expect(effect).toHaveValue("keep:finish");
+  await effect.selectOption({ label: `Replace “${finish}” with my answer` });
+  const request = page.waitForRequest("**/api/reviews");
+  await page.getByRole("button", { name: "View purchase review" }).click();
+  expect((await request).postDataJSON()).toMatchObject({
+    revision: originalRevision, submission: { answers: [
+      { question_id: "revisit-a", answer_text: answerText, requirement_effect: { action: "replace", requirement_id: "finish" } },
+      { question_id: "revisit-b", answer_text: null },
+      { question_id: "texture-c", answer_text: "Maybe matte." },
+    ] },
+  });
+  await expect(optionA.locator("summary").filter({ hasText: answerText.trim() })).toBeVisible();
+  await expect(optionB.locator("summary").filter({ hasText: finish })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Supplier message draft" })).toHaveValue(saved.report!.supplier_draft);
+});
+
 test("opens scoped source evidence and compares ordered options while draft edits stay separate", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const [shared, capacity, use] = richReport.findings;
@@ -74,7 +251,7 @@ test("opens scoped source evidence and compares ordered options while draft edit
     rounds: [{ ...skip.first_round, answers: asSubmission(contract.input.answers) }],
   }));
 
-  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeFocused();
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeFocused();
   const findings = page.getByRole("article");
   await expect(findings.getByRole("heading", { level: 3 })).toHaveText(report.findings.map((finding) => finding.title));
   await expect(findings.nth(0).locator(".review-scope span")).toHaveText(["Requirement unconfirmed", "Option A", "Option B", "Option C"]);
@@ -199,6 +376,25 @@ test("shows report buyer inputs with the issued questions and their SKU scopes",
   await expect(inputs.getByText("Question “Will you use the first option for hot drinks?” · Option A")).toBeVisible();
 });
 
+test("guides the buyer to open preferences when there are no findings", async ({ page }) => {
+  const preference = {
+    preference_id: "open-order", text: "Your preference for stock and customization is still open.",
+    input_refs: [], finding_ids: [], option_ids: skipReport.selected_option_ids, questions: [],
+  };
+  const report = {
+    ...skipReport, findings: [], open_preferences: [preference], supplier_draft: "",
+    coverage: skipReport.coverage.map((group) => ({ ...group, finding_ids: [] })),
+  };
+  await openWorkspace(page, () => reviewed(report));
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeFocused();
+  const guidance = page.getByRole("link", { name: "Review your open preferences." });
+  await guidance.click();
+  await expect(page).toHaveURL(/#open-preferences-heading$/);
+  await expect(page.getByRole("heading", { name: "Open preferences" })).toBeInViewport();
+  await expect(page.getByText(preference.text)).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Copy message" })).toHaveCount(0);
+});
+
 test("shows three coverage groups and limitations for a report with no findings or supplier draft", async ({ page }) => {
   const empty = {
     ...skipReport, findings: [], open_preferences: [], supplier_draft: "",
@@ -259,13 +455,13 @@ test("retains saved answers on review failure, retries the same operation, and r
   await page.getByRole("button", { name: "View purchase review" }).click();
   const failedOperationId = (await request).postDataJSON().operation_id;
   await expect(page.getByRole("alert")).toHaveText("The review could not be validated.");
-  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toHaveCount(0);
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   const retry = page.waitForRequest("**/api/case/retry");
   await page.getByRole("button", { name: "Retry purchase review" }).click();
   expect((await retry).postDataJSON()).toEqual({ case_id: saved.case_id, revision: 1, operation_id: failedOperationId });
-  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
 
   const draft = page.getByRole("textbox", { name: "Supplier message draft" });
   await draft.fill("My local edit.");
@@ -329,7 +525,7 @@ test("discards a delayed report after a new selection starts a different case", 
     await (await response).finished();
     await page.waitForLoadState("networkidle");
     await expect(page.getByText("Questions for the new selection.")).toBeVisible();
-    await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toHaveCount(0);
   } finally {
     release();
   }
@@ -342,7 +538,7 @@ test("rejects a ready review with an old revision and accepts corrected saved pr
   await expect(page.getByRole("article")).toHaveCount(0);
   saved = { ...saved, report: { ...skipReport, revision: saved.revision } };
   await page.getByRole("button", { name: "Reload saved progress" }).click();
-  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
 });
 
 test("offers explicit regeneration for a saved legacy report and keeps submitted answers", async ({ page }) => {
@@ -371,7 +567,7 @@ test("offers explicit regeneration for a saved legacy report and keeps submitted
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   expect(writes).toEqual([]);
   await page.getByRole("button", { name: "Regenerate report", exact: true }).click();
-  await expect(page.getByRole("heading", { name: /things? to resolve before you order/, level: 1 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Before you order", level: 1 })).toBeVisible();
   await page.getByText("Round 1 answers", { exact: true }).click();
   await expect(page.getByText("Skipped / unknown", { exact: true })).toHaveCount(3);
   expect(writes).toEqual(["/api/case/retry"]);

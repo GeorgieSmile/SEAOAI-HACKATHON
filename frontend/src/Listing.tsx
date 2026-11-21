@@ -113,6 +113,7 @@ export function Listing({ snapshot, selected, disabled, selectionError, onToggle
                     onChange={() => onToggle(option.option_id)}
                   />
                   <span>
+                    {snapshot.linked_option_id === option.option_id && <strong className="linked-option">From your link</strong>}
                     <BilingualText original={option.name_original} translation={option.name_en} />
                   </span>
                 </span>

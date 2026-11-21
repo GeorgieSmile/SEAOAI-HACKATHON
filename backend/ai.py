@@ -14,15 +14,18 @@ from unicodedata import normalize
 from openai import APIConnectionError, APIResponseValidationError, APIStatusError, AsyncOpenAI
 from openai.types.responses import Response, ResponseInputParam
 from pydantic import ValidationError
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 from .contracts import ContractModel, ListingSnapshot, QuestionInput, QuestionResult, Source
+from .requirements import validate_requirement_plan
 
 
 TRANSLATION_MODEL = "gpt-6.1-terra"
 TRANSLATION_PROMPT_VERSION = "translate-listing-v1"
 TRANSLATION_DEADLINE_SECONDS = 60
 TRANSLATION_LIMITATION = "English translation is unavailable. The original listing text is shown."
-QUESTION_PROMPT_VERSION = "buyer-questions-v2"
+QUESTION_PROMPT_VERSION = "buyer-questions-v4"
 QUESTION_DEADLINE_SECONDS = 60
 QUOTA_ERRORS = {"insufficient_quota", "billing_hard_limit_reached", "billing_not_active", "quota_exceeded"}
 PROMPT_DIRECTORY = Path(__file__).parent / "prompts"
@@ -190,6 +193,17 @@ def _apply_translations(
     )
 
 
+class _StrictOutputSchema(GenerateJsonSchema):
+    # Older saved records may omit a field whose value the provider must return or set to null.
+    def field_is_required(
+        self, field: core_schema.ModelField | core_schema.DataclassField | core_schema.TypedDictField, total: bool,
+    ) -> bool:
+        return True
+
+    def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
+        return self.generate_inner(schema["schema"])
+
+
 async def _request_structured(
     *,
     client: AsyncOpenAI,
@@ -205,7 +219,7 @@ async def _request_structured(
         "type": "json_schema",
         "name": schema_name,
         "strict": True,
-        "schema": schema.model_json_schema(),
+        "schema": schema.model_json_schema(schema_generator=_StrictOutputSchema),
     }
     loop = asyncio.get_running_loop()
     deadline = loop.time() + deadline_seconds
@@ -451,8 +465,24 @@ def _validate_named_options(
 
 def validate_question_result(request: QuestionInput, result: QuestionResult) -> None:
     """Check the draft against the same allowed evidence and history sent to the model."""
+    try:
+        validate_requirement_plan(request, result)
+    except ValueError as error:
+        raise QuestionGenerationError("invalid_questions", str(error)) from None
+
     selected = set(request.selected_option_ids)
     references = dict(zip(request.selected_option_ids, OPTION_REFERENCES))
+    for proposal in result.context_requirements or []:
+        mentioned = {
+            reference for named, *_ in _named_option_references(proposal.quote)
+            for reference in named
+        }
+        if proposal.status == "active" and mentioned and mentioned != {
+            references[option_id] for option_id in proposal.option_ids
+        }:
+            raise QuestionGenerationError(
+                "invalid_questions", "Keep explicitly named options in the scope of the buyer's exact requirement.",
+            )
     seen_prompts = {_normalized_question_text(answer.question_text) for answer in request.answers}
     sources = _question_sources(request)
     name_sources = request.snapshot.option_name_sources()
@@ -579,6 +609,7 @@ async def generate_questions(
     options = {option.option_id: option for option in request.snapshot.options}
     selected = set(request.selected_option_ids)
     sources = _question_sources(request)
+    answer_scopes = request.answer_option_ids or {}
     payload = {
         "round_number": request.round_number,
         "selected_options": [
@@ -591,7 +622,13 @@ async def generate_questions(
             for reference, option_id in zip(OPTION_REFERENCES, request.selected_option_ids)
         ],
         "buyer_context": request.buyer_context,
-        "answers": [answer.model_dump() for answer in request.answers],
+        "answers": [
+            {
+                **answer.model_dump(),
+                **({"option_ids": answer_scopes[answer.question_id]} if answer.question_id in answer_scopes else {}),
+            }
+            for answer in request.answers
+        ],
         "sources": [
             {
                 "source_id": source.source_id,
@@ -604,6 +641,8 @@ async def generate_questions(
             for source in sources.values()
         ],
     }
+    if request.requirements is not None:
+        payload["requirements"] = [row.model_dump() for row in request.requirements]
     LOGGER.info(
         "Question prompt %s round %d text sources: %s",
         QUESTION_PROMPT_VERSION,
@@ -612,6 +651,8 @@ async def generate_questions(
     )
 
     def validate(result: QuestionResult) -> QuestionResult:
+        if request.round_number == 1 and result.context_requirements is None:
+            raise QuestionGenerationError("invalid_questions", "Return the initial context requirements, even if empty.")
         validate_question_result(request, result)
         return result
 
