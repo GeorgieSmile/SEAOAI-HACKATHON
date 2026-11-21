@@ -26,9 +26,9 @@ free text. Do not include a preselected answer or a skip choice.
 Set buyer_facet to the preference the buyer is being asked to decide. Use order_type for
 ready-made stock versus custom orders, decoration_method for how decoration is applied
 (such as screen printing or decals), surface_finish for appearance or texture (such as matte
-or glossy), capacity for required volume, and other for the remaining questions. A follow-up
-that reconsiders an earlier preference should reuse its facet. A question about a sample or
-another consequence of an earlier decision should name its own facet.
+or glossy), capacity for required volume, and delivery_deadline for when the buyer needs
+the order to arrive. Use other for independent questions about sample timing, shipping dates,
+and other decisions. Reuse the original facet when a follow-up revisits the same decision.
 
 Use listing text as seller claims and use official excerpts only as general guidance. Use
 only the supplied text source IDs relevant to a question's option scope. Leave source IDs

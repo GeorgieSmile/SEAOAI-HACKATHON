@@ -132,7 +132,9 @@ def test_questions_send_only_relevant_text_and_keep_answer_history(request_input
     facet_schema = draft_schema["properties"]["buyer_facet"]
     assert "default" not in facet_schema
     assert {"type": "null"} in facet_schema["anyOf"]
-    assert {"type": "string", "enum": ["order_type", "decoration_method", "surface_finish", "capacity", "other"]} in facet_schema["anyOf"]
+    assert {"type": "string", "enum": [
+        "order_type", "decoration_method", "surface_finish", "capacity", "delivery_deadline", "other",
+    ]} in facet_schema["anyOf"]
     assert body["max_output_tokens"] == 4096
     payload = json.loads(body["input"])
     assert payload["round_number"] == 2

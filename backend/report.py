@@ -114,6 +114,7 @@ BUYER_FACET_TOPICS: dict[BuyerFacet, str] = {
     "decoration_method": "finish",
     "surface_finish": "finish",
     "capacity": "capacity",
+    "delivery_deadline": "deadline",
 }
 FINISH_FACETS: tuple[BuyerFacet, ...] = ("decoration_method", "surface_finish")
 SUPPLIER_TARGET_FACETS: dict[str, tuple[BuyerFacet, ...]] = {
@@ -156,15 +157,40 @@ REQUIRED_SURFACE_FINISH = re.compile(
     r"i (?:need|require) (?:a )?(?P<requested>matte|glossy) (?:finish|texture)"
     r"|(?:a )?(?P<stated>matte|glossy) (?:finish|texture) (?:is required|only)",
 )
-LEGACY_ORDER_RECHECKS = {
-    "are custom orders acceptable?",
-    "has your position on custom orders changed?",
-    "would you consider a custom order?",
-    "would you consider custom production?",
-}
-LEGACY_UNDECIDED = re.compile(
-    r"(?:(?:i am|i'm) )?(?:undecided|not sure)(?: and (?:i )?will have to check)?",
+LEGACY_QUESTION_SCOPE = (
+    r"(?: for (?:options? [abc](?:(?:, |/| and |, and )[abc])*|"
+    r"this (?:option|order|purchase)|(?:all|these) (?:selected )?options))?\??"
 )
+LEGACY_DIRECT_QUESTIONS: tuple[tuple[tuple[BuyerFacet, ...], str], ...] = (
+    (("order_type",),
+     r"(?:would you consider (?:a custom order|custom production)|are custom orders acceptable|"
+     r"do you accept custom orders|(?:would you prefer|do you require) ready-made(?: (?:stock|options))?(?: only)?|"
+     r"has your position on custom orders changed)"),
+    (("decoration_method",),
+     r"(?:is screen printing required(?:, or are applied graphics acceptable)?|do you require screen printing|"
+     r"are applied graphics acceptable|(?:what|which) decoration(?: (?:method|process))?"
+     r"(?: do you (?:need|require|prefer)| is (?:required|acceptable)| works)?)"),
+    (("surface_finish",),
+     r"(?:what|which) (?:surface (?:finish|texture)|finish should the surface have)"
+     r"(?: do you (?:need|require|prefer|want)| is (?:required|acceptable)| works)?"),
+    (FINISH_FACETS,
+     r"(?:what|which) finish(?: do you (?:need|require|prefer|want)| is (?:required|acceptable)| works)?"),
+    (("capacity",),
+     r"(?:do you (?:require|have|need) (?:an exact|a specific) capacity(?: requirement)?|"
+     r"(?:what|which) capacity(?: do you (?:need|require|prefer|want)| is (?:required|acceptable)| works)?)"),
+    (("delivery_deadline",),
+     r"(?:what (?:is|would be) (?:your|the) (?:"
+     r"(?:(?:required|revised|updated|new) )?delivery deadline|(?:required|latest acceptable|revised) delivery date)"
+     r"|what delivery deadline should (?:we use|we plan for|the review consider)"
+     r"|(?:by )?when do you need (?:delivery|(?:this|the) order delivered)"
+     r"|when does (?:this|the) order need to (?:arrive|be delivered))"),
+)
+FINISH_SUBJECTS: dict[BuyerFacet, re.Pattern[str]] = {
+    "decoration_method": re.compile(
+        r"\b(?:screen[ -]?print(?:s|ed|ing)?|silk[ -]?(?:screen(?:ed|ing)?|mesh)|decals?|applied graphics?)\b",
+    ),
+    "surface_finish": re.compile(r"\b(?:matte|glossy|surface (?:finish|texture))\b"),
+}
 EXACT_BUYER_CAPACITY = re.compile(
     r"(?:(?:i (?:need|require) |exactly )(?P<first>[0-9]+(?:\.[0-9]+)?\s*(?:ml|l|fl oz))"
     r"|(?P<second>[0-9]+(?:\.[0-9]+)?\s*(?:ml|l|fl oz)) (?:is required|only))",
@@ -537,7 +563,7 @@ class _BuyerTarget:
 
 @dataclass(frozen=True)
 class _BuyerPosition:
-    facet: BuyerFacet | None = None
+    facets: tuple[BuyerFacet, ...] = ()
     target: _BuyerTarget | None = None
     flexible: bool = False
 
@@ -574,35 +600,42 @@ def _normalize_buyer_text(text: str) -> str:
 def _buyer_position(
     text: str | None, facet: BuyerFacet | None, *, question_text: str = "",
 ) -> _BuyerPosition:
+    declared_facets = (facet,) if facet is not None and facet in BUYER_FACET_TOPICS else ()
     if not text or not text.strip():
-        return _BuyerPosition(facet)
+        return _BuyerPosition(declared_facets)
     wording = _normalize_buyer_text(text)
     if wording in FLEXIBLE_FINISH:
-        return _BuyerPosition(facet if facet is None or facet in FINISH_FACETS else "other", flexible=True)
+        if facet is None:
+            # A broad legacy waiver can affect either finish facet; withhold both directions.
+            return _BuyerPosition(FINISH_FACETS, flexible=True)
+        return _BuyerPosition(declared_facets if facet in FINISH_FACETS else (), flexible=True)
     if wording in FLEXIBLE_DECORATION_METHOD:
-        return _BuyerPosition("decoration_method", flexible=True)
+        return _BuyerPosition(("decoration_method",), flexible=True)
     if wording in NEUTRAL_DECORATION_METHOD:
-        return _BuyerPosition("decoration_method")
+        return _BuyerPosition(("decoration_method",))
     # Directional targets come only from complete, supported buyer statements.
     for target_facet, statements in BUYER_TARGETS.items():
         if target := statements.get(wording):
-            return _BuyerPosition(target_facet, _BuyerTarget(target))
+            return _BuyerPosition((target_facet,), _BuyerTarget(target))
     if (match := REQUIRED_SURFACE_FINISH.fullmatch(wording)) is not None:
         finish = match["requested"] or match["stated"]
-        return _BuyerPosition("surface_finish", _BuyerTarget(f"{finish}_finish_required"))
+        return _BuyerPosition(("surface_finish",), _BuyerTarget(f"{finish}_finish_required"))
     if (match := EXACT_BUYER_CAPACITY.fullmatch(wording)) is not None:
         reading = TEXT_READING.fullmatch(match["first"] or match["second"])
         assert reading is not None
         value = Decimal(reading["value"])
         if 0 < value <= 1_000_000:
             unit = UNIT_ALIASES["".join(reading["unit"].split())]
-            return _BuyerPosition("capacity", _BuyerTarget("capacity_required", f"{value.normalize():f} {unit}"))
-    # Legacy issued rounds carry no facet. The complete known stock/custom question and a
-    # standalone expression of uncertainty can withhold an older order direction in its scope.
-    if (facet is None and LEGACY_UNDECIDED.fullmatch(wording)
-            and _normalize_buyer_text(question_text) in LEGACY_ORDER_RECHECKS):
-        return _BuyerPosition("order_type")
-    return _BuyerPosition(facet)
+            return _BuyerPosition(("capacity",), _BuyerTarget("capacity_required", f"{value.normalize():f} {unit}"))
+    if facet in (None, "other"):
+        # Historical direct questions identify which decision to withhold, but supply no target.
+        question = _normalize_buyer_text(question_text)
+        for question_facets, pattern in LEGACY_DIRECT_QUESTIONS:
+            if facet == "other" and question_facets != ("delivery_deadline",):
+                continue
+            if re.fullmatch(pattern + LEGACY_QUESTION_SCOPE, question):
+                return _BuyerPosition(question_facets)
+    return _BuyerPosition(declared_facets)
 
 
 def _current_buyer_inputs(
@@ -612,19 +645,26 @@ def _current_buyer_inputs(
     for ref, entry in inputs.items():
         if not entry.text or not entry.text.strip():
             continue
-        facet = entry.position.facet
-        if facet is None and entry.position.flexible:
-            # Older answers with a broad finish waiver may refer to either finish facet.
-            # Withhold both directions in scope until the buyer's decision can be separated.
-            facets = FINISH_FACETS
-        elif facet is not None and facet in BUYER_FACET_TOPICS:
-            facets = (facet,)
-        else:
-            continue
-        for current_facet in facets:
+        for current_facet in entry.position.facets:
             for option_id in entry.option_ids:
                 current[current_facet, option_id] = ref
     return current
+
+
+def _requirement_facets(source: _BuyerInput, topic: str) -> tuple[BuyerFacet, ...]:
+    if source.position.facets:
+        if any(BUYER_FACET_TOPICS[facet] != topic for facet in source.position.facets):
+            raise ValueError("Use the topic that matches the buyer requirement's decision.")
+        return source.position.facets
+    if topic == "deadline":
+        # The report topic also includes independent dates for shipment, samples and ordering.
+        return ()
+    if topic == "finish":
+        wording = _normalize_buyer_text(source.text or "")
+        # A subject can narrow which later answer makes an old quote stale. It carries no target.
+        if subjects := tuple(facet for facet, pattern in FINISH_SUBJECTS.items() if pattern.search(wording)):
+            return subjects
+    return tuple(facet for facet, facet_topic in BUYER_FACET_TOPICS.items() if facet_topic == topic)
 
 
 def _linked_target(
@@ -812,6 +852,7 @@ def assemble_review(
 
     inputs = _buyer_inputs(request)
     current_inputs = _current_buyer_inputs(inputs)
+    input_order = {ref: index for index, ref in enumerate(inputs)}
     _unique_ids((row.requirement_id for row in content.buyer_requirements), "buyer requirements")
     requirement_by_id = {row.requirement_id: row for row in content.buyer_requirements}
     requirements = []
@@ -822,16 +863,16 @@ def assemble_review(
             raise ValueError("Each requirement needs the full verbatim quote from its non-null buyer input reference.")
         if not source.option_ids:
             raise ValueError("Buyer answer requirements need their issued option scope.")
-        facet = source.position.facet
-        facet_topic = BUYER_FACET_TOPICS.get(facet) if facet is not None else None
-        if facet_topic is not None and row.topic != facet_topic:
-            raise ValueError("Use the topic that matches the buyer requirement's decision.")
         if source.position.flexible:
             raise ValueError("An answer that explicitly allows any finish or method is not a requirement.")
+        facets = _requirement_facets(source, row.topic)
+        source_index = input_order[row.input_ref]
         scope = [
             option_id for option_id in request.selected_option_ids
             if option_id in source.option_ids
-            and (facet_topic is None or current_inputs.get((facet, option_id)) == row.input_ref)
+            and not any(
+                input_order[current_inputs.get((facet, option_id), row.input_ref)] > source_index for facet in facets
+            )
         ]
         if not scope:
             raise ValueError("Use the current buyer input for a requirement in its issued option scope.")

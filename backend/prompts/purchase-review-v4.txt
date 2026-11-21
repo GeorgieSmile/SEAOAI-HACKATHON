@@ -53,7 +53,10 @@ come from the issued question. An empty list means the answer scope is unknown, 
 that answer as a requirement or an open-preference reference. A later answer supersedes an
 earlier one only for the same decision and the options covered by the later answer. Decoration
 method and surface appearance are independent decisions under topic finish. A screen-printing
-requirement can coexist with a preference for matte texture. If the buyer says any decoration
+requirement can coexist with a preference for matte texture. Use the latest answered
+delivery_deadline for each option. A direct question asking when the order must arrive can
+establish the same decision in older rounds that lack the facet. Keep independent shipping
+and sample dates when they still apply. If the buyer says any decoration
 method is acceptable, omit the superseded method requirement from those options and use a
 neutral supplier confirmation if the listing still warrants a check. An omitted buyer input
 still affects what is current. Use the complete statement and issued facet when available.

@@ -128,7 +128,7 @@ BuyerContext = Annotated[str, Field(max_length=2_000)]
 Revision = Annotated[int, Field(ge=0)]
 RoundNumber = Annotated[int, Field(ge=1, le=3)]
 SelectedOptionIds = Annotated[list[NonEmptyText], Field(min_length=1, max_length=3)]
-BuyerFacet = Literal["order_type", "decoration_method", "surface_finish", "capacity", "other"]
+BuyerFacet = Literal["order_type", "decoration_method", "surface_finish", "capacity", "delivery_deadline", "other"]
 
 
 class Answer(ContractModel):

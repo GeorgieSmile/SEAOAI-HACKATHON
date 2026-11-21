@@ -160,6 +160,14 @@ Databases produced by the actual `b3fe973`, `a7dfe95` and `359d195` backends wer
 
 The follow-up passed 318 backend tests, 30 Chrome tests, frontend typechecking, the production build and `git diff --check`. The question and report SDK checks used the current `buyer-questions-v3` and `purchase-review-v4` prompts with scripted responses. Zero paid provider requests were made.
 
+### Follow-up to the review of `85e01b2`
+
+Astra independently repeated the four fixes above and identified three further cases. An untagged historical question answered “No” could leave a revoked decoration requirement active. A later waiver could leave an earlier buyer-context statement displayed as a binding requirement even when the supplier draft was neutral. A revised delivery deadline could appear alongside the old one.
+
+The additional original-ZIP checks exercise those three invalid reports and five valid controls through the review endpoint. The valid cases keep the revised deadline only, preserve unrelated sample answers and surface decisions, and publish neutral wording for a waived requirement. The checks reopened copies of all three incorrectly published databases from the review, preserving the original buyer context, rounds, SKU order and revision while withholding the obsolete report. No restore invoked the provider. The combined matrix covers 21 fresh-and-restart scenarios.
+
+The full offline backend suite passed 333 tests. All 30 Chrome tests, frontend typechecking, the production build and whitespace checks passed. The original-ZIP Chrome edit and restart walkthrough again verified the edited draft, dependent answer removal, exact deadline and the three selected SKU images at both desktop and mobile widths.
+
 ## Review รวมก่อนปิด ticket
 
 The integrated Standards and Spec reviews and T1–T5 acceptance remain pending. Issue #3 stays open for that review.

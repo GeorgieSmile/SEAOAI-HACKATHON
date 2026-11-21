@@ -51,7 +51,7 @@ export interface StartQuestions extends Selection {
 
 export interface Question {
   question_id: string;
-  buyer_facet?: "order_type" | "decoration_method" | "surface_finish" | "capacity" | "other" | null;
+  buyer_facet?: "order_type" | "decoration_method" | "surface_finish" | "capacity" | "delivery_deadline" | "other" | null;
   prompt: string;
   why_ask: string;
   option_ids: string[];
