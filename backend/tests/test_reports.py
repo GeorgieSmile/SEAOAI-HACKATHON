@@ -102,6 +102,8 @@ def minimal_content(review_input):
     ("Listing option name", "贴画", False),
     ("Listing option name", "字母", True),
     ("Image observations", "Includes 贴画.", True),
+    ("Image observations", "The SKU name is unreadable in the thumbnail.", True),
+    ("Image observations", "The SKU name is 贴画.", False),
 ])
 def test_comparison_uses_its_own_option_for_an_unqualified_sku_name(example, label, summary, valid):
     request, _, sources = example
@@ -114,7 +116,7 @@ def test_comparison_uses_its_own_option_for_an_unqualified_sku_name(example, lab
         result = report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
         assert next(row.summary for row in result.comparisons[0].values if row.option_id == "v6") == summary
     else:
-        with pytest.raises(ValueError, match="original term|absent"):
+        with pytest.raises(ValueError, match="original term|absent|cited SKU name"):
             report.assemble_review(request, ReviewContent.model_validate(content), sent_source_ids=sources)
 
 

@@ -103,6 +103,7 @@ def test_comparison_row_can_describe_its_own_cited_sku_name(joint_finding):
 @pytest.mark.parametrize(("statement", "error"), [
     ("Option A’s name includes 字母 and 贴画.", "original term"),
     ("Option A’s name includes 316 and 贴画.", "original term"),
+    ("Only Option B’s name includes both 318 and 贴画.", "original term"),
     ("Option A’s name includes 316, lettering, and 贴画.", "original term"),
     ("Option A’s name includes 316, letter design, and 贴画.", "original term"),
     ("Option A’s name includes 贴画 in the listing.", "original term"),
@@ -210,6 +211,8 @@ def test_exclusivity_uses_the_full_names_in_the_asserted_comparison(joint_findin
     ("Only Option B’s name includes both 贴画 and 粉蓝.", False),
     ("Only Option B’s name includes 贴画 and 粉蓝.", False),
     ("Only Option B’s name includes both 暮色 and 粉蓝.", True),
+    ("Only Option B’s name includes both 316 and 粉蓝.", True),
+    ("Only Option B’s name includes both 316 and 贴画.", False),
     ("Only Option B’s name includes either 贴画 or 黑白.", False),
     ("Only Option B’s name includes either 贴画 or 字母.", True),
     ("Only Option A’s name does not include both 贴画 and 粉蓝.", False),

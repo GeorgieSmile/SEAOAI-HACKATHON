@@ -42,6 +42,10 @@ NAME_INQUIRY = re.compile(
     r"\b(?:whether|if)\b|^\s*(?:does|do|is|are|has|have|what|which|how)\b", re.IGNORECASE,
 )
 NAME_NEGATION = re.compile(r"\b(?:not|never)\b|n['’]t\b", re.IGNORECASE)
+NAME_VISIBILITY = re.compile(
+    r"\b(?:(?:is|are)\s+(?:(?:not|clearly|fully|partially)\s+)*"
+    r"(?:visible|legible|readable|illegible|unreadable|obscured)|cannot\s+be\s+(?:read|seen))\b", re.IGNORECASE,
+)
 NAME_COORDINATION = re.compile(r"\s*(,\s*(?:(?:and|or|nor|but)\b)?|\b(?:and|or|nor|but)\b|[/&、])\s*", re.IGNORECASE)
 NAME_COORDINATED_PREDICATE = re.compile(
     r"^\s*(?:(?:do(?:es)?(?:n['’]t|\s+not)?|never)\s+)?" + NAME_PREDICATE.pattern, re.IGNORECASE,
@@ -373,7 +377,7 @@ def _finding_prose(finding: Finding) -> Iterable[str]:
 
 def _original_term(match: re.Match[str] | None) -> str:
     term = match["term"] if match is not None else ""
-    return term if HAN_CHARACTER.search(term) else ""
+    return term if HAN_CHARACTER.search(term) or any(char.isdecimal() for char in term) else ""
 
 
 @dataclass
@@ -498,6 +502,10 @@ def _validate_name_claims(
             if exclusive_objects:
                 exclusive_terms.extend(objects)
 
+        # A visibility limitation does not quote the SKU name. A separate claim
+        # about its actual wording still needs the corresponding name evidence.
+        if not terms and not compound_exclusive and NAME_VISIBILITY.search(tail):
+            continue
         for alias in references:
             wording = wording_by_alias.get(alias)
             if not wording:
