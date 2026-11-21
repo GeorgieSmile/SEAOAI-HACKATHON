@@ -256,7 +256,12 @@ export function App() {
         {(!snapshot || editingSelection) && (
           <div className="intro">
             <span className="eyebrow">{snapshot ? "Step 1 of 3" : "Check a seller before you order"}</span>
-            <h1>{snapshot ? "Confirm what you’re buying" : <>We do the diligence. <span className="h1-accent">You do the business.</span></>}</h1>
+            {snapshot ? <h1>Confirm what you’re buying</h1> : (
+              <div className="landing-slogan">
+                <img src="/dilidoo-detective.jpg" alt="" width="1254" height="1254" />
+                <h1>We do the diligence. <span className="h1-accent">You do the business.</span></h1>
+              </div>
+            )}
             <p>{snapshot ? "Check the seller’s wording and photos, then pick up to three options."
               : "Paste a TTP Cargo product link. Check the seller’s wording, choose your options, and get an evidence report with questions to send the seller."}</p>
           </div>
